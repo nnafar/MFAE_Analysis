@@ -1,0 +1,12 @@
+# MFA Analysis Pipeline Requirements
+
+numpy>=2.1.0
+pandas>=2.2.3
+scipy>=1.14.0
+matplotlib>=3.9.2
+opencv-python>=4.10.0
+tifffile>=2024.9.20
+Pillow>=11.0.0
+tqdm>=4.66.5
+PyYAML>=6.0.2
+pydantic>=2.10.0

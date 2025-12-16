@@ -1,0 +1,219 @@
+# ===================================================================
+# CONFIGURATION FOR MICROFLUIDIC ASPIRATION (MFA) PIPELINE
+# ===================================================================
+# INSTRUCTIONS:
+# This file controls your experiment settings.
+# 1. Update Section 1 & 2 for every new experiment.
+# 2. Adjust Section 4 & 5 only if the analysis is failing or slow.
+
+# ===================================================================
+# --- 1. FILE LOCATIONS ---
+# ===================================================================
+# Tell the code where to find your data and where to save results.
+paths:
+  # Folder containing your raw image sequence (.tif/.tiff)
+  data_folder: "C:\\Data\\Lotte\\Experiment207"
+
+  # Name for this analysis run. New output folders will be created with this name.
+  experiment_id: "Experiment207_uptake"
+
+# ===================================================================
+# --- 2. MICROSCOPE & EXPERIMENT SETUP ---
+# ===================================================================
+# These MUST match your physical equipment settings.
+experiment_parameters:
+  # Microscope Resolution: How many microns is one pixel? (Check your objective lens specs).
+  scale_factor: 0.629      # [µm/pixel]
+  
+  # The pressure difference driving the cell into the pipette.
+  constant_pressure: 1100  # [Pascals]
+  
+  # Time between frames. (Used as a backup if image metadata is missing).
+  frame_interval: 1.7      # [Seconds]
+  
+  # Maximum number of traps to process (prevents infinite loops if detection fails)
+  max_traps: 18            
+
+# ===================================================================
+# --- 3. PHYSICS MODEL ---
+# ===================================================================
+
+# Controls how we calculate stiffness and viscosity from the cell protrusion length.
+model_parameters:
+  # Main Switch: Set to True to calculate Viscoelasticity. Set False for raw length data only.
+  perform_fitting: False 
+
+  # Physical dimensions of the microfluidic channel (measured from mask or SEM)
+  channel_width_um: 6.7    # [µm]
+  channel_height_um: 5.0   # [µm]
+  channel_length_um: 40.0  # [µm]
+
+  # Shape Correction: Adjusts math for non-circular pipettes.
+  # Leave as "auto" to let the code calculate it using Son (2007) formulas.
+  fstar: auto
+
+  # Viscosity of the fluid surrounding the cell (used to calculate shear stress and rate)
+  fluid_viscosity_pa_s: 1e-3 # [Pa·s]
+
+# ===================================================================
+# --- 4. RUPTURE DETECTION (CUSUM) ---
+# ===================================================================
+
+# Settings for identifying when the cell membrane breaks (bursts).
+rupture_detection:
+  # Main Switch: Set to True to enable rupture check. Set False for raw data only.
+  enable: True
+  
+  # --- RUPTURE ALGORITHM (CUSUM) TUNING ---
+  # Monitoring the brightness *inside* the pipette, ahead of the cell.
+  
+  # I. The "Eyes": Where to look
+  rupture_offset_from_tip_px: 5     # Gap between cell tip and monitoring box; prevents tracking the tip itself [pixels].
+  rupture_window_width_px: 5        # Width of the monitoring box [pixels].
+  
+  # II. The "Timeline": When to start
+  entry_velocity_threshold_px: 2.0  # Speed required to mark "Time 0" (Cell Entry); prevents analyzing static debris [px/frame].
+  cusum_settling_buffer: 3          # Frames to ignore immediately after entry.
+  
+  # III. The "Baseline": Establishing "Normal"
+  min_cusum_baseline_frames: 5      # Safety: Minimum valid frames required to run the algorithm at all.
+  cusum_baseline_len: 5             # Frames used to calculate the "clean" reference brightness and noise level.
+  min_intensity_noise_floor: 0.2    # Safety: Minimum assumed noise level; prevents false alarms on perfectly clean videos.
+  cusum_sensitivity_sigma: 0.7413   # Statistical constant to convert IQR to Standard Deviation (Do not change).
+ 
+  # IV. The "Brain": Decision Logic (CUSUM)
+
+  # --- Safety Floors (Prevents bugs on perfectly clean video) ---
+  # These prevent the algorithm from becoming infinitely sensitive if camera noise is zero.
+  min_drift_tolerance: 0.2          # The algorithm will never track brightness changes smaller than this.
+  min_cusum_threshold: 2.0          # The algorithm will never trigger an alarm on total evidence lower than this.
+  
+  # --- Tuning Knobs (Adjust these to fix detection issues) ---
+  # i. Per-Frame Sensitivity ("The Filter")
+  #    How much must a single frame brighten to count as "suspicious"?
+  #    Lower (0.2) = Very sensitive; catches faint, slow leaks.
+  #    Higher (1.0) = Less sensitive; ignores flickers, only catches sharp bursts.
+  cusum_drift_tolerance_factor: 0.5
+  
+  # ii. Total Confidence ("The Trigger")
+  #     How much "suspicion" must pile up over time to confirm a rupture?
+  #     Lower (5.0)  = Faster reaction, but more prone to false alarm.
+  #     Higher (20.0) = Slower reaction, but you can be more certain it's real.
+  cusum_threshold_factor: 10.0
+
+  # --- DATA CLEANING ---
+  # Ignored Data: Fraction of early points to skip (artifacts from initial entry).
+  exclude_early_fraction: 0.03
+
+  # Slip Detection: If length drops suddenly, assume it's a slip, not physics.
+  drop_threshold: 0.4               # Ignore drops larger than 40% of length.
+  absolute_threshold: 1.0           # Ignore drops larger than 1.0 µm.
+  window_size: 15                   # How many frames to look back for slips.
+
+  # Outlier Removal: Statistical cleaning of jagged noise.
+  enable_outlier_rejection: False
+  enable_smoothing: False           # Set True to smooth the final lines (Rolling Median).
+  outlier_rejection_window: 11      # # Frames to compare for outlier check.
+  outlier_rejection_std_dev: 2.5    # Strictness: Lower (2.0) deletes more points; Higher (3.0) keeps more.
+
+# ===================================================================
+# --- 5. AUTOMATION & PERFORMANCE ---
+# ===================================================================
+
+workflow_settings:
+  # Human Check:
+  # True = Pop up a window to confirm every trap location (Recommended for first run).
+  # False = Run fully automatic (Batch mode).
+  verify_traps_interactively: True
+
+  # Debugging: Save extra logs and images if something goes wrong.
+  debug_mode: True                  # Enables verbose logging for troubleshooting
+  create_kymographs: True           # Generate Space-Time plots for every trap?
+
+  # Speed: Number of CPU cores to use.
+  n_workers: 5    
+  
+  # Memory: How many frames to keep in RAM (lowering this saves memory but slows processing).               
+  max_cache_size: 50
+  
+  # Auto-Detection: How far apart are your traps? (1.5 = 1.5x the height of a trap).
+  trap_spacing_factor: 1.50
+
+  # Interface: Size of the pop-up windows.
+  interactive_window_width: 1000
+  interactive_window_height: 800
+  
+  # ROI Defaults: Starting guess for box size if detection fails.
+  default_roi_width_um: 115.0       # [µm]
+  default_roi_height_um: 45.0       # [µm]
+  
+  # Setup Screen: Which part of the video to show during setup? (0.5 = Middle of video).
+  selection_frame_fraction: 0.5
+
+# ===================================================================
+# --- 6. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
+# ===================================================================
+dye_uptake_parameters:
+  enable: True
+  
+  # File Naming: Strings used to identify which image is which channel.
+  membrane_channel_pattern: "C1"    # e.g., Membrane label
+  dye_channel_pattern: "C2"         # e.g., Fluorescence / TRITC
+  
+  # Timing: When did you shock the cell?
+  pulse_frame: 15                   # The exact frame number of the electric pulse.
+  baseline_frames: 5                # How many frames before the pulse to check for background signal.
+
+# ===================================================================
+# ADVANCED / DEVELOPER PARAMETERS
+# ===================================================================
+# Modify these only if the image processing or fitting is failing.
+
+image_processing:
+  wall_clip_margin: 0.25           # Ignore top/bottom 25% of image (hides pipette walls).
+  clahe_clip_limit: 2.0            # Contrast enhancement strength.
+  clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
+  canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).
+  canny_high_threshold: 150        # Edge detection sensitivity (Upper limit).
+  gaussian_kernel_size: [3, 3]     # Blur amount to reduce noise before detection.
+
+kymograph_parameters:
+  default_kymograph_width_px: 100  # Width of the generated space-time image.
+  default_line_width_px: 10        # Thickness of the slice taken for the kymograph.
+
+plotting_parameters:
+  default_dpi: 300                 # Quality of saved plots (300 = Print Quality).
+  figure_size_large: [18.0, 12.0]
+  figure_size_medium: [10.0, 7.0]
+
+fitting_parameters:
+  # Strategy:
+  # True = Differential Evolution (Slow, finds best global fit).
+  # False = Levenberg-Marquardt (Fast, fine-tunes local fit).
+  use_global_optimization: True  
+
+  # Max Attempts: Stop trying to fit after this many calculations. 
+  jeffreys_maxfev: 50000           
+  empirical_maxfev: 5000       
+
+  # Starting Guess: [Stiffness (E), Viscosity 1 (eta1), Viscosity 2 (eta2)]    
+  default_initial_guess: [3000.0, 5000.0, 15000.0]
+
+  # Allowed Ranges: The code will reject results outside these numbers.]
+  fitting_bounds:
+    E: [100.0, 100000.0]           # [Pa]
+    eta1: [100.0, 500000.0]        # [Pa·s]
+    eta2: [500.0, 1000000.0]       # [Pa·s]
+  
+  # Guess Constraints: Limits for the initial random guess generator.
+  clipping_bounds_guess:
+    E: [500.0, 25000.0]            # [Pa]
+    eta1: [1000.0, 50000.0]        # [Pa·s]
+    eta2: [5000.0, 100000.0]       # [Pa·s]
+
+validation_parameters:
+  # Sanity Check: Warn the user if results fall outside this "Physically Plausible" range.
+  plausible_ranges:
+    E: [100.0, 50000.0]            # [Pa]
+    eta1: [500.0, 100000.0]        # [Pa·s]
+    eta2: [1000.0, 200000.0]       # [Pa·s]
