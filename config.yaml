@@ -12,10 +12,10 @@
 # Tell the code where to find your data and where to save results.
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
-  data_folder: "C:\\Data\\Lotte\\Experiment207"
+  data_folder: "C:\\Data\\MFA_EP\\Experiment_207"
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "Experiment207_uptake"
+  experiment_id: "test_001"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -41,7 +41,7 @@ experiment_parameters:
 # Controls how we calculate stiffness and viscosity from the cell protrusion length.
 model_parameters:
   # Main Switch: Set to True to calculate Viscoelasticity. Set False for raw length data only.
-  perform_fitting: False 
+  perform_fitting: True 
 
   # Physical dimensions of the microfluidic channel (measured from mask or SEM)
   channel_width_um: 6.7    # [µm]
@@ -131,6 +131,7 @@ workflow_settings:
   create_kymographs: True           # Generate Space-Time plots for every trap?
 
   # Speed: Number of CPU cores to use.
+  # Recommendation: Set to (Total Cores - 1) or (Total Cores / 2) to prevent system lag.
   n_workers: 5    
   
   # Memory: How many frames to keep in RAM (lowering this saves memory but slows processing).               
@@ -143,6 +144,9 @@ workflow_settings:
   interactive_window_width: 1000
   interactive_window_height: 800
   
+  # High-DPI Scaling: Increase this (e.g., 1.5 or 2.0) if windows look tiny on screens.
+  window_scale_factor: 1.0
+
   # ROI Defaults: Starting guess for box size if detection fails.
   default_roi_width_um: 115.0       # [µm]
   default_roi_height_um: 45.0       # [µm]

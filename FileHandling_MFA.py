@@ -103,6 +103,17 @@ class FileRead():
                     logger.warning(f"Truncating both channels to {min_len} frames to maintain sync.")
                     self.tif_files = self.tif_files[:min_len]
                     self.dye_files = self.dye_files[:min_len]
+                    
+            # Explicit warning for synchronization issues
+            diff = abs(len(self.tif_files) - len(self.dye_files))
+            if diff > 1:
+                logger.warning(
+                    f"POTENTIAL SYNC ISSUE: Significant frame count mismatch!\n"
+                    f"   Membrane: {len(self.tif_files)} frames\n"
+                    f"   Dye:      {len(self.dye_files)} frames\n"
+                    f"   Diff:     {diff} frames.\n"
+                    f"   Please check if camera triggers are synchronized (Hardware Sync)."
+                )
             
         # Extract timestamps (using the primary membrane files)
         self.time_data = self.extract_timestamps_from_metadata()

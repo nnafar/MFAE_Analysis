@@ -8,9 +8,11 @@ parts of the pipeline to avoid code duplication.
 
 KEY COMPONENTS:
 1.  Logging: Sets up the system to record errors and progress to a file.
-2.  Frame Caching: A "Least Recently Used" (LRU) cache that keeps only the 
-    most recent ~50 images in RAM, allowing smooth scrolling without filling memory.
-3.  Plot Styling: Global settings for Matplotlib to ensure publication-ready plots.
+2.  Unified Styling: Centralized color palette and Matplotlib settings.
+3.  Image Processing: Helper functions for rotation, normalization, and display.
+4.  Interactive Windows: Tools for managing OpenCV GUI windows.
+5.  Frame Caching: LRU cache for smooth scrolling in the setup phase.
+6.  Worker Safety: Standalone functions for parallel processing.
 """
 import gc
 import os
@@ -82,54 +84,121 @@ def setup_logging(debug_mode: bool = False, log_file: Path = Path('mfa_analysis.
 # 2. PLOTTING AND STYLING UTILITIES
 # =============================================================================
 
-# --- A base color constant used by plotting functions ---
-DATA_POINTS_COLOR = '#2c2c2c'
+# --- Centralized Color Palette (Blue to Red Scheme) ---
+# Extracted from user reference image 'Blue to Red'
+MFA_COLORS = {
+    # Reference Palette (Hex)
+    'dark_blue':   '#1065AB', # R 016, G 101, B 171
+    'medium_blue': '#3A93C3', # R 058, G 147, B 195
+    'light_blue':  '#8EC4DE', # R 142, G 196, B 222
+    'pale_blue':   '#D1E5F0', # R 209, G 229, B 240
+    'light_grey':  '#E7E6E3', # R 231, G 230, B 227
+    'white':       '#F9F9F9', # R 249, G 249, B 249
+    'pale_red':    '#FDDBC7', # R 254, G 219, B 199
+    'light_red':   '#F6A482', # R 246, G 164, B 130
+    'medium_red':  '#D75F4C', # R 215, G 095, B 076
+    'dark_red':    '#B31529', # R 179, G 021, B 041
+    
+    # UI Semantic Mapping
+    'ui_guide':    '#3A93C3', # Medium Blue (ROI Box, Rotation Line)
+    'ui_pipette':  '#1065AB', # Dark Blue   (Pipette Entrance Line)
+    'ui_mask':     '#B31529', # Dark Red    (Threshold Mask)
+    'ui_text':     '#F9F9F9', # White       (Overlay Text)
 
-# Centralized color constant for on-screen text
-TEXT_COLOR = (255, 255, 255) # BGR for White
-
-BLUE_RED_COLORS = {
-    'data_points': DATA_POINTS_COLOR, 'model_fit': '#394B9A', 'fitting_data': '#394B9A',
-    'model_fit_alt': '#DD3D2D', 'excluded_data': '#DD3D2D', 'rupture_point': '#A50026',
-    'pre_rupture_region': '#98CAE1', 'post_rupture_region': '#FEDA8B'
+    # Plotting Defaults
+    'primary':     '#000000', # Black (Raw Data Points / Main Trace)
+    'secondary':   '#D75F4C', # Medium Red (Protrusion / Fits)
+    'tertiary':    '#8EC4DE', # Light Blue (Cell Body / Mask Overlay)
+    'quaternary':  '#B31529', # Dark Red (Rupture Haze / Intensity Trace)
+    
+    'pulse':       '#3A93C3', # Medium Blue (Vertical line for pulse)
+    'rupture':     '#B31529', # Dark Red (Vertical line for rupture)
+    
+    'grid':        '#D1E5F0', # Pale Blue
+    'background':  '#FFFFFF',
+    
+    'time_gradient_start': '#1065AB', 
+    'time_gradient_end':   '#B31529'
 }
-PURPLE_GREEN_COLORS = {
-    'data_points': DATA_POINTS_COLOR, 'model_fit': '#1B7837', 'fitting_data': '#1B7837',
-    'model_fit_alt': '#762A83', 'excluded_data': '#762A83', 'rupture_point': '#A50026',
-    'pre_rupture_region': '#ACD39E', 'post_rupture_region': '#C2A5CF'
-}
-
-def get_color_scheme(scheme_name: str = 'blue_red') -> Dict[str, str]:
-    """Retrieves a dictionary containing a colorblind-friendly color scheme."""
-    if scheme_name.lower() in ['blue_red', 'br']:
-        return BLUE_RED_COLORS
-    elif scheme_name.lower() in ['purple_green', 'pg']:
-        return PURPLE_GREEN_COLORS
-    logger.warning(f"Unknown color scheme '{scheme_name}', defaulting to 'blue_red'.")
-    return BLUE_RED_COLORS
 
 def hex_to_bgr(hex_color: str) -> Tuple[int, int, int]:
-    """Converts a hex color string to a BGR tuple."""
+    """Converts hex string to BGR tuple for OpenCV."""
     hex_color = hex_color.lstrip('#')
     rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-    return (rgb[2], rgb[1], rgb[0]) # Convert RGB to BGR
+    return (rgb[2], rgb[1], rgb[0])
 
-def set_paper_style(base_fontsize: int = 10, dpi: int = 300) -> None:
-    """Applies global Matplotlib styles for publication-quality plots."""
+# Pre-calculate BGR colors for OpenCV UI
+UI_COLORS = {
+    'guide':   hex_to_bgr(MFA_COLORS['ui_guide']),
+    'pipette': hex_to_bgr(MFA_COLORS['ui_pipette']),
+    'mask':    hex_to_bgr(MFA_COLORS['ui_mask']),
+    'text':    hex_to_bgr(MFA_COLORS['ui_text']),
+}
+
+def get_ui_color(element_type: str) -> Tuple[int, int, int]:
+    """Returns the standardized BGR color for a UI element."""
+    return UI_COLORS.get(element_type, (255, 255, 255))
+
+def get_bgr_color(color_name: str) -> Tuple[int, int, int]:
+    """Retrieves a BGR tuple from the MFA_COLORS palette by name."""
+    hex_val = MFA_COLORS.get(color_name, MFA_COLORS['white'])
+    return hex_to_bgr(hex_val)
+
+def set_paper_style(base_fontsize: int = 14, dpi: int = 300) -> None:
+    """Applies publication-quality style to Matplotlib plots."""
+    plt.rcdefaults() 
     mpl.rcParams.update({
-        'font.size': base_fontsize, 'font.family': 'sans-serif',
-        'axes.labelsize': base_fontsize + 2, 'axes.titlesize': base_fontsize + 4,
-        'legend.fontsize': base_fontsize, 'xtick.labelsize': base_fontsize,
-        'ytick.labelsize': base_fontsize, 'lines.linewidth': 2.0,
-        'axes.spines.top': False, 'axes.spines.right': False, 'figure.dpi': dpi
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'DejaVu Sans'],
+        'font.size': base_fontsize,
+        'axes.labelsize': base_fontsize,
+        'axes.titlesize': base_fontsize + 2,
+        'axes.titleweight': 'bold',
+        'legend.fontsize': base_fontsize - 2,
+        'legend.frameon': True,
+        'figure.dpi': dpi,
+        'figure.facecolor': 'white',
+        'axes.spines.top': False,
+        'axes.spines.right': False,
+        'grid.alpha': 0.4,
+        'grid.color': MFA_COLORS['grid'],
+        'lines.linewidth': 2.5,
+        'axes.prop_cycle': mpl.cycler(color=[
+            MFA_COLORS['primary'],    # Black
+            MFA_COLORS['secondary'],  # Medium Red
+            MFA_COLORS['tertiary']    # Dark Blue
+        ])
     })
 
+def get_time_colormap(n_steps: int) -> List[Tuple[float, float, float, float]]:
+    """Returns a list of colors forming the full Blue -> Red gradient."""
+    # Define the full 9-color gradient from the user's palette
+    colors = [
+        MFA_COLORS['dark_blue'], MFA_COLORS['medium_blue'], MFA_COLORS['light_blue'],
+        MFA_COLORS['pale_blue'], MFA_COLORS['light_grey'], MFA_COLORS['pale_red'],
+        MFA_COLORS['light_red'], MFA_COLORS['medium_red'], MFA_COLORS['dark_red']
+    ]
+    cmap = mpl.colors.LinearSegmentedColormap.from_list("mfa_full_gradient", colors)
+    return [cmap(i / (n_steps - 1)) for i in range(n_steps)]
+
+def get_mfa_continuous_cmap() -> mpl.colors.LinearSegmentedColormap:
+    """Returns a continuous matplotlib colormap for Kymographs (Blue->White->Red)."""
+    # Optimized for heatmaps: Dark Blue (Low) -> White (Mid) -> Dark Red (High)
+    nodes = [0.0, 0.2, 0.5, 0.8, 1.0]
+    colors = [
+        '#000000', # Black (Background)
+        MFA_COLORS['dark_blue'],
+        MFA_COLORS['light_blue'],
+        MFA_COLORS['medium_red'],
+        MFA_COLORS['dark_red']
+    ]
+    return mpl.colors.LinearSegmentedColormap.from_list("mfa_kymo", list(zip(nodes, colors)))
+
 def save_plot_png(save_path: Union[str, Path], dpi: int = 300) -> None:
-    """Saves the current Matplotlib figure to a high-resolution PNG file."""
     save_path_png = Path(save_path).with_suffix(".png")
     save_path_png.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(str(save_path_png), dpi=dpi, bbox_inches='tight', format='png')
-    logger.info(f"Plot saved to: {save_path_png.name}")
+    logger.info(f"Plot saved: {save_path_png.name}")
 
 # =============================================================================
 # 3. IMAGE PROCESSING AND DISPLAY UTILITIES
@@ -162,14 +231,6 @@ def rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
     rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
     return cv2.warpAffine(image, rotation_matrix, (width, height))
 
-def add_text_overlay(img: np.ndarray, text_lines: List[str], bottom_margin: int = 30) -> None:
-    """Adds multiple lines of text to an image's bottom-left corner."""
-    h = img.shape[0]
-    # Iterate through lines in reverse to draw from the bottom up
-    for i, text in enumerate(reversed(text_lines)):
-        y_pos = h - bottom_margin - (i * 30)
-        cv2.putText(img, text, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_COLOR, 2)
-
 def prepare_display_image(image: np.ndarray, window_width: int, window_height: int) -> np.ndarray:
     """Prepares an image for display by resizing and centering it on a black canvas."""
     image_8bit = normalize_to_8bit(image)
@@ -191,6 +252,68 @@ def prepare_display_image(image: np.ndarray, window_width: int, window_height: i
 # 4. INTERACTIVE WINDOW UTILITIES
 # =============================================================================
 
+def draw_ui_text(img: np.ndarray, text: str, pos: Tuple[int, int], 
+                 scale: float = 0.8, color: Optional[Tuple[int,int,int]] = None, thickness: int = 2) -> None:
+    """
+    Standardized text drawing function with high-contrast drop shadow.
+    Increased size and thickness for better visibility.
+    """
+    if color is None: color = UI_COLORS['text']
+    
+    # Stronger Drop Shadow (Thick Black Outline) for contrast
+    cv2.putText(img, text, (pos[0]+1, pos[1]+1), cv2.FONT_HERSHEY_SIMPLEX, scale, (0,0,0), thickness+3)
+    # Main Text
+    cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+    
+def add_text_overlay(img: np.ndarray, text_lines: List[str], bottom_margin: int = 30) -> None:
+    """
+    Adds multiple lines of text to an image's bottom-left corner.
+    Includes a semi-transparent background box to ensure readability.
+    """
+    if not text_lines: return
+    
+    h, w = img.shape[:2]
+    
+    # Settings for larger, readable text
+    font_scale = 0.8
+    font_thickness = 2
+    line_height = 35
+    padding = 15
+    
+    # Calculate Box Dimensions
+    num_lines = len(text_lines)
+    text_block_height = num_lines * line_height
+    
+    # Estimate width (approximate, usually sufficient)
+    max_char_count = max(len(line) for line in text_lines)
+    box_width = int(max_char_count * 15 * font_scale) + (padding * 2)
+    box_width = min(box_width, w) # Clamp to image width
+    
+    # Box Coordinates
+    y_start = h - bottom_margin - text_block_height - padding
+    y_end = h - bottom_margin + padding
+    
+    # Draw Semi-Transparent Background Box
+    overlay = img.copy()
+    cv2.rectangle(overlay, (0, y_start), (box_width, y_end), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+    
+    # Draw Lines
+    # We iterate forward to draw Top-to-Bottom within the calculated box
+    current_y = y_start + line_height + 5
+    for text in text_lines:
+        draw_ui_text(img, text, (padding, current_y), scale=font_scale, thickness=font_thickness, color=UI_COLORS['text'])
+        current_y += line_height
+
+def create_centered_window(window_name: str, width: int, height: int) -> None:
+    """Creates and centers a resizable OpenCV window on the screen."""
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, width, height)
+    screen_w, screen_h = get_screen_dimensions()
+    pos_x = max(0, (screen_w - width) // 2)
+    pos_y = max(0, (screen_h - height) // 2)
+    cv2.moveWindow(window_name, pos_x, pos_y)
+
 def get_screen_dimensions() -> Tuple[int, int]:
     """Retrieves the primary screen's width and height in pixels.
     
@@ -205,15 +328,6 @@ def get_screen_dimensions() -> Tuple[int, int]:
     except (ImportError, tk.TclError):
         logger.warning("Tkinter not available. Using default screen size of 1920x1080.")
         return 1920, 1080
-
-def create_centered_window(window_name: str, width: int, height: int) -> None:
-    """Creates and centers a resizable OpenCV window on the screen."""
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, width, height)
-    screen_w, screen_h = get_screen_dimensions()
-    pos_x = max(0, (screen_w - width) // 2)
-    pos_y = max(0, (screen_h - height) // 2)
-    cv2.moveWindow(window_name, pos_x, pos_y)
 
 # =============================================================================
 # 5. DATA EXPORT UTILITIES
@@ -323,3 +437,42 @@ class MemoryEfficientFrameLoader:
         self.cache.clear()
         self.order.clear()
         gc.collect()
+
+# =============================================================================
+# 7. IMAGE MANIPULATION UTILITIES (WORKER SAFE)
+# =============================================================================
+
+def crop_single_trap(frame: np.ndarray, roi: List[int], rotation_angle: float) -> Optional[np.ndarray]:
+    """
+    Worker-safe cropping function. avoids instantiating GUI classes.
+    
+    Args:
+        frame: The full raw image.
+        roi: [y_min, y_max, x_min, x_max] coordinates.
+        rotation_angle: Angle to rotate before cropping.
+        
+    Returns:
+        The cropped trap image or None if invalid.
+    """
+    if frame is None or roi is None:
+        return None
+        
+    # Rotate
+    rotated = rotate_image(frame, rotation_angle)
+    
+    # Crop
+    y_min, y_max, x_min, x_max = roi
+    
+    # Boundary checks
+    h, w = rotated.shape[:2]
+    if y_min < 0 or x_min < 0 or y_max > h or x_max > w:
+        # Optional: Handle out-of-bounds gracefully or clip
+        y_min, x_min = max(0, y_min), max(0, x_min)
+        y_max, x_max = min(h, y_max), min(w, x_max)
+        
+    cropped = rotated[y_min:y_max, x_min:x_max]
+    
+    if cropped.size == 0:
+        return None
+        
+    return cropped

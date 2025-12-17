@@ -52,7 +52,16 @@ class LineDetectionMFA:
         self.pipette_coords = pipette_coords
         self.params = params or {}
 
-
+        # Interactive Window parameters
+        workflow_settings = self.params.get('workflow_settings', {})
+        self.window_scale = workflow_settings.get('window_scale_factor', 1.0)
+        
+        # Apply scale to window dimensions
+        base_w = workflow_settings.get('interactive_window_width', 1200)
+        base_h = workflow_settings.get('interactive_window_height', 800)
+        self.window_width = int(base_w * self.window_scale)
+        self.window_height = int(base_h * self.window_scale)
+        
         # CUMSUM parameters
         self.entry_velocity_threshold = self.params.get('entry_velocity_threshold_px', 2.0)
         self.min_cusum_baseline = self.params.get('min_cusum_baseline_frames', 5)
@@ -60,12 +69,9 @@ class LineDetectionMFA:
         self.min_drift = self.params.get('min_drift_tolerance', 0.2)
         self.min_cusum_thresh = self.params.get('min_cusum_threshold', 2.0)
         
-        
-        # Geometry & Processing Parameters
+        # Processing Parameters
         self.min_area_threshold: int = self.params.get('min_area_threshold', 100)         
         self.small_object_threshold: int = self.params.get('small_object_threshold', 50)  
-        self.window_width: int = self.params.get('window_width', 1200)
-        self.window_height: int = self.params.get('window_height', 800)
         self.wall_clip_margin: float = self.params.get('wall_clip_margin', 0.40)         
 
         # --- Results Container ---
@@ -191,7 +197,10 @@ class LineDetectionMFA:
             x_offset = (self.window_width - int(original_w * display_scale)) // 2
             display_pipette_x = x_offset + int(current_pipette_start_x * display_scale)
             
-            cv2.line(display_image, (display_pipette_x, 0), (display_pipette_x, h), (0, 255, 255), 3)
+            # Use Pipette Color (Dark Blue)
+            pip_color = utils.get_ui_color('pipette')
+            cv2.line(display_image, (display_pipette_x, 0), (display_pipette_x, h), pip_color, 3)
+            
             utils.add_text_overlay(display_image, [
                 "Pipette Entrance: {} px".format(current_pipette_start_x), 
                 "A/D : +/- 1 px",
@@ -322,7 +331,7 @@ class LineDetectionMFA:
             utils.add_text_overlay(combined_display, [
                 f"Threshold: {current_threshold}",
                 "Mouse: Drag yellow line to adjust",
-                "W/S: +/- 1 | A/D: +/- 10",
+                "W/S: +/- 10 | A/D: +/- 1",
                 "ENTER: Confirm | R: Restart"
             ])
             cv2.imshow(window_name, combined_display)
@@ -333,10 +342,10 @@ class LineDetectionMFA:
             if key in (ord('r'), ord('R')): cv2.destroyAllWindows(); return 'restart', None
             
             # Keyboard controls update the shared state
-            if key in (ord('w'), ord('W')): state['threshold'] = min(255, current_threshold + 1)
-            elif key in (ord('s'), ord('S')): state['threshold'] = max(0, current_threshold - 1)
-            elif key in (ord('d'), ord('D')): state['threshold'] = min(255, current_threshold + 10)
-            elif key in (ord('a'), ord('A')): state['threshold'] = max(0, current_threshold - 10)
+            if key in (ord('w'), ord('W')): state['threshold'] = min(255, current_threshold + 10)
+            elif key in (ord('s'), ord('S')): state['threshold'] = max(0, current_threshold - 10)
+            elif key in (ord('d'), ord('D')): state['threshold'] = min(255, current_threshold + 1)
+            elif key in (ord('a'), ord('A')): state['threshold'] = max(0, current_threshold - 1)
 
     # Visualization Helper Methods
 
@@ -348,25 +357,26 @@ class LineDetectionMFA:
         image_8u = utils.normalize_to_8bit(image)
         display_base = cv2.cvtColor(image_8u, cv2.COLOR_GRAY2BGR)
         
-        # Create Cyan Overlay (BGR: 255, 255, 0)
+        # 1. Draw Threshold Mask (Dark Red)
+        # This corresponds to 'ui_mask' in the palette
+        mask_color = utils.get_ui_color('mask')
         overlay = np.zeros_like(display_base, dtype=np.uint8)
-        overlay[binary_mask == 255] = (255, 255, 0) 
-        
-        # Blend: 70% Image, 30% Overlay
+        overlay[binary_mask == 255] = mask_color
         blended = cv2.addWeighted(display_base, 0.7, overlay, 0.3, 0)
         
-        # Draw Pipette Line (Cyan)
+        # 2. Draw Pipette Line (Dark Blue)
+        pip_color = utils.get_ui_color('pipette')
         safe_x = max(0, min(image.shape[1], int(pipette_start_x)))
-        cv2.line(blended, (safe_x, 0), (safe_x, blended.shape[0]), (0, 255, 255), 1)
+        cv2.line(blended, (safe_x, 0), (safe_x, blended.shape[0]), pip_color, 2)
         
-        # Draw Wall Lines (WHITE) if clipping is active
+        # 3. Draw Wall Clip Lines (Medium Blue - Same as ROI/Guides)
         if clip_walls:
+            guide_color = utils.get_ui_color('guide')
             h = blended.shape[0]
             margin = int(h * self.wall_clip_margin)
             if margin > 0:
-                # Changed from Red (0,0,255) to White (255,255,255)
-                cv2.line(blended, (0, margin), (blended.shape[1], margin), (255, 255, 255), 1)
-                cv2.line(blended, (0, h-margin), (blended.shape[1], h-margin), (255, 255, 255), 1)
+                cv2.line(blended, (0, margin), (blended.shape[1], margin), guide_color, 1)
+                cv2.line(blended, (0, h-margin), (blended.shape[1], h-margin), guide_color, 1)
 
         return utils.prepare_display_image(blended, width, height)
 
@@ -388,21 +398,19 @@ class LineDetectionMFA:
         # Draw gray histogram bars
         bin_w = width / 256
         for i in range(1, 256):
-            # Previous point
             pt1 = (int((i-1) * bin_w), height - 40 - int(hist[i-1]))
-            # Current point
             pt2 = (int(i * bin_w), height - 40 - int(hist[i]))
             cv2.line(hist_img, pt1, pt2, (200, 200, 200), 2)
-            
-        # Draw yellow threshold line
+        
+        # Draw threshold line 
+        guide_color = utils.get_ui_color('guide')
         x_thresh = int(threshold_line * width / 255)
-        cv2.line(hist_img, (x_thresh, 0), (x_thresh, height - 40), (0, 255, 255), 2)
-        cv2.putText(hist_img, f"T={threshold_line}", (x_thresh + 5, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        cv2.line(hist_img, (x_thresh, 0), (x_thresh, height - 40), guide_color, 2)
+        
+        utils.draw_ui_text(hist_img, f"T={threshold_line}", (x_thresh + 5, 30), scale=0.6, color=guide_color)
         
         # Axis labels
-        # X-Axis
         cv2.putText(hist_img, "Intensity (0-255)", (width//3, height-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180,180,180), 1)
-        # Y-Axis (Approximate)
         cv2.putText(hist_img, "Frequency", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180,180,180), 1)
         
         return hist_img
@@ -635,41 +643,48 @@ class LineDetectionMFA:
              return float(pipette_start_x - self._refine_edge_subpixel(gray_image, edge_x, stats[largest_label]))
         return float(pipette_start_x - edge_x)
 
+    # [In LineDetection_MFA.py] REPLACE the _create_debug_visualization method
+
     def _create_debug_visualization(self, image: np.ndarray, binary_mask: np.ndarray, pipette_x: int, protrusion_len: float) -> np.ndarray:
         """
-        Creates the 'Debug Image' seen in results:
-        - Blue overlay: Detected Cell
-        - Cyan Line 1: Pipette Entrance
-        - Cyan Line 2: Cell Tip
-        - Cyan Box: Rupture monitoring zone
+        Creates the 'Debug Image' seen in results.
+        Includes transparent wall lines and high-contrast tip tracking.
         """
         image_8bit = utils.normalize_to_8bit(image)
         debug_img = cv2.cvtColor(image_8bit, cv2.COLOR_GRAY2BGR)
         
-        # Draw Blue Mask Overlay
-        colors = utils.get_color_scheme('blue_red')
-        mask_color = utils.hex_to_bgr(colors['fitting_data'])
+        # 1. Overlay (Light Blue - Tertiary)
+        mask_color = utils.get_bgr_color('tertiary')
         overlay = np.zeros_like(debug_img)
         overlay[binary_mask == 255] = mask_color
         debug_img = cv2.addWeighted(debug_img, 0.7, overlay, 0.3, 0)
         
-        # Draw Vertical Lines (Cyan)
-        cv2.line(debug_img, (pipette_x, 0), (pipette_x, debug_img.shape[0]), (0, 255, 255), 1)
-        tip_x = int(pipette_x - protrusion_len)
-        cv2.line(debug_img, (tip_x, 0), (tip_x, debug_img.shape[0]), (0, 255, 255), 1)
-
-        # Draw Wall Limit Lines (White/Black Dashed)
+        # 2. Draw Wall Limit Lines (TRANSPARENT/DIM)
         h, w = debug_img.shape[:2]
         margin = int(h * self.wall_clip_margin)
         if margin > 0:
-            cv2.line(debug_img, (0, margin), (w, margin), (255, 255, 255), 1, cv2.LINE_AA)
-            cv2.line(debug_img, (0, h - margin), (w, h - margin), (255, 255, 255), 1, cv2.LINE_AA)
-            overlay_lines = debug_img.copy()
-            cv2.line(overlay_lines, (0, margin), (w, margin), (0, 0, 0), 1)
-            cv2.line(overlay_lines, (0, h - margin), (w, h - margin), (0, 0, 0), 1)
-            debug_img = cv2.addWeighted(debug_img, 0.8, overlay_lines, 0.2, 0)
+            # Create a separate layer for lines
+            line_overlay = debug_img.copy()
+            white = (255, 255, 255)
+            cv2.line(line_overlay, (0, margin), (w, margin), white, 1, cv2.LINE_AA)
+            cv2.line(line_overlay, (0, h - margin), (w, h - margin), white, 1, cv2.LINE_AA)
             
-        # Draw Rupture Monitoring Box (Cyan)
+            # Blend lines to make them transparent (0.4 alpha)
+            debug_img = cv2.addWeighted(debug_img, 0.6, line_overlay, 0.4, 0)
+        
+        # 3. Pipette Line (Dark Blue - Pipette)
+        c_pip = utils.get_ui_color('pipette')
+        cv2.line(debug_img, (pipette_x, 0), (pipette_x, debug_img.shape[0]), c_pip, 1)
+        
+        # 4. Detected Tip (Medium Red - Secondary)
+        # Calculated here for both drawing and the rupture box
+        c_tip = utils.get_ui_color('pipette')
+        tip_x = int(pipette_x - protrusion_len)
+        cv2.line(debug_img, (tip_x, 0), (tip_x, debug_img.shape[0]), c_tip, 1)
+
+        # 5. Rupture Monitoring Box (Dark Red - Mask)
+        # Matches the 'quaternary' color in the plot
+        c_rupture = utils.get_ui_color('mask')
         offset = self.params.get('rupture_offset_from_tip_px', 10)
         width = self.params.get('rupture_window_width_px', 15)
         
@@ -678,10 +693,13 @@ class LineDetectionMFA:
         y_start, y_end = margin, h - margin
         
         if x_end > x_start:
-            overlay_box = debug_img.copy()
-            cv2.rectangle(overlay_box, (x_start, y_start), (x_end, y_end), (0, 165, 255), -1) # Orange
-            debug_img = cv2.addWeighted(debug_img, 0.8, overlay_box, 0.2, 0)
-            cv2.rectangle(debug_img, (x_start, y_start), (x_end, y_end), (0, 165, 255), 1)
+            # Draw semi-transparent fill
+            box_overlay = debug_img.copy()
+            cv2.rectangle(box_overlay, (x_start, y_start), (x_end, y_end), c_rupture, -1)
+            debug_img = cv2.addWeighted(debug_img, 0.7, box_overlay, 0.3, 0)
+            
+            # Draw solid border
+            cv2.rectangle(debug_img, (x_start, y_start), (x_end, y_end), c_rupture, 1)
         
         return debug_img
 

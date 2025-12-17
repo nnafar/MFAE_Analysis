@@ -56,14 +56,6 @@ logger = logging.getLogger(__name__)
 def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Processes a single trap in an independent process.
-    
-    Args:
-        config_dict: Contains all necessary data (trap index, parameters, 
-                     and pointers to the shared memory image stack).
-                     
-    Returns:
-        A dictionary containing status, extracted data (time/length), 
-        and fitting parameters for this specific trap.
     """
     trap_index = config_dict['trap_index']
     params = config_dict['params']
@@ -86,31 +78,24 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         worker_logger.info(f"Starting...")
         
         # 1. Access Shared Image Data
-        # 'r' mode ensures we don't accidentally modify the source images
         all_frames = np.memmap(mmap_path, dtype=dtype, mode='r', shape=shape)
 
-        # 2. Re-create minimal Cropper
-        # We need a fresh Cropper instance for this worker to handle coordinates
-        cropper = CropImage(params)
-        cropper.rotation_angle = config_dict['rotation_angle']
-        # We cheat slightly here: we only populate the specific trap ROI this worker needs
-        cropper.all_trap_rois = [None] * (trap_index + 1) 
-        cropper.all_trap_rois[trap_index] = config_dict['roi_coords']
-        cropper.pipette_coords = config_dict['pipette_coords_roi']
+        # 2. Get Coordinates
+        rotation_angle = config_dict['rotation_angle']
+        roi_coords = config_dict['roi_coords']
 
         # 3. Process ROIs (Membrane)
-        # Extract only the small rectangle for this trap from every frame
         num_frames = shape[0]
         rois = []
         for j in range(num_frames):
-            rois.append(cropper.process_frame(all_frames[j], trap_index))
+            cropped = utils.crop_single_trap(all_frames[j], roi_coords, rotation_angle)
+            rois.append(cropped)
 
         # 4. Run Detection (Core Image Processing)
-        # pip and thr were determined interactively in Phase 1
         pip = config_dict['pip']
         thr_prot = config_dict['thr_prot']
         
-        det_full = LineDetectionMFA(rois, cropper.pipette_coords, params)
+        det_full = LineDetectionMFA(rois, config_dict['pipette_coords_roi'], params)
         
         # Run detection using the protrusion threshold (for length)
         det_res = det_full.run_detection_with_parameters(pip, thr_prot)
@@ -125,7 +110,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             if rupture_idx is not None and rupture_idx < len(time_data):
                 rupture_time = time_data[rupture_idx]
         
-        # Safety Check: If no protrusion was detected at all, abort fitting
+        # Safety Check
         if not (det_res and det_res['protrusion_lengths_um'] and any(p > 0 for p in det_res['protrusion_lengths_um'])):
             return {'trap_index': trap_index, 'status': 'no_detection'}
         
@@ -134,15 +119,23 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         
         if enable_dye and all_frames_c2 is not None:
             worker_logger.info("Running Dye Uptake Quantification...")
-            rois_c2 = [cropper.process_frame(all_frames_c2[j], trap_index) for j in range(len(all_frames_c2))]
             
-            # Retrieve BOTH thresholds (fallback if body missing)
+            # Generate Dye ROIs
+            rois_c2 = []
+            for j in range(len(all_frames_c2)):
+                crop_c2 = utils.crop_single_trap(all_frames_c2[j], roi_coords, rotation_angle)
+                rois_c2.append(crop_c2)
+            
+            # Retrieve BOTH thresholds
             thr_body = config_dict.get('thr_body', thr_prot)
+            
+            # Get pipette coordinate
+            pipette_x_loc = det_res.get('pipette_start_x_used')
 
             uptake_analyzer = DyeUptakeAnalyzer(
                 membrane_rois=rois,
                 dye_rois=rois_c2,
-                pipette_x=det_res.get('pipette_start_x_used'),
+                pipette_x=pipette_x_loc,
                 threshold_prot=thr_prot,  
                 threshold_body=thr_body,  
                 rupture_idx=rupture_idx,
@@ -152,10 +145,16 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             uptake_analyzer.run(time_data)
             
             dye_out_dir = dirs['dye_uptake']
-            uptake_analyzer.plot_results(trap_index + 1, dye_out_dir)
-            uptake_analyzer.export_csv(trap_index + 1, dye_out_dir)
             
-            # Generate Debug Video for verification
+            Plotting_MFA.plot_dye_uptake_dashboard(
+                results=uptake_analyzer.results,
+                trap_idx=trap_index + 1,
+                output_dir=dye_out_dir,
+                params=params,
+                pipette_x=pipette_x_loc 
+            )
+            
+            uptake_analyzer.export_csv(trap_index + 1, dye_out_dir)
             uptake_analyzer.save_debug_video(trap_index + 1, dye_out_dir)
         
         # 5. Generate Outputs & Exports
@@ -190,6 +189,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
 
         growth_rate = None
         if params['create_kymographs']:
+            # Create object and calc matrix (No plotting inside)
             kymo_analyzer = create_kymograph_for_trap(
                 roi_images=rois,
                 detection_results=det_res,
@@ -200,6 +200,16 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             )
             growth_rate = kymo_analyzer.growth_rate
             trap_data['growth_rate_um_per_s'] = growth_rate
+            
+            Plotting_MFA.plot_kymograph(
+                kymograph_matrix=kymo_analyzer.kymograph_matrix,
+                trap_index=trap_index + 1,
+                output_dir=dirs['kymographs'],
+                pipette_x=det_res.get('pipette_start_x_used'),
+                protrusions_px=det_res['protrusion_lengths_px'],
+                time_data=time_data,
+                params=params
+            )
         
         # 6. Run Viscoelastic Fitting
         if not params.get('perform_fitting', True):
@@ -211,7 +221,6 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         delta_p = params['constant_pressure']
         r_eff = compute_reff(channel_width, channel_height, f_star)
         
-        # Prepare data for fitting (exclude post-rupture data)
         time_points = np.array(trap_data['time'], dtype=float)
         protrusion_lengths = np.array(trap_data['protrusions'], dtype=float)
 
@@ -219,20 +228,15 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
              time_points = time_points[:rupture_idx+1]
              protrusion_lengths = protrusion_lengths[:rupture_idx+1]
         
-        # Execute Fitting
         fitter = FittingMFA(t_data=time_points, l_data=protrusion_lengths, r_eff=r_eff, delta_p=delta_p)
         fitter.run(params=params)
         
-        # Save Fitting Results
         trap_fit_rows = []
         if fitter.best_fit_model_name:
             plotter = Plotting_MFA.MFAPlotter(fitter, params=params)
-            
-            # Save Fitting Plots
             plotter.plot_all_models_comparison(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_model_comparison.png")
             plotter.create_analysis_plot(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_analysis_plot.png")
             
-            # Format results for the summary CSV
             for model_name, results in fitter.fit_results.items():
                 model_row = {
                     'Trap_Number': trap_index + 1,
@@ -240,10 +244,9 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                     'Is_Best_Fit': model_name == fitter.best_fit_model_name,
                     'R_Squared': results.get('r_squared'),
                     'Rupture_Detected': fitter.rupture_detected,
-                    'Effective_Radius_um': r_eff, # Added r_eff to output
-                    'F_Star': f_star              # Added f_star to output
+                    'Effective_Radius_um': r_eff, 
+                    'F_Star': f_star
                 }
-                
                 if results.get('params') is not None:
                     params_dict = dict(zip(results['param_names'], results['params']))
                     model_row.update(params_dict)
@@ -252,7 +255,6 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             worker_logger.warning("Fitting failed for all models.")
             return {'trap_index': trap_index, 'status': 'fit_failed', 'data': trap_data}
         
-        # Cleanup memory immediately
         del all_frames
         del rois
         gc.collect()

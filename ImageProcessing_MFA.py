@@ -27,7 +27,6 @@ import cv2
 import numpy as np
 
 import Utils_MFA as utils
-
 if TYPE_CHECKING:
     from FileHandling_MFA import FileRead
 
@@ -234,27 +233,27 @@ class CropImage():
     def _adjust_rotation_interactively(self) -> str:
         """
         Displays a window with a vertical guideline.
-        User
         """
         rotated_image = utils.rotate_image(self.first_image, self.rotation_angle)
         utils.create_centered_window('Angle Adjustment', self.window_width, self.window_height)
         h, w = rotated_image.shape[:2]
         self.vertical_line_pos = w // 2
 
-        def move_vertical_line(event, x, y, flags, param):
+        def move_line(event, x, y, flags, param):
             if event == cv2.EVENT_LBUTTONDOWN: self.moving_line = True
             elif event == cv2.EVENT_MOUSEMOVE and self.moving_line: self.vertical_line_pos = x
             elif event == cv2.EVENT_LBUTTONUP: self.moving_line = False
         
-        # Draw Cyan line
-        cv2.setMouseCallback('Angle Adjustment', move_vertical_line)
+        cv2.setMouseCallback('Angle Adjustment', move_line)
 
         while True:
             # Re-apply enhancement *inside* the loop
             rotated_enhanced = self._adjust_brightness_contrast(rotated_image)
             display_image = cv2.cvtColor(rotated_enhanced, cv2.COLOR_GRAY2BGR)
 
-            cv2.line(display_image, (self.vertical_line_pos, 0), (self.vertical_line_pos, h), (255, 255, 0), 2)
+            # Standardized Guide Color (Medium Blue)
+            guide_color = utils.get_ui_color('guide')
+            cv2.line(display_image, (self.vertical_line_pos, 0), (self.vertical_line_pos, h), guide_color, 2)
             
             utils.add_text_overlay(display_image, [
                 f"Angle: {self.rotation_angle:.1f} | Contrast: {self.display_alpha:.1f} | Bright: {self.display_beta}",
@@ -267,7 +266,7 @@ class CropImage():
             key = cv2.waitKey(30) & 0xFF
             angle_changed = False
             
-            if key == 13: break  # Enter
+            if key == 13: break             # Enter
             if key == 27: return 'stop'     # ESC
             if key in (ord('r'), ord('R')): return 'restart'
 
@@ -307,7 +306,6 @@ class CropImage():
         initial_y = h // 2 - default_height_px // 2
 
         roi_selector = _RoiSelector((initial_x, initial_y, default_width_px, default_height_px), (h, w))
-        
         window_name = 'Position and Resize ROI'
         utils.create_centered_window(window_name, self.window_width, self.window_height)
         cv2.setMouseCallback(window_name, roi_selector.mouse_callback)
@@ -316,32 +314,34 @@ class CropImage():
             display_base_image = self._adjust_brightness_contrast(self.rotated_first_image)
             display_image = cv2.cvtColor(display_base_image, cv2.COLOR_GRAY2BGR)
 
-            roi_x, roi_y, roi_w, roi_h = roi_selector.x, roi_selector.y, roi_selector.w, roi_selector.h
+            x, y, rw, rh = roi_selector.x, roi_selector.y, roi_selector.w, roi_selector.h
             
-            roi_color = (255, 255, 0)
-            cv2.rectangle(display_image, (roi_x, roi_y), (roi_x + roi_w, roi_y + roi_h), roi_color, 2)
+            # Standardized Guide Color (Medium Blue) for ROI Box
+            guide_color = utils.get_ui_color('guide')
+            cv2.rectangle(display_image, (x, y), (x + rw, y + rh), guide_color, 2)
             
-            text_color = (255, 255, 255)
-            cv2.putText(display_image, f"Size: {roi_w * self.scale_factor:.1f} x {roi_h * self.scale_factor:.1f} um",
-                       (roi_x, roi_y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+            utils.draw_ui_text(display_image, 
+                               f"Size: {rw * self.scale_factor:.1f} x {rh * self.scale_factor:.1f} um", 
+                               (x, y - 10), color=guide_color)
             
-            instructions = [
+            utils.draw_ui_text(display_image, 
+                               f"Size: {rw * self.scale_factor:.1f} x {rh * self.scale_factor:.1f} um", 
+                               (x, y - 10), color=guide_color)
+            
+            utils.add_text_overlay(display_image, [
                 f"Contrast: {self.display_alpha:.1f} | Bright: {self.display_beta}",
                 "Drag box/corners. WASD to move.",
                 "Contrast: J/L | Brightness: I/K",
                 "ENTER: Confirm | R: Restart Setup | ESC: Stop Analysis"
-            ]
-            utils.add_text_overlay(display_image, instructions)
-
+            ])
             cv2.imshow(window_name, display_image)
 
             key = cv2.waitKey(20) & 0xFF
-            
-            if key == 13: break  # Enter
-            if key == 27: return 'stop'     # ESC
+            if key == 13: break
+            if key == 27: return 'stop'
             if key in (ord('r'), ord('R')): return 'restart'
             
-            elif key in (ord('w'), ord('W')): roi_selector.y -= 1
+            if key in (ord('w'), ord('W')): roi_selector.y -= 1
             elif key in (ord('s'), ord('S')): roi_selector.y += 1
             elif key in (ord('a'), ord('A')): roi_selector.x -= 1
             elif key in (ord('d'), ord('D')): roi_selector.x += 1
@@ -354,9 +354,9 @@ class CropImage():
             roi_selector._constrain_to_image_bounds()
 
         self.roi_size = (roi_selector.w, roi_selector.h)
-        self.roi_position = [roi_selector.x, roi_selector.y]
         self.roi_coords = roi_selector.get_coords()
         cv2.destroyAllWindows()
+        
         return 'confirm'
 
     def _get_pipette_position(self) -> str:
@@ -389,10 +389,14 @@ class CropImage():
             display_image[y_off:y_off + disp_h, x_off:x_off + disp_w] = display_roi_image
             
             px, py = point_selector.get_coords()
+            
+            # Use Pipette Color (Dark Blue)
+            pip_color = utils.get_ui_color('pipette')
+            
             if px >= 0 and py >= 0:
                 disp_x, disp_y = int(px * scale) + x_off, int(py * scale) + y_off
-                cv2.circle(display_image, (disp_x, disp_y), 8, (0, 255, 255), -1)
-                cv2.line(display_image, (disp_x, y_off), (disp_x, y_off + disp_h), (0, 255, 255), 2)
+                cv2.circle(display_image, (disp_x, disp_y), 8, pip_color, -1)
+                cv2.line(display_image, (disp_x, y_off), (disp_x, y_off + disp_h), pip_color, 2)
             
             utils.add_text_overlay(display_image, [
                 f"Contrast: {self.display_alpha:.1f} | Bright: {self.display_beta}",
@@ -416,6 +420,7 @@ class CropImage():
 
         self.pipette_coords = point_selector.get_coords()
         cv2.destroyAllWindows()
+        
         return 'confirm'
 
     def get_next_trap_roi(self) -> Optional[Union[List[int], str]]:
@@ -562,11 +567,13 @@ class CropImage():
             enhanced_frame = self._adjust_brightness_contrast(rotated)
             display = cv2.cvtColor(enhanced_frame, cv2.COLOR_GRAY2BGR)
             
+            # Use Guide Color (Medium Blue) instead of hardcoded Cyan
+            guide_color = utils.get_ui_color('guide')
+            
             y_min_float = float(y_min_int)
             
-            roi_color = (255, 255, 0) # Cyan
-            cv2.rectangle(display, (x_min_int, y_min_int), (x_max_int, y_max_int), roi_color, 2)
-            cv2.putText(display, "Trap #1", (x_min_int, y_min_int - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, roi_color, 2)
+            cv2.rectangle(display, (x_min_int, y_min_int), (x_max_int, y_max_int), guide_color, 2)
+            cv2.putText(display, "Trap #1", (x_min_int, y_min_int - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, guide_color, 2)
 
             for trap_idx in range(2, self.max_traps + 1):
                 trap_spacing_float = roi_height * self.trap_spacing_factor
@@ -578,11 +585,11 @@ class CropImage():
                 if y_max_draw > rotated.shape[0]: 
                     break
                 
-                cv2.rectangle(display, (x_min_int, y_min_draw), (x_max_int, y_max_draw), roi_color, 2)
-                cv2.putText(display, f"#{trap_idx}", (x_min_int + 5, y_min_draw + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, roi_color, 2)
+                cv2.rectangle(display, (x_min_int, y_min_draw), (x_max_int, y_max_draw), guide_color, 2)
+                cv2.putText(display, f"#{trap_idx}", (x_min_int + 5, y_min_draw + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, guide_color, 2)
 
             cv2.putText(display, f"Spacing: {self.trap_spacing_factor:.4f} | Contrast: {self.display_alpha:.1f} | Bright: {self.display_beta}", (10, 30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, utils.TEXT_COLOR, 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, utils.get_ui_color('text'), 2)
             
             instructions = [
                 "ENTER: Accept", 
@@ -686,6 +693,10 @@ class CropImage():
         window_name = "Batch Trap Selection"
         utils.create_centered_window(window_name, self.window_width, self.window_height)
         cv2.setMouseCallback(window_name, click_to_select, callback_data)
+        
+        # Pre-fetch colors for the loop
+        color_selected = utils.get_bgr_color('secondary') # Red
+        color_unselected = utils.get_ui_color('guide')    # Medium Blue
 
         while True:
             display_base = self._adjust_brightness_contrast(rotated_image)
@@ -701,15 +712,14 @@ class CropImage():
                     y_min, y_max, x_min, x_max = roi
                     
                     if i in callback_data['selected']:
-                        color = (0, 255, 0) # Green
-                        cv2.rectangle(overlay, (x_min, y_min), (x_max, y_max), color, -1)
-                        cv2.rectangle(display, (x_min, y_min), (x_max, y_max), color, 2)
-                        cv2.putText(display, f"#{i+1}", (x_min + 5, y_min + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        # Selected: Filled Red box
+                        cv2.rectangle(overlay, (x_min, y_min), (x_max, y_max), color_selected, -1)
+                        cv2.rectangle(display, (x_min, y_min), (x_max, y_max), color_selected, 2)
+                        cv2.putText(display, f"#{i+1}", (x_min + 5, y_min + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_selected, 2)
                     else:
-                        color = (255, 255, 0) # Cyan
-                        thickness = 1
-                        cv2.rectangle(display, (x_min, y_min), (x_max, y_max), color, thickness)
-                        cv2.putText(display, f"#{i+1}", (x_min + 5, y_min + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness)
+                        # Unselected: Thin Blue box
+                        cv2.rectangle(display, (x_min, y_min), (x_max, y_max), color_unselected, 1)
+                        cv2.putText(display, f"#{i+1}", (x_min + 5, y_min + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_unselected, 1)
 
                 alpha = 0.4
                 display = cv2.addWeighted(overlay, alpha, display, 1 - alpha, 0)
@@ -768,11 +778,17 @@ class CropImage():
         self.display_beta = 0
         enhanced_frame = self._adjust_brightness_contrast(rotated)
         display = cv2.cvtColor(enhanced_frame, cv2.COLOR_GRAY2BGR)
+        
+        # Pre-fetch colors
+        c_ref = utils.get_bgr_color('secondary') # Red
+        c_normal = utils.get_ui_color('guide')   # Blue
 
         for trap_idx, roi in enumerate(self.all_trap_rois):
             if roi is None: continue
             y_min, y_max, x_min, x_max = roi
-            color = (0, 255, 0) if trap_idx == 0 else (255, 165, 0)
+            
+            # Use Red for the first trap (Reference), Blue for others
+            color = c_ref if trap_idx == 0 else c_normal
             cv2.rectangle(display, (x_min, y_min), (x_max, y_max), color, 2)
             cv2.putText(display, f"Trap #{trap_idx+1}", (x_min, y_min - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
