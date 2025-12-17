@@ -44,7 +44,6 @@ class DyeUptakeAnalyzer:
         self.scale_factor = params.get('scale_factor', 0.629)
         
         # --- INITIALIZE PROCESSING PARAMS (Required for Mask Gen) ---
-        # NOTE: params is flattened in MFA_analysis, so keys are at top level
         image_params = params.get('image_processing', {})
         self.clip_margin = image_params.get('wall_clip_margin', 0.40)
         self.clahe_limit = image_params.get('clahe_clip_limit', 2.0)
@@ -60,11 +59,22 @@ class DyeUptakeAnalyzer:
             'uptake_protrusion': [],
             'uptake_cell_body': [],
             'uptake_total': [],
-            'spatial_profiles': [] 
+            'uptake_protrusion_norm': [],  # ΔF/F₀ (normalized)
+            'uptake_cell_body_norm': [],
+            'uptake_total_norm': [],
+            'spatial_profiles': [],
+            'baseline_intensity': None  # Store for export
         }
         
     def run(self, time_data: List[float]) -> Dict[str, Any]:
-        """Main execution loop."""
+        """
+        Main execution loop with baseline correction.
+        
+        BASELINE CALCULATION:
+        Takes the N frames immediately BEFORE the pulse as baseline.
+        This captures the cell's pre-pulse state, including any mechanical
+        permeabilization from aspiration, and isolates the electrical effect.
+        """
         
         # 1. Calculate Baseline (Background Level)
         baseline_start = max(0, self.pulse_frame - self.baseline_len)
@@ -73,12 +83,26 @@ class DyeUptakeAnalyzer:
         baseline_imgs = self.dye_imgs[baseline_start:baseline_end]
         
         if not baseline_imgs:
-            logger.warning("Pulse frame is too early; cannot calculate baseline. Using 0.")
+            logger.warning("Pulse frame ({self.pulse_frame+1}) is too early; cannot calculate baseline. Using 0.")
             bg_level = 0.0
         else:
             bg_level = np.mean([np.mean(img) for img in baseline_imgs])
-
-        logger.info(f"Dye Analysis: Pulse at frame {self.pulse_frame+1}, Baseline Background: {bg_level:.2f}")
+        
+        # Store for export
+        self.results['baseline_intensity'] = bg_level
+        
+        # Calculate timing for logging
+        pulse_time = time_data[min(self.pulse_frame, len(time_data)-1)] if time_data else 0
+        baseline_start_time = time_data[baseline_start] if baseline_start < len(time_data) else 0
+        baseline_end_time = time_data[baseline_end-1] if baseline_end > 0 and baseline_end-1 < len(time_data) else 0
+        
+        logger.info(
+            f"Dye Uptake Analysis:\n"
+            f"   Pulse: Frame {self.pulse_frame+1} (t={pulse_time:.1f}s)\n"
+            f"   Baseline: Frames {baseline_start+1}-{baseline_end} "
+            f"(t={baseline_start_time:.1f}-{baseline_end_time:.1f}s)\n"
+            f"   Baseline Intensity: {bg_level:.2f} a.u."
+        )
 
         # 2. Process Frames
         valid_frames = min(len(self.mem_imgs), len(self.dye_imgs))
@@ -107,18 +131,30 @@ class DyeUptakeAnalyzer:
             dye_corrected = dye_float - bg_level
             dye_corrected[dye_corrected < 0] = 0 
             
+            # C. Quantify Mean Intensity in Each Region
             val_prot = cv2.mean(dye_corrected, mask=mask_prot)[0]
             val_body = cv2.mean(dye_corrected, mask=mask_body)[0]
             
-            # Combine for total (using weighted average or union)
+            # Total (union of masks)
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
             val_total = cv2.mean(dye_corrected, mask=mask_total)[0]
             
+            # D. Store Absolute Values
             self.results['uptake_protrusion'].append(val_prot)
             self.results['uptake_cell_body'].append(val_body)
             self.results['uptake_total'].append(val_total)
             
-            # C. Spatial Profile (1D projection along X-axis)
+            # E. Calculate and Store Normalized Values (ΔF/F₀)
+            # Avoid division by zero
+            norm_prot = (val_prot / bg_level) if bg_level > 0 else 0.0
+            norm_body = (val_body / bg_level) if bg_level > 0 else 0.0
+            norm_total = (val_total / bg_level) if bg_level > 0 else 0.0
+            
+            self.results['uptake_protrusion_norm'].append(norm_prot)
+            self.results['uptake_cell_body_norm'].append(norm_body)
+            self.results['uptake_total_norm'].append(norm_total)
+            
+            # F. Spatial Profile (1D projection along X-axis)
             profile = self._calculate_spatial_profile(dye_corrected, mask_total)
             self.results['spatial_profiles'].append(profile)
 
@@ -135,7 +171,7 @@ class DyeUptakeAnalyzer:
         img_8u = utils.normalize_to_8bit(mem_img)
         gray = img_8u if len(img_8u.shape) == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
         
-        # 1. Preprocessing (Matched to LineDetection)
+        # 1. Preprocessing
         clahe = cv2.createCLAHE(clipLimit=self.clahe_limit, tileGridSize=(8,8))
         enhanced = clahe.apply(gray)
         blurred = cv2.GaussianBlur(enhanced, self.blur_kernel, 0)
@@ -145,7 +181,6 @@ class DyeUptakeAnalyzer:
         pip_x = max(0, min(w, int(self.pipette_x)))
         
         # 2. Protrusion Mask (Left)
-        # Logic: Use threshold_prot + Clip Walls + Clip Right of Pipette
         _, bin_prot = cv2.threshold(blurred, self.threshold_prot, 255, cv2.THRESH_BINARY)
         mask_prot = self._clean_mask(bin_prot)
         
@@ -182,9 +217,13 @@ class DyeUptakeAnalyzer:
         return profile
 
     def _record_empty_frame(self):
+        """Records zeros for a missing frame."""
         self.results['uptake_protrusion'].append(0)
         self.results['uptake_cell_body'].append(0)
         self.results['uptake_total'].append(0)
+        self.results['uptake_protrusion_norm'].append(0)
+        self.results['uptake_cell_body_norm'].append(0)
+        self.results['uptake_total_norm'].append(0)
         self.results['spatial_profiles'].append(np.zeros(10))
 
     # =========================================================================
@@ -193,9 +232,8 @@ class DyeUptakeAnalyzer:
 
     def plot_results(self, trap_idx: int, output_dir: Path):
         """Generates all requested plots."""
-        utils.set_paper_style() # Apply publication fonts/sizes
+        utils.set_paper_style()
         
-        # Force directory creation to prevent FileNotFoundError
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -205,33 +243,46 @@ class DyeUptakeAnalyzer:
             logger.warning(f"No data to plot for Trap {trap_idx}")
             return
 
-        # 1. Uptake over Time
-        self._plot_timecourse(trap_idx, output_dir, t)
+        # 1. Uptake over Time (Absolute Values - Baseline Subtracted)
+        self._plot_timecourse(trap_idx, output_dir, t, normalized=False)
         
-        # 2. Spatial Kymograph (Heatmap)
+        # 2. Uptake over Time (Normalized Values - ΔF/F₀)
+        self._plot_timecourse(trap_idx, output_dir, t, normalized=True)
+        
+        # 3. Spatial Kymograph (Heatmap)
         self._plot_kymograph(trap_idx, output_dir, t)
         
-        # 3. Diffusion Curves (Line Profiles at specific times)
+        # 4. Diffusion Curves
         self._plot_diffusion_curves(trap_idx, output_dir, t)
 
-    def _plot_timecourse(self, trap_idx, output_dir, t):
+    def _plot_timecourse(self, trap_idx, output_dir, t, normalized=False):
+        """Plots uptake over time (either absolute or normalized)."""
         fig, ax = plt.subplots(figsize=(8, 5))
         
         pulse_time = t[min(self.pulse_frame, len(t)-1)]
         ax.axvline(pulse_time, color='gray', linestyle='--', label='Pulse')
         
-        # Use standard scheme: Data=Total(Grey), Fit=Protrusion(Blue), Alt=Body(Red)
-        ax.plot(t, self.results['uptake_total'], '-', color=self.colors['data_points'], linewidth=2, label='Total')
-        ax.plot(t, self.results['uptake_protrusion'], '-', color=self.colors['fitting_data'], alpha=0.8, label='Protrusion')
-        ax.plot(t, self.results['uptake_cell_body'], '-', color=self.colors['model_fit_alt'], alpha=0.8, label='Body')
+        if normalized:
+            # Plot ΔF/F₀
+            ax.plot(t, self.results['uptake_total_norm'], '-', color=self.colors['data_points'], linewidth=2, label='Total')
+            ax.plot(t, self.results['uptake_protrusion_norm'], '-', color=self.colors['fitting_data'], alpha=0.8, label='Protrusion')
+            ax.plot(t, self.results['uptake_cell_body_norm'], '-', color=self.colors['model_fit_alt'], alpha=0.8, label='Body')
+            ax.set_ylabel("Normalized Fluorescence (ΔF/F₀)")
+            suffix = "_Normalized"
+        else:
+            # Plot absolute values (baseline-corrected)
+            ax.plot(t, self.results['uptake_total'], '-', color=self.colors['data_points'], linewidth=2, label='Total')
+            ax.plot(t, self.results['uptake_protrusion'], '-', color=self.colors['fitting_data'], alpha=0.8, label='Protrusion')
+            ax.plot(t, self.results['uptake_cell_body'], '-', color=self.colors['model_fit_alt'], alpha=0.8, label='Body')
+            ax.set_ylabel("Mean Fluorescence (a.u.)\n(Baseline-Corrected)")
+            suffix = ""
         
         ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Mean Fluorescence (a.u.)")
         ax.set_title(f"Trap {trap_idx}: Dye Uptake")
         ax.legend()
         ax.grid(True, alpha=0.3)
         
-        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Timecourse.png")
+        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Timecourse{suffix}.png")
         plt.close(fig)
 
     def _plot_kymograph(self, trap_idx, output_dir, t):
@@ -255,7 +306,7 @@ class DyeUptakeAnalyzer:
         ax.axvline(0, color='cyan', linestyle='--', linewidth=1, label='Pipette Tip')
         ax.axhline(t[min(self.pulse_frame, len(t)-1)], color='white', linestyle='--', linewidth=1, label='Pulse')
         
-        plt.colorbar(im, ax=ax, label="Intensity")
+        plt.colorbar(im, ax=ax, label="Intensity (Baseline-Corrected)")
         ax.set_xlabel("Distance from Pipette Tip (μm)\n(Positive=Inside/Protrusion, Negative=Outside/Body)")
         ax.set_ylabel("Time (s)")
         ax.set_title(f"Trap {trap_idx}: Uptake Kymograph")
@@ -294,7 +345,7 @@ class DyeUptakeAnalyzer:
         ax.invert_xaxis()
         
         ax.set_xlabel("Distance from Pipette Tip (μm)\n(Positive=Inside/Protrusion)")
-        ax.set_ylabel("Fluorescence Intensity (a.u.)")
+        ax.set_ylabel("Fluorescence Intensity (a.u.)\n(Baseline-Corrected)")
         ax.set_title(f"Trap {trap_idx}: Diffusion Profiles over Time")
         ax.legend(title="Time")
         ax.grid(True, alpha=0.3)
@@ -317,11 +368,10 @@ class DyeUptakeAnalyzer:
         h, w = self.mem_imgs[0].shape[:2]
         fps = 5  # Playback speed
         
-        # Initialize Video Writer (MJPG is widely supported)
+        # Initialize Video Writer
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(str(save_path), fourcc, fps, (w, h), isColor=True)
         
-        # Determine number of processed frames
         num_frames = len(self.results['uptake_total'])
         
         for i in range(num_frames):
@@ -331,28 +381,24 @@ class DyeUptakeAnalyzer:
             if mem_img is None or dye_img is None: 
                 continue
 
-            # 1. Re-generate masks
+            # Re-generate masks
             mask_prot, mask_body = self._generate_dual_masks(mem_img)
             
-            # 2. Create Base Image (Dye Channel)
-            # Normalize for visibility in video
+            # Create Base Image
             norm_dye = cv2.normalize(dye_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             display = cv2.cvtColor(norm_dye, cv2.COLOR_GRAY2BGR)
             
-            # 3. Overlay Protrusion (Cyan)
+            # Overlay masks
             overlay = display.copy()
-            overlay[mask_prot > 0] = (255, 255, 0) # Cyan (BGR)
+            overlay[mask_prot > 0] = (255, 255, 0) # Cyan
+            overlay[mask_body > 0] = (255, 0, 255) # Magenta
             
-            # 4. Overlay Body (Magenta)
-            overlay[mask_body > 0] = (255, 0, 255) # Magenta (BGR)
-            
-            # Blend
             cv2.addWeighted(overlay, 0.3, display, 0.7, 0, display)
             
-            # 5. Draw Pipette Line
+            # Draw Pipette Line
             cv2.line(display, (int(self.pipette_x), 0), (int(self.pipette_x), h), (255, 255, 255), 1)
             
-            # 6. Add Frame Info
+            # Add Frame Info
             time_s = self.results['time_s'][i]
             cv2.putText(display, f"t={time_s:.1f}s", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
             
@@ -362,12 +408,15 @@ class DyeUptakeAnalyzer:
         logger.info(f"Saved mask debug video: {save_path.name}")
 
     def export_csv(self, trap_idx: int, output_dir: Path):
-        """Saves numerical results."""
+        """Saves numerical results including baseline info."""
         df = pd.DataFrame({
             'Time_s': self.results['time_s'],
-            'Total_Mean_Intensity': self.results['uptake_total'],
-            'Protrusion_Mean_Intensity': self.results['uptake_protrusion'],
-            'Body_Mean_Intensity': self.results['uptake_cell_body']
+            'Total_Intensity_Corrected': self.results['uptake_total'],
+            'Protrusion_Intensity_Corrected': self.results['uptake_protrusion'],
+            'Body_Intensity_Corrected': self.results['uptake_cell_body'],
+            'Total_Normalized_dF_F0': self.results['uptake_total_norm'],
+            'Protrusion_Normalized_dF_F0': self.results['uptake_protrusion_norm'],
+            'Body_Normalized_dF_F0': self.results['uptake_cell_body_norm']
         })
         
         # Force directory creation
@@ -375,4 +424,11 @@ class DyeUptakeAnalyzer:
         output_dir.mkdir(parents=True, exist_ok=True)
         
         save_path = output_dir / f"Trap_{trap_idx:02d}_Uptake_Data.csv"
-        df.to_csv(save_path, index=False)
+        
+        # Add baseline as header comment
+        with open(save_path, 'w') as f:
+            f.write(f"# Baseline Intensity (frames {self.pulse_frame - self.baseline_len + 1}-{self.pulse_frame}): {self.results['baseline_intensity']:.2f} a.u.\n")
+            f.write(f"# Pulse Frame: {self.pulse_frame + 1}\n")
+            df.to_csv(f, index=False)
+        
+        logger.info(f"Saved uptake data: {save_path.name}")
