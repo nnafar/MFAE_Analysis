@@ -19,7 +19,7 @@ import yaml
 import multiprocessing
 import traceback
 import logging
-import sys
+#import sys
 import cv2
 import tempfile
 import shutil
@@ -160,7 +160,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 detection_results=det_res,
                 params=kymo_params,
                 output_dir=str(dirs['kymographs']), # <--- FIX: Convert to string
-                trap_index=trap_index,
+                trap_index=trap_index + 1,
                 time_data=time_data  
             )
         
@@ -249,10 +249,10 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             )
             
             dye_results = uptake_analyzer.run(time_data)
-            uptake_analyzer.export_csv(trap_index, dirs['dye'])
+            uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
             
             Plotting_MFA.plot_dye_uptake_dashboard(
-                dye_results, trap_index, dirs['dye'], params, pipette_x=det_res.get('pipette_start_x_used')
+                dye_results, trap_index + 1, dirs['dye'], params, pipette_x=det_res.get('pipette_start_x_used')
             )
 
         # Cleanup memory
