@@ -15,7 +15,7 @@ paths:
   data_folder: "C:\\Data\\MFA_EP\\Experiment_207"
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "test_001"
+  experiment_id: "test_003"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---

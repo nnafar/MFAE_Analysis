@@ -18,7 +18,9 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
 import Utils_MFA as utils
+import Plotting_MFA
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,18 @@ class KymographAnalysis:
         # 1. Generate the Kymograph Image (Matrix)
         self.kymograph_matrix = self._create_kymograph_matrix()
         
+        # 2. Save the Kymograph Plot
+        if self.kymograph_matrix is not None:
+             Plotting_MFA.plot_kymograph(
+                kymograph_matrix=self.kymograph_matrix,
+                trap_index=trap_index,
+                output_dir=output_dir,
+                pipette_x=self.pipette_start_x,
+                protrusions_px=self.protrusions_px,
+                time_data=self.time_data,
+                params=self.params
+            )
+
         return self
 
     def _create_kymograph_matrix(self) -> np.ndarray:

@@ -181,7 +181,15 @@ class CropImage():
         Returns 'confirm' if successful, or 'stop'/'restart'.
         """
         self.file_reader = file_reader
+        
+        # --- Step 0. Load Frame 0 for Geometry Setup ---
+        logger.info("Interactive Setup: Loading Frame 0 for geometry adjustment.")
         self.first_image = self.file_reader.read_img(self.file_reader.tif_files[0])
+        
+        if self.first_image is None:
+            logger.error("Failed to load Frame 0 for setup.")
+            return 'stop'
+
         self.img_height, self.img_width = self.first_image.shape[:2]
         
         # Step 1: Rotate
@@ -191,26 +199,46 @@ class CropImage():
             cv2.destroyAllWindows()
             return signal
         
-        # Step 2: ROI
+        # Step 2: ROI (Identify First Trap)
         logger.info("--- Step 2: ROI Positioning and Sizing ---")
         signal = self._position_and_resize_roi()
         if signal in ('restart', 'stop'):
             cv2.destroyAllWindows()
             return signal
         
-        # Step 3: Pipette Tip
-        logger.info("--- Step 3: Pipette Tip Selection ---")
-        signal = self._get_pipette_position()
-        if signal in ('restart', 'stop'):
-            cv2.destroyAllWindows()
-            return signal
-        
-        # Step 4: Preview All Traps
-        logger.info("--- Step 4: Trap Position Preview & Spacing ---")
+        # Step 3: Spacing
+        logger.info("--- Step 3: Trap Position Preview & Spacing ---")
         signal = self.preview_all_traps()
         if signal in ('restart', 'stop'):
             cv2.destroyAllWindows()
             return signal
+        
+        # Step 4: Pipette Tip
+        logger.info("--- Step 4: Pipette Tip Selection ---")
+        signal = self._get_pipette_position()
+        if signal in ('restart', 'stop'):
+            cv2.destroyAllWindows()
+            return signal
+            
+        # Step 5: Selection
+        num_frames = len(self.file_reader.tif_files)
+        fraction = self.params.get('selection_frame_fraction', 0.5)
+        
+        target_idx = int(num_frames * fraction)
+        target_idx = max(0, min(target_idx, num_frames - 1))
+        
+        logger.info("--- Step 5: Select Traps to Analyze ---")
+        
+        selection_image = self.file_reader.read_img(self.file_reader.tif_files[target_idx])
+        if selection_image is None:
+            logger.warning(f"Could not load frame {target_idx}, falling back to Frame 0 for selection.")
+            selection_image = self.first_image
+
+        signal, selected = self.select_traps_interactively(selection_image)
+        if signal in ('restart', 'stop'):
+            cv2.destroyAllWindows()
+            return signal
+        self.selected_traps = selected
 
         logger.info("Setup complete!")
         return 'confirm'
@@ -475,7 +503,7 @@ class CropImage():
 
     def _verify_trap_position(self, prev_roi: List[int], new_roi: List[int]) -> Optional[Union[List[int], str]]:
         """Displays a window for the user to verify or adjust the next trap's ROI."""
-        frame = self.file_reader.read_img(self.file_reader.tif_files[0])
+        frame = self.file_reader.read_img(self.file_reader.tif_files[self.setup_frame_index])
         rotated = utils.rotate_image(frame, self.rotation_angle)
         
         utils.create_centered_window("Verify Next Trap", self.window_width, self.window_height)
@@ -541,40 +569,23 @@ class CropImage():
         Displays them all overlayed on the image.
         User can adjust 'trap_spacing_factor' live using WASD keys.
         """
-        frame = self.file_reader.read_img(self.file_reader.tif_files[0])
-        rotated = utils.rotate_image(frame, self.rotation_angle)
+        rotated = utils.rotate_image(self.first_image, self.rotation_angle)
         
-        if not self.roi_coords or not self.roi_size:
-             logger.error("ROI size and coordinates must be set before previewing all traps.")
-             return 'restart'
-             
         y_min_int, y_max_int, x_min_int, x_max_int = self.roi_coords
         roi_height = self.roi_size[1]
         
-        self.all_trap_rois = [self.roi_coords]
-        y_min_float = float(y_min_int)
-        for trap_idx in range(2, self.max_traps + 1):
-            trap_spacing_float = roi_height * self.trap_spacing_factor
-            y_min_float += trap_spacing_float
-            y_min_draw, y_max_draw = int(y_min_float), int(y_min_float + roi_height)
-            if y_max_draw > rotated.shape[0]:
-                self.all_trap_rois.append(None)
-                continue
-            self.all_trap_rois.append([y_min_draw, y_max_draw, x_min_int, x_max_int])
-
-
         while True:
             enhanced_frame = self._adjust_brightness_contrast(rotated)
             display = cv2.cvtColor(enhanced_frame, cv2.COLOR_GRAY2BGR)
             
-            # Use Guide Color (Medium Blue) instead of hardcoded Cyan
+            # Use Standard Colors
             guide_color = utils.get_ui_color('guide')
             
-            y_min_float = float(y_min_int)
-            
+            # Draw First Trap
             cv2.rectangle(display, (x_min_int, y_min_int), (x_max_int, y_max_int), guide_color, 2)
             cv2.putText(display, "Trap #1", (x_min_int, y_min_int - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, guide_color, 2)
 
+            y_min_float = float(y_min_int)
             for trap_idx in range(2, self.max_traps + 1):
                 trap_spacing_float = roi_height * self.trap_spacing_factor
                 y_min_float += trap_spacing_float
@@ -582,30 +593,23 @@ class CropImage():
                 y_min_draw = int(y_min_float)
                 y_max_draw = int(y_min_float + roi_height)
 
-                if y_max_draw > rotated.shape[0]: 
-                    break
+                if y_max_draw > rotated.shape[0]: break
                 
                 cv2.rectangle(display, (x_min_int, y_min_draw), (x_max_int, y_max_draw), guide_color, 2)
                 cv2.putText(display, f"#{trap_idx}", (x_min_int + 5, y_min_draw + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, guide_color, 2)
 
-            cv2.putText(display, f"Spacing: {self.trap_spacing_factor:.4f} | Contrast: {self.display_alpha:.1f} | Bright: {self.display_beta}", (10, 30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, utils.get_ui_color('text'), 2)
-            
-            instructions = [
-                "ENTER: Accept", 
-                "WASD: Adjust Spacing (W/S=0.001, A/D=0.01)",
-                "Contrast: J/L | Brightness: I/K",
-                "ENTER: Confirm | R: Restart Setup | ESC: Stop Analysis"
-                ]
-            utils.add_text_overlay(display, instructions)
+            utils.add_text_overlay(display, [
+                f"Spacing: {self.trap_spacing_factor:.4f}",
+                "WASD: Adjust Spacing",
+                "ENTER: Confirm"
+            ])
             
             utils.create_centered_window("Trap Positions Preview", self.window_width, self.window_height)
             cv2.imshow("Trap Positions Preview", display)
 
             key = cv2.waitKey(0) & 0xFF
-
-            if key == 13: break  # Enter
-            if key == 27: return 'stop'     # ESC
+            if key == 13: break 
+            if key == 27: return 'stop' 
             if key in (ord('r'), ord('R')): return 'restart'
 
             elif key in (ord('w'), ord('W')): self.trap_spacing_factor += 0.001
@@ -618,17 +622,14 @@ class CropImage():
             elif key in (ord('k'), ord('K')): self.display_beta = min(100, self.display_beta + 5)
             elif key in (ord('i'), ord('I')): self.display_beta = max(-100, self.display_beta - 5)
         
-        # --- FINAL: Re-populate all_trap_rois with the confirmed spacing ---
-        self.all_trap_rois = [self.roi_coords] # Start with Trap 1
+        # Populate final list
+        self.all_trap_rois = [self.roi_coords]
         y_min_float = float(self.roi_coords[0])
-        
         for trap_idx in range(2, self.max_traps + 1):
             trap_spacing_float = roi_height * self.trap_spacing_factor
             y_min_float += trap_spacing_float
-            
             y_min_draw = int(y_min_float)
             y_max_draw = int(y_min_float + roi_height)
-
             if y_max_draw > rotated.shape[0]:
                 self.all_trap_rois.append(None)
             else:
@@ -648,7 +649,7 @@ class CropImage():
         logger.info("   Batch selecting traps for analysis...")
         rotated_image = utils.rotate_image(test_image, self.rotation_angle)
         
-        selected_indices = set()
+        selected_indices = set()        
         
         h, w = rotated_image.shape[:2]
         scale = min((self.window_width * 0.95) / w, (self.window_height * 0.95) / h)
@@ -770,6 +771,7 @@ class CropImage():
 
     def save_trap_map(self, results_dir: Path) -> None:
         """Saves an image showing the final positions of all confirmed ROIs."""
+        #frame = self.file_reader.read_img(self.file_reader.tif_files[self.setup_frame_index])
         frame = self.file_reader.read_img(self.file_reader.tif_files[0])
         rotated = utils.rotate_image(frame, self.rotation_angle)
         

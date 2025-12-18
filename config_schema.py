@@ -11,10 +11,9 @@ import math
 import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Union, Optional, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, ValidationError
 
 logger = logging.getLogger(__name__)
-
 
 # =============================================================================
 # HELPER FUNCTIONS FOR AUTOMATIC f* CALCULATION  
@@ -326,3 +325,27 @@ class MFAConfig(BaseModel):
 
     class Config:
         extra = 'forbid'
+        
+# =============================================================================
+# 4. VALIDATION FUNCTION (THIS WAS MISSING)
+# =============================================================================
+
+def validate_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validates the raw dictionary against the MFAConfig schema.
+    Returns the validated configuration as a dictionary (with defaults applied).
+    """
+    try:
+        # Create Pydantic model (performs validation)
+        config_obj = MFAConfig(**config_dict)
+        
+        # Convert back to dictionary for compatibility with existing scripts
+        # Attempt .model_dump() (Pydantic v2) or fallback to .dict() (Pydantic v1)
+        if hasattr(config_obj, 'model_dump'):
+            return config_obj.model_dump()
+        else:
+            return config_obj.dict()
+            
+    except ValidationError as e:
+        logger.error(f"Configuration Validation Failed!\n{e}")
+        raise e

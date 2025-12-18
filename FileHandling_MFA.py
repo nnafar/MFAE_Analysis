@@ -16,7 +16,7 @@ import re
 import logging
 import pickle
 from datetime import date, datetime
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 from pathlib import Path
 
 import cv2
@@ -25,6 +25,8 @@ import pandas as pd
 from PIL import Image
 from PIL.ExifTags import TAGS
 import tifffile
+
+from ImageProcessing_MFA import CropImage
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +74,12 @@ class FileRead():
         enable_dye = self.params.get('dye_uptake_parameters', {}).get('enable', False)
         
         # --- 1. FILTER MEMBRANE FILES (STRICT) ---
-        # We ALWAYS attempt to filter by the membrane pattern first.
-        # This prevents mixing C1 and C2 files even if dye uptake is disabled.
         membrane_candidates = [f for f in all_files if mem_pattern in f.name]
         
         if membrane_candidates:
             self.tif_files = self.sort_by_time_index(membrane_candidates)
             logger.info(f"Membrane Channel: Found {len(self.tif_files)} files matching '{mem_pattern}'.")
         else:
-            # Fallback: If no files match "C1", assume it's a single-channel experiment 
-            # with simple filenames (e.g. "img_001.tif")
             logger.info(f"No files matched pattern '{mem_pattern}'. Loading all found .tif files as Membrane channel.")
             self.tif_files = self.sort_by_time_index(all_files)
 
@@ -119,12 +117,18 @@ class FileRead():
         self.time_data = self.extract_timestamps_from_metadata()
         
         if self.time_data is None:
-            logger.warning("Metadata extraction failed. Using manual frame interval.")
+            logger.warning("Metadata extraction failed. Using manual frame interval from config.")
             self.time_data = self.create_manual_timestamps()
+        else:
+            avg_dt = 0
+            if len(self.time_data) > 1:
+                avg_dt = (self.time_data[-1] - self.time_data[0]) / (len(self.time_data) - 1)
+            
+            logger.info(f"Time extraction successful | Method: {self.metadata_method_used}")
+            logger.info(f"Detected Frame Interval: {avg_dt:.4f} s")
             
         self.num_files = len(self.tif_files)
         
-        # Assuming constant pressure
         constant_pressure = self.params.get('constant_pressure', 1100)
         self.pressure_data = [constant_pressure] * self.num_files
         self.frames = np.arange(0, self.num_files)
@@ -337,6 +341,7 @@ class FileRead():
         return cv2.imread(str(filename), cv2.IMREAD_UNCHANGED)
 
 
+
 class FileSave():
     """Handles saving of analysis results."""
 
@@ -391,3 +396,60 @@ class FileSave():
         if filename is None:
             return self.output_dir
         return self.output_dir / filename
+    
+
+
+class FileHandlingMFA:
+    """
+    Orchestrates file reading and the interactive setup wizard.
+    Acts as a facade for FileRead and CropImage.
+    """
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.read_params = {
+            **config.get('experiment_parameters', {}),
+            'dye_uptake_parameters': config.get('dye_uptake_parameters', {})
+        }
+        
+        self.reader = FileRead(config['paths']['data_folder'], self.read_params)
+        self.saver = FileSave(config['paths']['data_folder']) 
+
+    def run_setup_wizard(self) -> Tuple[bool, Dict[str, Any]]:
+        """
+        1. Loads files.
+        2. Launches GUI for trap selection.
+        Returns: (success_flag, dictionary_of_results)
+        """
+        # 1. Load Files
+        try:
+            self.reader.run()
+        except Exception as e:
+            logger.error(f"Failed to load files: {e}")
+            return False, {}
+
+        # 2. Run Interactive Setup (CropImage)
+        if self.config['workflow_settings'].get('verify_traps_interactively', True):
+            gui_params = {
+                **self.config.get('experiment_parameters', {}),
+                **self.config.get('workflow_settings', {}),
+                **self.config.get('image_processing', {})
+            }
+            
+            processor = CropImage(gui_params)
+            status = processor.run(self.reader)
+            
+            if status != 'confirm':
+                logger.warning("Interactive setup cancelled.")
+                return False, {}
+                
+            return True, {
+                'rotation_angle': processor.rotation_angle,
+                'roi_coords': processor.roi_coords,
+                'trap_rois': processor.all_trap_rois,
+                'pipette_coords': processor.pipette_coords,
+                'selected_traps': processor.selected_traps, # <--- ADDED: Pass selection back
+                'image_processor': processor
+            }
+        else:
+            logger.error("Non-interactive mode is not currently supported in this version.")
+            return False, {}

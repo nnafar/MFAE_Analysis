@@ -24,7 +24,8 @@ class DyeUptakeAnalyzer:
                  threshold_prot: int,
                  threshold_body: int,
                  rupture_idx: Optional[int],
-                 params: Dict[str, Any]):
+                 params: Dict[str, Any],
+                 start_idx: int = 0):
         
         self.mem_imgs = membrane_rois
         self.dye_imgs = dye_rois
@@ -36,6 +37,7 @@ class DyeUptakeAnalyzer:
         
         self.rupture_idx = rupture_idx if rupture_idx is not None else len(membrane_rois)
         self.params = params
+        self.start_idx = start_idx 
         
         # Extract specific dye parameters
         dye_params = params.get('dye_uptake_parameters', {})
@@ -56,9 +58,15 @@ class DyeUptakeAnalyzer:
             'uptake_protrusion': [],
             'uptake_cell_body': [],
             'uptake_total': [],
-            'uptake_protrusion_norm': [],  # ΔF/F₀ (normalized)
+            # Baseline Normalized (dF/F0)
+            'uptake_protrusion_norm': [],  
             'uptake_cell_body_norm': [],
             'uptake_total_norm': [],
+            # Min-Max Normalized (0 to 1)
+            'uptake_protrusion_minmax': [],
+            'uptake_cell_body_minmax': [],
+            'uptake_total_minmax': [],
+            
             'spatial_profiles': [],
             'baseline_intensity': None,  # Store for export
             'pipette_x_px': pipette_x,
@@ -91,32 +99,30 @@ class DyeUptakeAnalyzer:
         
         # Calculate timing for logging
         pulse_time = time_data[min(self.pulse_frame, len(time_data)-1)] if time_data else 0
-        baseline_start_time = time_data[baseline_start] if baseline_start < len(time_data) else 0
-        baseline_end_time = time_data[baseline_end-1] if baseline_end > 0 and baseline_end-1 < len(time_data) else 0
         
+        # Log info
         logger.info(
             f"Dye Uptake Analysis:\n"
-            f"   Pulse: Frame {self.pulse_frame+1} (t={pulse_time:.1f}s)\n"
-            f"   Baseline: Frames {baseline_start+1}-{baseline_end} "
-            f"(t={baseline_start_time:.1f}-{baseline_end_time:.1f}s)\n"
+            f"   Start Frame: {self.start_idx+1} (Cell Entry)\n"
+            f"   Pulse Frame: {self.pulse_frame+1} (t={pulse_time:.1f}s)\n"
             f"   Baseline Intensity: {bg_level:.2f} a.u."
         )
 
-        # 2. Process Frames
+       # 2. Determine Processing Range
         valid_frames = min(len(self.mem_imgs), len(self.dye_imgs))
         if self.rupture_idx is not None:
              valid_frames = min(valid_frames, self.rupture_idx + 1)
         
-        for i in range(valid_frames):
+        # 3. Process Frames (Loop starts from start_idx)
+        for i in range(self.start_idx, valid_frames):
             mem_img = self.mem_imgs[i]
             dye_img = self.dye_imgs[i]
             
-            # Skip if None
             if mem_img is None or dye_img is None:
                 self._record_empty_frame()
                 continue
             
-            # Detect and stop at black frames
+            # Stop if image is effectively black/empty
             if np.mean(mem_img) < 1.0 or np.mean(dye_img) < 1.0:
                 break
             
@@ -159,7 +165,25 @@ class DyeUptakeAnalyzer:
             self.results['spatial_profiles'].append(profile)
 
         self.results['time_s'] = time_data[:len(self.results['uptake_total'])]
+        
+        # 4. Sync Time Vector (Slice time_data to match the frames we processed)
+        processed_count = len(self.results['uptake_total'])
+        self.results['time_s'] = time_data[self.start_idx : self.start_idx + processed_count]
+        
+        # 5. Min-Max Normalization (Process the entire trace at once)
+        self.results['uptake_total_minmax'] = self._calc_minmax(self.results['uptake_total'])
+        self.results['uptake_protrusion_minmax'] = self._calc_minmax(self.results['uptake_protrusion'])
+        self.results['uptake_cell_body_minmax'] = self._calc_minmax(self.results['uptake_cell_body'])
+        
         return self.results
+    
+    def _calc_minmax(self, data_list: List[float]) -> List[float]:
+        """Helper to calculate Min-Max normalization for a list."""
+        if not data_list: return []
+        arr = np.array(data_list)
+        d_min, d_max = np.min(arr), np.max(arr)
+        if (d_max - d_min) == 0: return np.zeros_like(arr).tolist()
+        return ((arr - d_min) / (d_max - d_min)).tolist()
 
     def _generate_dual_masks(self, mem_img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -186,13 +210,40 @@ class DyeUptakeAnalyzer:
             mask_prot[:margin, :] = 0    # Clip Top
             mask_prot[h-margin:, :] = 0  # Clip Bottom
         mask_prot[:, pip_x:] = 0         # Clip Right (Body side)
+        
+        # --- Debris Removal ---
+        # Only keep protrusion blobs that are attached to the pipette entrance (pip_x)
+        mask_prot = self._keep_connected_to_pipette(mask_prot, pip_x)
 
-       # 3. Body Mask (Right)
+        # 3. Body Mask (Right)
         _, bin_body = cv2.threshold(blurred, self.threshold_body, 255, cv2.THRESH_BINARY)
         mask_body = self._clean_mask(bin_body)
         mask_body[:, :pip_x] = 0         # Clip Left (Protrusion side)
 
         return mask_prot, mask_body
+    
+    def _keep_connected_to_pipette(self, mask: np.ndarray, pip_x: int, tolerance: int = 5) -> np.ndarray:
+        """
+        Filters the mask to remove disconnected debris 'ahead' of the tip.
+        Only keeps connected components that touch (or nearly touch) the pipette entrance line.
+        """
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        
+        # If nothing detected, return empty
+        if num_labels <= 1: return mask
+        
+        new_mask = np.zeros_like(mask)
+        
+        # Iterate over components (skip background 0)
+        for i in range(1, num_labels):
+            x, y, w, h_rect, area = stats[i]
+            
+            # The component's right-most edge is x + w
+            # Check if this edge is close to the pipette X coordinate
+            if (x + w) >= (pip_x - tolerance):
+                new_mask[labels == i] = 255
+                
+        return new_mask
     
     def _clean_mask(self, binary: np.ndarray) -> np.ndarray:
         """Helper for morphological cleanup."""
@@ -245,11 +296,21 @@ class DyeUptakeAnalyzer:
         color_prot = utils.get_bgr_color('secondary') 
         color_body = utils.get_bgr_color('tertiary')
         color_line = utils.get_bgr_color('text') # Black/White contrast depending on palette, default White for OpenCV
+        
         if color_line == (0,0,0): color_line = (255,255,255)
         
+        # Access frames using start_idx offset
         for i in range(num_frames):
-            mem_img = self.mem_imgs[i]
-            dye_img = self.dye_imgs[i]
+            # 1. Calculate the actual index in the raw image list
+            #    i = index in the results list (0, 1, 2...)
+            #    actual_idx = index in the raw file list (start_idx, start_idx+1...)
+            actual_idx = self.start_idx + i
+            
+            # Boundary check
+            if actual_idx >= len(self.mem_imgs): break
+            
+            mem_img = self.mem_imgs[actual_idx]
+            dye_img = self.dye_imgs[actual_idx]
             if mem_img is None or dye_img is None: continue
 
             # Re-generate masks
@@ -269,23 +330,36 @@ class DyeUptakeAnalyzer:
             cv2.line(display, (int(self.pipette_x), 0), (int(self.pipette_x), h), color_line, 1)
             
             # Add Frame Info
-            time_s = self.results['time_s'][i]
-            cv2.putText(display, f"t={time_s:.1f}s", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_line, 1)
+            # Note: self.results['time_s'] is already sliced to match the processed frames,
+            # so we use 'i' directly, not 'actual_idx'.
+            if i < len(self.results['time_s']):
+                time_s = self.results['time_s'][i]
+                cv2.putText(display, f"t={time_s:.1f}s", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_line, 1)
+            
             out.write(display)
             
         out.release()
         logger.info(f"Saved mask debug video: {save_path.name}")
 
     def export_csv(self, trap_idx: int, output_dir: Path):
-        """Saves numerical results including baseline info."""
+        """Saves numerical results including baseline info and min-max normalization."""
         df = pd.DataFrame({
             'Time_s': self.results['time_s'],
+            
+            # Absolute Data
             'Total_Intensity_Corrected': self.results['uptake_total'],
             'Protrusion_Intensity_Corrected': self.results['uptake_protrusion'],
             'Body_Intensity_Corrected': self.results['uptake_cell_body'],
+            
+            # Baseline Normalized (dF/F0)
             'Total_Normalized_dF_F0': self.results['uptake_total_norm'],
             'Protrusion_Normalized_dF_F0': self.results['uptake_protrusion_norm'],
-            'Body_Normalized_dF_F0': self.results['uptake_cell_body_norm']
+            'Body_Normalized_dF_F0': self.results['uptake_cell_body_norm'],
+            
+            # Min-Max Normalized (0-1)
+            'Total_MinMax': self.results['uptake_total_minmax'],
+            'Protrusion_MinMax': self.results['uptake_protrusion_minmax'],
+            'Body_MinMax': self.results['uptake_cell_body_minmax']
         })
         
         # Force directory creation

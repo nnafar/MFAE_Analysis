@@ -9,21 +9,18 @@ outputs the physical length of the cell protrusion over time.
 KEY ALGORITHMS:
 1.  Adaptive Preprocessing: Uses CLAHE to normalize lighting differences.
 2.  Sub-pixel Edge Detection: Uses gradient analysis to measure lengths with 
-    accuracy greater than the pixel grid (e.g., 50.4 px instead of 50 px).
-3.  CUSUM Rupture Detection: A statistical quality control algorithm used to 
-    detect the exact moment a cell bursts by monitoring "haze" inside the pipette.
+    accuracy greater than the pixel grid.
+3.  CUSUM Rupture Detection: Monitors "haze" intensity to find rupture events.
 """
 
-import os
 import logging
+import numpy as np
+import cv2
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
-
-import cv2
-import numpy as np
+from scipy.ndimage import gaussian_filter1d
 import pandas as pd
-from tqdm import tqdm
 
 import Utils_MFA as utils
 
@@ -51,6 +48,7 @@ class LineDetectionMFA:
         self.roi_images = roi_images
         self.pipette_coords = pipette_coords
         self.params = params or {}
+        self.rup_params = self.params.get('rupture_detection', {})
 
         # Interactive Window parameters
         workflow_settings = self.params.get('workflow_settings', {})
@@ -63,16 +61,17 @@ class LineDetectionMFA:
         self.window_height = int(base_h * self.window_scale)
         
         # CUMSUM parameters
-        self.entry_velocity_threshold = self.params.get('entry_velocity_threshold_px', 2.0)
-        self.min_cusum_baseline = self.params.get('min_cusum_baseline_frames', 5)
-        self.min_sigma = self.params.get('min_intensity_noise_floor', 0.2)
-        self.min_drift = self.params.get('min_drift_tolerance', 0.2)
-        self.min_cusum_thresh = self.params.get('min_cusum_threshold', 2.0)
+        self.entry_velocity_threshold = self.params.get('rupture_detection', {}).get('entry_velocity_threshold_px', 2.0)
+        self.min_cusum_baseline = self.params.get('rupture_detection', {}).get('min_cusum_baseline_frames', 5)
+        self.min_sigma = self.params.get('rupture_detection', {}).get('min_intensity_noise_floor', 0.2)
+        self.min_drift = self.params.get('rupture_detection', {}).get('min_drift_tolerance', 0.2)
+        self.min_cusum_thresh = self.params.get('rupture_detection', {}).get('min_cusum_threshold', 2.0)
         
         # Processing Parameters
-        self.min_area_threshold: int = self.params.get('min_area_threshold', 100)         
-        self.small_object_threshold: int = self.params.get('small_object_threshold', 50)  
-        self.wall_clip_margin: float = self.params.get('wall_clip_margin', 0.40)         
+        img_params = self.params.get('image_processing', {})
+        self.min_area_threshold: int = img_params.get('min_area_threshold', 100)         
+        self.small_object_threshold: int = img_params.get('small_object_threshold', 50)  
+        self.wall_clip_margin: float = img_params.get('wall_clip_margin', 0.40)         
 
         # --- Results Container ---
         self.results: Dict[str, Any] = {
@@ -84,6 +83,7 @@ class LineDetectionMFA:
             'downstream_intensities': [],   # Brightness values inside the pipette (for rupture)'
             'rupture_detected': False,      # Boolean flag for rupture event
             'rupture_frame_index': None,    # Frame index where rupture occurred
+            'rupture_time': None,           # Time in seconds
             'debug_images': [],             # Visualizations with overlays
             # Protrusion Detection
             'pipette_start_x_used': None,   # The X-coordinate used as "Zero"
@@ -92,8 +92,72 @@ class LineDetectionMFA:
             # Data
             'processing_metadata': {},      # Extra info
             'analysis_timestamp': datetime.now().isoformat(),
-            'detection_confidence': []      # Metric 0.0 or 1.0 indicating tracking success
+            'detection_confidence': [],     # Metric 0.0 or 1.0 indicating tracking success
+            'r_eff': 0.0,                   # Placeholder for calculation results
+            'time_seconds': []
         }
+        
+        # Expose debug frames for preview
+        self.debug_frames = []
+        
+    def run(self) -> Dict[str, Any]:
+        """
+        Facade method that routes to either interactive or automatic detection
+        based on the 'verify_traps_interactively' setting in params.
+        """
+        is_interactive = self.params.get('workflow_settings', {}).get('verify_traps_interactively', True)
+        
+        if is_interactive:
+            return self.run_detection()
+        else:
+            return self.run_automatic()
+        
+    def run_automatic(self) -> Dict[str, Any]:
+        """
+        Runs detection without user intervention (Batch Mode).
+        Automatically calculates thresholds using Otsu's method on the middle frame.
+        """
+        if not self.roi_images or all(frame is None for frame in self.roi_images):
+            self.results['signal'] = 'stop'
+            return self.results
+
+        # 1. Select Reference Frame (Middle of sequence is usually best)
+        mid_idx = len(self.roi_images) // 2
+        ref_image = self.roi_images[mid_idx] if self.roi_images[mid_idx] is not None else self.roi_images[0]
+        
+        if ref_image is None:
+            self.results['signal'] = 'stop'
+            return self.results
+
+        # 2. Determine Pipette Start X
+        # Use the value passed in __init__ (from setup phase)
+        # Ensure it's within bounds
+        pipette_x = self.pipette_coords[0]
+        w = ref_image.shape[1]
+        pipette_x = max(1, min(w - 1, pipette_x))
+        
+        # 3. Determine Threshold (Otsu)
+        # Extract ROI for stats (similar to interactive mode logic)
+        img_8bit = utils.normalize_to_8bit(ref_image)
+        h, w = img_8bit.shape[:2]
+        margin = int(h * self.wall_clip_margin)
+        
+        # Use protrusion area for statistics
+        if margin > 0:
+            roi_stats = img_8bit[margin:h-margin, :pipette_x]
+        else:
+            roi_stats = img_8bit[:, :pipette_x]
+            
+        if roi_stats.size > 0:
+            otsu_val, _ = cv2.threshold(roi_stats, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            threshold_prot = int(otsu_val)
+        else:
+            threshold_prot = 50 # Fallback
+            
+        logger.debug(f"Auto-calculated detection threshold: {threshold_prot}")
+        
+        # 4. Run Detection
+        return self.run_detection_with_parameters(pipette_x, threshold_prot)
 
     def run_detection(self) -> Dict[str, Any]:
         """
@@ -156,6 +220,9 @@ class LineDetectionMFA:
         self._generate_comprehensive_results()
 
         self.results['signal'] = 'confirm'
+        # Alias debug_images to debug_frames for consistency with Plotting/Preview
+        self.debug_frames = self.results['debug_images']
+        
         return self.results
 
     def run_detection_with_parameters(self, pipette_start_x: int, threshold_prot: int) -> Dict[str, Any]:
@@ -170,6 +237,8 @@ class LineDetectionMFA:
         self._process_all_frames(pipette_start_x, threshold_prot)
         self._generate_comprehensive_results()
         self.results['signal'] = 'confirm'
+        self.debug_frames = self.results['debug_images']
+        
         return self.results
     
     # =========================================================================
@@ -182,6 +251,7 @@ class LineDetectionMFA:
         """
         current_pipette_start_x = self.pipette_coords[0]
         image_width = test_image.shape[1]
+        # Safety check for coordinates
         if not (0 <= current_pipette_start_x < image_width): current_pipette_start_x = image_width // 2
 
         window_name = 'Pipette Entrance Positioning'
@@ -193,8 +263,16 @@ class LineDetectionMFA:
             original_h, original_w = test_image.shape[:2]
             
             # Scale logic to ensure overlay matches mouse/drawing coordinates
-            display_scale = min(self.window_width / original_w, self.window_height / original_h) * 0.9
-            x_offset = (self.window_width - int(original_w * display_scale)) // 2
+            if original_h > 0 and original_w > 0:
+                 display_scale = min(self.window_width / original_w, self.window_height / original_h) * 0.9
+            else:
+                 display_scale = 1.0
+                 
+            # Calculate display offset (centering)
+            # The prepare_display_image function centers the image on a black canvas
+            new_w = int(original_w * display_scale) if original_w > 0 else 100
+            x_offset = (self.window_width - new_w) // 2
+            
             display_pipette_x = x_offset + int(current_pipette_start_x * display_scale)
             
             # Use Pipette Color (Dark Blue)
@@ -558,13 +636,13 @@ class LineDetectionMFA:
         Measures brightness *ahead* of the cell tip (inside the empty pipette).
         High brightness here indicates a leak/rupture (cytoplasm spraying out).
         """
-        offset = self.params.get('rupture_offset_from_tip_px', 10)
+        offset = self.rup_params.get('rupture_offset_from_tip_px', 10)
+        width = self.rup_params.get('rupture_window_width_px', 15)
+
         x_end = int(tip_x - offset)
-        
-        width = self.params.get('rupture_window_width_px', 15)
         x_start = max(0, x_end - width)
         
-        if x_end <= x_start: return 0.0 
+        if x_end <= x_start: return 0.0
         
         h, w = image.shape[:2]
         margin = int(h * self.wall_clip_margin)
@@ -685,8 +763,8 @@ class LineDetectionMFA:
         # 5. Rupture Monitoring Box (Dark Red - Mask)
         # Matches the 'quaternary' color in the plot
         c_rupture = utils.get_ui_color('mask')
-        offset = self.params.get('rupture_offset_from_tip_px', 10)
-        width = self.params.get('rupture_window_width_px', 15)
+        offset = self.rup_params.get('rupture_offset_from_tip_px', 10)
+        width = self.rup_params.get('rupture_window_width_px', 15)
         
         x_end = int(tip_x - offset)
         x_start = max(0, x_end - width)
@@ -780,13 +858,26 @@ class LineDetectionMFA:
         velocity = np.diff(protrusions)
         
         # --- RESIDUE FILTER ---
-        # Find the first frame where the protrusion grows by more than ENTRY_VELOCITY_THRESHOLD_PX pixels in one step
-        # This ignores static residue (dirt), which has a velocity of ~0.
-        entry_idx = next((i for i, v in enumerate(velocity) if v > self.entry_velocity_threshold), 0)
+        # Find the index 'i' where the jump occurs (between frame i and i+1).
+        # We want to start analysis at frame i+1 (the first frame with the cell).
+        velocity_threshold = self.entry_velocity_threshold
+        jump_idx = next((i for i, v in enumerate(velocity) if v > velocity_threshold), None)
+        
+        if jump_idx is not None:
+            # Shift by +1: If jump is at 0 (Frame 0->1), start at Frame 1.
+            entry_idx = jump_idx + 1
+        else:
+            # No jump found: Cell likely present from start (Frame 0) or never enters.
+            entry_idx = 0
+            
+        # Safety: If the jump was at the very last frame, cap it.
+        if entry_idx >= len(protrusions):
+            entry_idx = 0
+        
+        # Save for other modules
+        self.results['entry_frame_index'] = entry_idx
         
         # Pass the trace starting from entry. 
-        # The function `_detect_rupture_from_haze` will now apply 
-        # an additional "settling buffer" to this slice.
         is_ruptured, local_idx = self._detect_rupture_from_haze(intensities[entry_idx:])
         
         self.results['rupture_detected'] = is_ruptured
