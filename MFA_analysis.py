@@ -251,6 +251,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             dye_results = uptake_analyzer.run(time_data)
             uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
             
+            uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])
+            
             Plotting_MFA.plot_dye_uptake_dashboard(
                 dye_results, trap_index + 1, dirs['dye'], params, pipette_x=det_res.get('pipette_start_x_used')
             )
