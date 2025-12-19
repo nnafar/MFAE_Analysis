@@ -15,7 +15,7 @@ paths:
   data_folder: "C:\\Data\\MFA_EP\\Experiment_207"
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "test_003"
+  experiment_id: "test_004"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -73,11 +73,11 @@ rupture_detection:
   
   # II. The "Timeline": When to start
   entry_velocity_threshold_px: 2.0  # Speed required to mark "Time 0" (Cell Entry); prevents analyzing static debris [px/frame].
-  cusum_settling_buffer: 3          # Frames to ignore immediately after entry.
+  cusum_settling_buffer: 5          # Frames to ignore immediately after entry. Default: 3. 
   
   # III. The "Baseline": Establishing "Normal"
-  min_cusum_baseline_frames: 5      # Safety: Minimum valid frames required to run the algorithm at all.
-  cusum_baseline_len: 5             # Frames used to calculate the "clean" reference brightness and noise level.
+  min_cusum_baseline_frames: 3      # Safety: Minimum valid frames required to run the algorithm at all.
+  cusum_baseline_len: 10             # Frames used to calculate the "clean" reference brightness and noise level.
   min_intensity_noise_floor: 0.2    # Safety: Minimum assumed noise level; prevents false alarms on perfectly clean videos.
   cusum_sensitivity_sigma: 0.7413   # Statistical constant to convert IQR to Standard Deviation (Do not change).
  

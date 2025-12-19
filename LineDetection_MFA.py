@@ -818,6 +818,10 @@ class LineDetectionMFA:
         # Estimate noise (Sigma)
         sigma = max(iqr * sensitivity, self.min_sigma)
         
+        if sigma < self.min_sigma * 1.5:  # Signal variance suspiciously low
+            logger.debug("Intensity variance below threshold. No rupture analysis possible.")
+            return False, None  # Don't force-trigger on clean data
+                
         # CUSUM Parameters (now configurable via config.yaml)
         drift_factor = self.params.get('cusum_drift_tolerance_factor', 0.5)
         threshold_factor = self.params.get('cusum_threshold_factor', 10.0)
