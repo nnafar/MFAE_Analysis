@@ -445,7 +445,7 @@ class DyeUptakeAnalyzer:
         save_path = output_dir / f"Trap_{trap_idx:02d}_Uptake_Data.csv"
         
         # Add baseline as header comment
-        with open(save_path, 'w') as f:
+        with open(save_path, 'w', newline='') as f:
             f.write(f"# Baseline Intensity (Cell Mask): {self.results['baseline_intensity']:.2f} a.u.\n")
             f.write(f"# Pulse Frame: {self.pulse_frame + 1}\n")
             df.to_csv(f, index=False)
