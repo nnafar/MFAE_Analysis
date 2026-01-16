@@ -28,11 +28,7 @@ UNITS = {'E': 'Pa', 'E1': 'Pa', 'E2': 'Pa', 'eta': 'Pa·s', 'eta1': 'Pa·s', 'et
 # --- 1. DYE UPTAKE DASHBOARD ---
 def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None):
     """
-    Generates the suite of Dye Uptake plots.
-    
-    UPDATES:
-    - Main plots (Absolute/Normalized) now show MEAN ONLY (Clean view).
-    - Added a separate 'Heterogeneity' plot to visualize StdDev and CV.
+    Generates the suite of Dye Uptake plots with Shaded SEM for ALL metrics including Min-Max.
     """
     utils.set_paper_style()
     output_dir = Path(output_dir)
@@ -47,42 +43,110 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
 
     # --- Common Plotting Settings ---
     marker_style = 'o-'
-    ms = 4 
+    ms = 4
 
-    # --- A. Timecourse (Absolute - CLEAN) ---
+    # --- Helper: Calculate SEM ---
+    def get_sem(std_key, count_key):
+        if std_key in results and count_key in results:
+            std = np.array(results[std_key])
+            count = np.array(results[count_key])
+            # Avoid division by zero
+            with np.errstate(divide='ignore', invalid='ignore'):
+                sem = std / np.sqrt(count)
+                sem[count == 0] = 0
+            return sem
+        return None
+
+    # --- A. Timecourse (Absolute with Shaded SEM) ---
     fig_abs, ax_abs = plt.subplots(figsize=(10, 6))
     ax_abs.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
     
-    # Plot Means Only
-    ax_abs.plot(t, results['uptake_total'], marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total')
-    ax_abs.plot(t, results['uptake_protrusion'], marker_style, color=colors['secondary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Protrusion')
-    ax_abs.plot(t, results['uptake_cell_body'], marker_style, color=colors['tertiary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Body')
+    series_config = [
+        ('uptake_total', 'uptake_total_std', 'count_total', colors['primary'], 'Total'),
+        ('uptake_protrusion', 'uptake_protrusion_std', 'count_protrusion', colors['secondary'], 'Protrusion'),
+        ('uptake_cell_body', 'uptake_cell_body_std', 'count_cell_body', colors['tertiary'], 'Body')
+    ]
+
+    for key_mean, key_std, key_count, color, label in series_config:
+        mean_data = np.array(results[key_mean])
+        
+        # 1. Plot Mean
+        ax_abs.plot(t, mean_data, marker_style, color=color, linewidth=2, markersize=ms, label=label)
+        
+        # 2. Add Shaded SEM
+        sem_data = get_sem(key_std, key_count)
+        if sem_data is not None:
+            ax_abs.fill_between(t, mean_data - sem_data, mean_data + sem_data, color=color, alpha=0.25, edgecolor=None)
     
-    ax_abs.set_ylabel("Mean Intensity (a.u.)")
+    ax_abs.set_ylabel("Mean Intensity (a.u.) ± SEM")
     ax_abs.set_xlabel("Time (s)")
-    ax_abs.set_title(f"Trap {trap_idx}: Dye Uptake (Mean Kinetics)")
+    ax_abs.set_title(f"Trap {trap_idx}: Dye Uptake (Absolute)")
     ax_abs.legend()
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Absolute.png")
     plt.close(fig_abs)
 
-    # --- B. Timecourse (Normalized - CLEAN) ---
+    # --- B. Timecourse (Normalized with Shaded SEM) ---
     fig_norm, ax_norm = plt.subplots(figsize=(10, 6))
     ax_norm.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
     
-    ax_norm.plot(t, results['uptake_total_norm'], marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total')
-    ax_norm.plot(t, results['uptake_protrusion_norm'], marker_style, color=colors['secondary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Protrusion')
-    ax_norm.plot(t, results['uptake_cell_body_norm'], marker_style, color=colors['tertiary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Body')
+    series_norm = [
+        ('uptake_total_norm', 'uptake_total_norm_std', 'count_total', colors['primary'], 'Total'),
+        ('uptake_protrusion_norm', 'uptake_protrusion_norm_std', 'count_protrusion', colors['secondary'], 'Protrusion'),
+        ('uptake_cell_body_norm', 'uptake_cell_body_norm_std', 'count_cell_body', colors['tertiary'], 'Body')
+    ]
+
+    for key_mean, key_std, key_count, color, label in series_norm:
+        mean_data = np.array(results[key_mean])
+        
+        # 1. Plot Mean
+        ax_norm.plot(t, mean_data, marker_style, color=color, linewidth=2, markersize=ms, label=label)
+
+        # 2. Add Shaded SEM
+        sem_data = get_sem(key_std, key_count)
+        if sem_data is not None:
+             ax_norm.fill_between(t, mean_data - sem_data, mean_data + sem_data, color=color, alpha=0.25, edgecolor=None)
     
-    ax_norm.set_ylabel("Normalized Fluorescence ($\Delta F/F_0$)")
+    ax_norm.set_ylabel("Normalized Fluorescence ($\Delta F/F_0$) ± SEM")
     ax_norm.set_xlabel("Time (s)")
     ax_norm.set_title(f"Trap {trap_idx}: Normalized Uptake")
     ax_norm.legend()
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Normalized.png")
     plt.close(fig_norm)
 
-    # --- C. Heterogeneity Analysis (New Plot) ---
-    # Top Panel: Standard Deviation (Raw Spread)
-    # Bottom Panel: Coefficient of Variation (Spread relative to Mean)
+    # --- C. Min-Max (Now with Shaded SEM) ---
+    if 'uptake_total_minmax' in results:
+        fig_mm, ax_mm = plt.subplots(figsize=(10, 6))
+        ax_mm.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
+        
+        # New Series config for Min-Max
+        # Note: We use the pre-calculated scaled Stds (uptake_total_minmax_std)
+        series_minmax = [
+            ('uptake_total_minmax', 'uptake_total_minmax_std', 'count_total', colors['primary'], 'Total'),
+            ('uptake_protrusion_minmax', 'uptake_protrusion_minmax_std', 'count_protrusion', colors['secondary'], 'Protrusion'),
+            ('uptake_cell_body_minmax', 'uptake_cell_body_minmax_std', 'count_cell_body', colors['tertiary'], 'Body')
+        ]
+
+        for key_mean, key_std, key_count, color, label in series_minmax:
+            if key_mean not in results: continue
+            mean_data = np.array(results[key_mean])
+            
+            # 1. Plot Mean
+            ax_mm.plot(t, mean_data, marker_style, color=color, linewidth=2, markersize=ms, label=label)
+            
+            # 2. Add Shaded SEM
+            # Important: get_sem divides the scaled std by sqrt(count)
+            sem_data = get_sem(key_std, key_count)
+            if sem_data is not None:
+                 ax_mm.fill_between(t, mean_data - sem_data, mean_data + sem_data, color=color, alpha=0.25, edgecolor=None)
+
+        ax_mm.set_ylabel("Normalized Intensity (0-1) ± SEM")
+        ax_mm.set_xlabel("Time (s)")
+        ax_mm.set_title(f"Trap {trap_idx}: Min-Max Normalized Uptake")
+        ax_mm.legend()
+        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_MinMax.png")
+        plt.close(fig_mm)
+
+    # --- D. Heterogeneity Analysis (StdDev & CV) ---
     if 'uptake_total_std' in results:
         fig_het, (ax_std, ax_cv) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
         
@@ -92,18 +156,15 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         ax_std.plot(t, results['uptake_protrusion_std'], marker_style, color=colors['secondary'], label='Protrusion')
         ax_std.plot(t, results['uptake_cell_body_std'], marker_style, color=colors['tertiary'], label='Body')
         ax_std.set_ylabel("Standard Deviation (a.u.)")
-        ax_std.set_title(f"Trap {trap_idx}: Spatial Heterogeneity (Noise)")
+        ax_std.set_title(f"Trap {trap_idx}: Spatial Heterogeneity (Physical Variation)")
         ax_std.legend(loc='upper left')
         
-        # 2. Coefficient of Variation Plot (CV = Std / Mean)
-        # Avoid division by zero
+        # 2. CV Plot
         def safe_cv(mean_arr, std_arr):
-            m = np.array(mean_arr)
-            s = np.array(std_arr)
-            # Mask small means to avoid huge CV spikes on background noise
+            m = np.array(mean_arr); s = np.array(std_arr)
             with np.errstate(divide='ignore', invalid='ignore'):
                 cv = s / m
-                cv[m < 10] = 0 # filter out background noise CV
+                cv[m < 10] = 0
             return cv
 
         cv_tot = safe_cv(results['uptake_total'], results['uptake_total_std'])
@@ -121,20 +182,6 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         
         utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Heterogeneity.png")
         plt.close(fig_het)
-
-    # --- D. Min-Max (Existing) ---
-    if 'uptake_total_minmax' in results:
-        fig_mm, ax_mm = plt.subplots(figsize=(10, 6))
-        ax_mm.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
-        ax_mm.plot(t, results['uptake_total_minmax'], marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total')
-        ax_mm.plot(t, results['uptake_protrusion_minmax'], marker_style, color=colors['secondary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Protrusion')
-        ax_mm.plot(t, results['uptake_cell_body_minmax'], marker_style, color=colors['tertiary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Body')
-        ax_mm.set_ylabel("Normalized Intensity (0-1)")
-        ax_mm.set_xlabel("Time (s)")
-        ax_mm.set_title(f"Trap {trap_idx}: Min-Max Normalized Uptake")
-        ax_mm.legend()
-        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_MinMax.png")
-        plt.close(fig_mm)
 
     # --- E. Kymograph & Diffusion (Existing logic) ---
     profiles = results['spatial_profiles']
