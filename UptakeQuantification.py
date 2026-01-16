@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 Quantification of Dye Uptake for Electroporation Experiments.
+
+ROLE IN PIPELINE:
+This module measures the fluorescence intensity changes inside the cell over time.
+It handles:
+1.  Mask Generation: separating Protrusion vs. Cell Body.
+2.  Baseline Correction: Subtracting initial cell brightness (F0).
+3.  Statistical Analysis: Calculating Mean AND Standard Deviation (heterogeneity).
+4.  Normalization: Computing dF/F0 and Min-Max scaling.
 """
 
 import logging
@@ -17,6 +25,9 @@ import Utils_MFA as utils
 logger = logging.getLogger(__name__)
 
 class DyeUptakeAnalyzer:
+    """
+    Analyzes fluorescence intensity within the mechanically trapped cell.
+    """
     def __init__(self, 
                  membrane_rois: List[np.ndarray], 
                  dye_rois: List[np.ndarray], 
@@ -31,7 +42,7 @@ class DyeUptakeAnalyzer:
         self.dye_imgs = dye_rois
         self.pipette_x = pipette_x
         
-        # Accept two distinct thresholds
+        # Accept two distinct thresholds for segmentation
         self.threshold_prot = threshold_prot
         self.threshold_body = threshold_body if threshold_body is not None else threshold_prot
         
@@ -39,7 +50,7 @@ class DyeUptakeAnalyzer:
         self.params = params
         self.start_idx = start_idx 
         
-        # Extract specific dye parameters
+        # Extract specific dye parameters from config
         dye_params = params.get('dye_uptake_parameters', {})
         self.pulse_frame = max(0, dye_params.get('pulse_frame', 10) - 1)
         self.baseline_len = dye_params.get('baseline_frames', 5)
@@ -53,15 +64,30 @@ class DyeUptakeAnalyzer:
         kernel = image_params.get('gaussian_kernel_size', (5,5))
         self.blur_kernel = tuple(kernel) if isinstance(kernel, (list, tuple)) else (5,5)
         
+        # Initialize results dictionary
         self.results = {
             'time_s': [],
+            
+            # Absolute Means (Corrected Intensity)
             'uptake_protrusion': [],
             'uptake_cell_body': [],
             'uptake_total': [],
+            
+            # Standard Deviations (Spatial Heterogeneity)
+            'uptake_protrusion_std': [],
+            'uptake_cell_body_std': [],
+            'uptake_total_std': [],
+            
             # Baseline Normalized (dF/F0)
             'uptake_protrusion_norm': [],  
             'uptake_cell_body_norm': [],
             'uptake_total_norm': [],
+            
+            # Normalized StdDevs
+            'uptake_protrusion_norm_std': [],
+            'uptake_cell_body_norm_std': [],
+            'uptake_total_norm_std': [],
+            
             # Min-Max Normalized (0 to 1)
             'uptake_protrusion_minmax': [],
             'uptake_cell_body_minmax': [],
@@ -74,11 +100,11 @@ class DyeUptakeAnalyzer:
         
     def run(self, time_data: List[float]) -> Dict[str, Any]:
         """
-        Main execution loop with baseline correction.
+        Main execution loop with baseline correction and StdDev calculation.
         
-        BASELINE CALCULATION:
-        Takes the N frames immediately BEFORE the pulse as baseline.
-        Calculates intensity WITHIN the cell mask to correct for autofluorescence/initial brightness.
+        BASELINE LOGIC:
+        We calculate F0 by looking INSIDE the cell mask during pre-pulse frames.
+        This corrects for autofluorescence, ensuring the signal starts at 0.
         """
         
         # 1. Calculate Baseline (Cell-Specific F0)
@@ -87,7 +113,7 @@ class DyeUptakeAnalyzer:
         
         baseline_vals = []
         
-        # Iterate through specific baseline indices to access both Mem and Dye channels
+        # Iterate through specific baseline indices
         for k in range(baseline_start, baseline_end):
             # Check bounds
             if k >= len(self.mem_imgs) or k >= len(self.dye_imgs): continue
@@ -107,7 +133,7 @@ class DyeUptakeAnalyzer:
                 if mean_val > 0:
                     baseline_vals.append(mean_val)
         
-        # Compute F0
+        # Compute F0 (Average initial brightness of the cell)
         if baseline_vals:
             bg_level = np.mean(baseline_vals)
         else:
@@ -125,7 +151,6 @@ class DyeUptakeAnalyzer:
         # Calculate timing for logging
         pulse_time = time_data[min(self.pulse_frame, len(time_data)-1)] if time_data else 0
         
-        # Log info
         logger.info(
             f"Dye Uptake Analysis:\n"
             f"   Start Frame: {self.start_idx+1} (Cell Entry)\n"
@@ -153,23 +178,33 @@ class DyeUptakeAnalyzer:
             
             # A. Create Dual Masks
             mask_prot, mask_body = self._generate_dual_masks(mem_img)
+            mask_total = cv2.bitwise_or(mask_prot, mask_body)
             
             # B. Quantify Dye Signal (Baseline Subtracted)
-            # Subtracting the CELL'S initial brightness, not just dark background
+            # Subtracting the CELL'S initial brightness (F0)
             dye_float = dye_img.astype(float)
             dye_corrected = dye_float - bg_level
             dye_corrected[dye_corrected < 0] = 0
             
-            # C. Quantify Mean Intensity in Each Region
-            val_prot = cv2.mean(dye_corrected, mask=mask_prot)[0]
-            val_body = cv2.mean(dye_corrected, mask=mask_body)[0]
-            mask_total = cv2.bitwise_or(mask_prot, mask_body)
-            val_total = cv2.mean(dye_corrected, mask=mask_total)[0]
+            # C. Quantify Mean AND Standard Deviation in Each Region
+            # cv2.meanStdDev returns tuple of numpy arrays: (mean, std_dev)
+            m_prot, s_prot = cv2.meanStdDev(dye_corrected, mask=mask_prot)
+            m_body, s_body = cv2.meanStdDev(dye_corrected, mask=mask_body)
+            m_total, s_total = cv2.meanStdDev(dye_corrected, mask=mask_total)
             
-            # D. Store Absolute Values (Corrected Intensity)
+            # Extract scalar values
+            val_prot = m_prot[0][0]; std_prot = s_prot[0][0]
+            val_body = m_body[0][0]; std_body = s_body[0][0]
+            val_total = m_total[0][0]; std_total = s_total[0][0]
+            
+            # D. Store Absolute Values (Corrected Intensity & Std)
             self.results['uptake_protrusion'].append(val_prot)
             self.results['uptake_cell_body'].append(val_body)
             self.results['uptake_total'].append(val_total)
+            
+            self.results['uptake_protrusion_std'].append(std_prot)
+            self.results['uptake_cell_body_std'].append(std_body)
+            self.results['uptake_total_std'].append(std_total)
             
             # E. Calculate and Store Normalized Values (ΔF/F₀)
             # Formula: (F_current - F0) / F0
@@ -179,14 +214,25 @@ class DyeUptakeAnalyzer:
                 norm_prot = val_prot / bg_level
                 norm_body = val_body / bg_level
                 norm_total = val_total / bg_level
+                
+                # Standard deviation scales linearly: Std(aX) = a*Std(X)
+                # So Normalized Std = Std_Corrected / F0
+                norm_std_prot = std_prot / bg_level
+                norm_std_body = std_body / bg_level
+                norm_std_total = std_total / bg_level
             else:
                 if i == 0:
                     logger.warning("Baseline intensity is near zero. Normalization (dF/F0) disabled.")
                 norm_prot = 0.0; norm_body = 0.0; norm_total = 0.0
+                norm_std_prot = 0.0; norm_std_body = 0.0; norm_std_total = 0.0
             
             self.results['uptake_protrusion_norm'].append(norm_prot)
             self.results['uptake_cell_body_norm'].append(norm_body)
             self.results['uptake_total_norm'].append(norm_total)
+            
+            self.results['uptake_protrusion_norm_std'].append(norm_std_prot)
+            self.results['uptake_cell_body_norm_std'].append(norm_std_body)
+            self.results['uptake_total_norm_std'].append(norm_std_total)
             
             # F. Spatial Profile (1D projection along X-axis)
             profile = self._calculate_spatial_profile(dye_corrected, mask_total)
@@ -291,12 +337,11 @@ class DyeUptakeAnalyzer:
 
     def _record_empty_frame(self):
         """Records zeros for a missing frame."""
-        self.results['uptake_protrusion'].append(0)
-        self.results['uptake_cell_body'].append(0)
-        self.results['uptake_total'].append(0)
-        self.results['uptake_protrusion_norm'].append(0)
-        self.results['uptake_cell_body_norm'].append(0)
-        self.results['uptake_total_norm'].append(0)
+        for key in ['uptake_protrusion', 'uptake_cell_body', 'uptake_total',
+                    'uptake_protrusion_std', 'uptake_cell_body_std', 'uptake_total_std',
+                    'uptake_protrusion_norm', 'uptake_cell_body_norm', 'uptake_total_norm',
+                    'uptake_protrusion_norm_std', 'uptake_cell_body_norm_std', 'uptake_total_norm_std']:
+            self.results[key].append(0)
         self.results['spatial_profiles'].append(np.zeros(10))
 
     # =========================================================================
@@ -324,7 +369,7 @@ class DyeUptakeAnalyzer:
         # Secondary = Red (Protrusion), Tertiary = Blue (Body)
         color_prot = utils.get_bgr_color('secondary') 
         color_body = utils.get_bgr_color('tertiary')
-        color_line = utils.get_bgr_color('text') # Black/White contrast depending on palette, default White for OpenCV
+        color_line = utils.get_bgr_color('text') # Black/White contrast depending on palette
         
         if color_line == (0,0,0): color_line = (255,255,255)
         
@@ -376,9 +421,12 @@ class DyeUptakeAnalyzer:
             'Time_s': self.results['time_s'],
             
             # Absolute Data
-            'Total_Intensity_Corrected': self.results['uptake_total'],
-            'Protrusion_Intensity_Corrected': self.results['uptake_protrusion'],
-            'Body_Intensity_Corrected': self.results['uptake_cell_body'],
+            'Total_Intensity_Mean': self.results['uptake_total'],
+            'Total_Intensity_Std': self.results['uptake_total_std'],
+            'Protrusion_Mean': self.results['uptake_protrusion'],
+            'Protrusion_Std': self.results['uptake_protrusion_std'],
+            'Body_Mean': self.results['uptake_cell_body'],
+            'Body_Std': self.results['uptake_cell_body_std'],
             
             # Baseline Normalized (dF/F0)
             'Total_Normalized_dF_F0': self.results['uptake_total_norm'],

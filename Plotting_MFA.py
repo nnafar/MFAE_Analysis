@@ -27,7 +27,13 @@ UNITS = {'E': 'Pa', 'E1': 'Pa', 'E2': 'Pa', 'eta': 'Pa·s', 'eta1': 'Pa·s', 'et
 
 # --- 1. DYE UPTAKE DASHBOARD ---
 def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None):
-    """Generates the suite of Dye Uptake plots (Absolute, Normalized, MinMax, Kymograph, Diffusion)."""
+    """
+    Generates the suite of Dye Uptake plots.
+    
+    UPDATES:
+    - Main plots (Absolute/Normalized) now show MEAN ONLY (Clean view).
+    - Added a separate 'Heterogeneity' plot to visualize StdDev and CV.
+    """
     utils.set_paper_style()
     output_dir = Path(output_dir)
     t = np.array(results['time_s'])
@@ -37,43 +43,92 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
     pulse_frame = params.get('dye_uptake_parameters', {}).get('pulse_frame', 10) - 1
     pulse_time = t[min(pulse_frame, len(t)-1)]
     
-    # Use passed pipette_x, fallback to dict, fallback to 0
     if pipette_x is None: pipette_x = results.get('pipette_x_px', 0)
 
-    # A. Timecourse (Absolute)
+    # --- Common Plotting Settings ---
+    marker_style = 'o-'
+    ms = 4 
+
+    # --- A. Timecourse (Absolute - CLEAN) ---
     fig_abs, ax_abs = plt.subplots(figsize=(10, 6))
     ax_abs.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
-    # Primary = Black (Total), Secondary = Red (Protrusion), Tertiary = Blue (Body)
-    ax_abs.plot(t, results['uptake_total'], '-', color=colors['primary'], linewidth=3, label='Total')
-    ax_abs.plot(t, results['uptake_protrusion'], '-', color=colors['secondary'], linewidth=2, alpha=0.9, label='Protrusion')
-    ax_abs.plot(t, results['uptake_cell_body'], '-', color=colors['tertiary'], linewidth=2, alpha=0.9, label='Body')
-    ax_abs.set_ylabel("Intensity (a.u.)")
+    
+    # Plot Means Only
+    ax_abs.plot(t, results['uptake_total'], marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total')
+    ax_abs.plot(t, results['uptake_protrusion'], marker_style, color=colors['secondary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Protrusion')
+    ax_abs.plot(t, results['uptake_cell_body'], marker_style, color=colors['tertiary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Body')
+    
+    ax_abs.set_ylabel("Mean Intensity (a.u.)")
     ax_abs.set_xlabel("Time (s)")
-    ax_abs.set_title(f"Trap {trap_idx}: Dye Uptake (Absolute)")
+    ax_abs.set_title(f"Trap {trap_idx}: Dye Uptake (Mean Kinetics)")
     ax_abs.legend()
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Absolute.png")
     plt.close(fig_abs)
 
-    # B. Timecourse (Normalized dF/F0)
+    # --- B. Timecourse (Normalized - CLEAN) ---
     fig_norm, ax_norm = plt.subplots(figsize=(10, 6))
     ax_norm.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
-    ax_norm.plot(t, results['uptake_total_norm'], '-', color=colors['primary'], linewidth=3, label='Total')
-    ax_norm.plot(t, results['uptake_protrusion_norm'], '-', color=colors['secondary'], linewidth=2, alpha=0.9, label='Protrusion')
-    ax_norm.plot(t, results['uptake_cell_body_norm'], '-', color=colors['tertiary'], linewidth=2, alpha=0.9, label='Body')
+    
+    ax_norm.plot(t, results['uptake_total_norm'], marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total')
+    ax_norm.plot(t, results['uptake_protrusion_norm'], marker_style, color=colors['secondary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Protrusion')
+    ax_norm.plot(t, results['uptake_cell_body_norm'], marker_style, color=colors['tertiary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Body')
+    
     ax_norm.set_ylabel("Normalized Fluorescence ($\Delta F/F_0$)")
     ax_norm.set_xlabel("Time (s)")
-    ax_norm.set_title(f"Trap {trap_idx}: Normalized Uptake (Baseline)")
+    ax_norm.set_title(f"Trap {trap_idx}: Normalized Uptake")
     ax_norm.legend()
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Normalized.png")
     plt.close(fig_norm)
 
-    # C. Timecourse (Min-Max Normalized)
+    # --- C. Heterogeneity Analysis (New Plot) ---
+    # Top Panel: Standard Deviation (Raw Spread)
+    # Bottom Panel: Coefficient of Variation (Spread relative to Mean)
+    if 'uptake_total_std' in results:
+        fig_het, (ax_std, ax_cv) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
+        
+        # 1. Standard Deviation Plot
+        ax_std.axvline(pulse_time, color=colors['pulse'], linestyle='--', alpha=0.5)
+        ax_std.plot(t, results['uptake_total_std'], marker_style, color=colors['primary'], label='Total')
+        ax_std.plot(t, results['uptake_protrusion_std'], marker_style, color=colors['secondary'], label='Protrusion')
+        ax_std.plot(t, results['uptake_cell_body_std'], marker_style, color=colors['tertiary'], label='Body')
+        ax_std.set_ylabel("Standard Deviation (a.u.)")
+        ax_std.set_title(f"Trap {trap_idx}: Spatial Heterogeneity (Noise)")
+        ax_std.legend(loc='upper left')
+        
+        # 2. Coefficient of Variation Plot (CV = Std / Mean)
+        # Avoid division by zero
+        def safe_cv(mean_arr, std_arr):
+            m = np.array(mean_arr)
+            s = np.array(std_arr)
+            # Mask small means to avoid huge CV spikes on background noise
+            with np.errstate(divide='ignore', invalid='ignore'):
+                cv = s / m
+                cv[m < 10] = 0 # filter out background noise CV
+            return cv
+
+        cv_tot = safe_cv(results['uptake_total'], results['uptake_total_std'])
+        cv_prot = safe_cv(results['uptake_protrusion'], results['uptake_protrusion_std'])
+        cv_body = safe_cv(results['uptake_cell_body'], results['uptake_cell_body_std'])
+
+        ax_cv.axvline(pulse_time, color=colors['pulse'], linestyle='--', alpha=0.5)
+        ax_cv.plot(t, cv_tot, marker_style, color=colors['primary'], label='Total')
+        ax_cv.plot(t, cv_prot, marker_style, color=colors['secondary'], label='Protrusion')
+        ax_cv.plot(t, cv_body, marker_style, color=colors['tertiary'], label='Body')
+        
+        ax_cv.set_ylabel("Coefficient of Variation ($\sigma/\mu$)")
+        ax_cv.set_xlabel("Time (s)")
+        ax_cv.set_title("Relative Uniformity (Lower = More Uniform)")
+        
+        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Heterogeneity.png")
+        plt.close(fig_het)
+
+    # --- D. Min-Max (Existing) ---
     if 'uptake_total_minmax' in results:
         fig_mm, ax_mm = plt.subplots(figsize=(10, 6))
         ax_mm.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
-        ax_mm.plot(t, results['uptake_total_minmax'], '-', color=colors['primary'], linewidth=3, label='Total')
-        ax_mm.plot(t, results['uptake_protrusion_minmax'], '-', color=colors['secondary'], linewidth=2, alpha=0.9, label='Protrusion')
-        ax_mm.plot(t, results['uptake_cell_body_minmax'], '-', color=colors['tertiary'], linewidth=2, alpha=0.9, label='Body')
+        ax_mm.plot(t, results['uptake_total_minmax'], marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total')
+        ax_mm.plot(t, results['uptake_protrusion_minmax'], marker_style, color=colors['secondary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Protrusion')
+        ax_mm.plot(t, results['uptake_cell_body_minmax'], marker_style, color=colors['tertiary'], linewidth=1.5, markersize=ms, alpha=0.9, label='Body')
         ax_mm.set_ylabel("Normalized Intensity (0-1)")
         ax_mm.set_xlabel("Time (s)")
         ax_mm.set_title(f"Trap {trap_idx}: Min-Max Normalized Uptake")
@@ -81,9 +136,10 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_MinMax.png")
         plt.close(fig_mm)
 
-    # D. Uptake Kymograph
+    # --- E. Kymograph & Diffusion (Existing logic) ---
     profiles = results['spatial_profiles']
     if profiles:
+        # Kymograph
         max_w = max(len(p) for p in profiles)
         kymo = np.zeros((len(profiles), max_w))
         for i, p in enumerate(profiles): kymo[i, :len(p)] = p
@@ -91,8 +147,6 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         fig, ax = plt.subplots(figsize=(10, 6))
         scale = params.get('scale_factor', 0.629)
         extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
-        
-        # Use Blue-to-Red Colormap
         mfa_cmap = utils.get_mfa_continuous_cmap()
         
         im = ax.imshow(kymo, aspect='auto', extent=extent, cmap=mfa_cmap, interpolation='nearest')
@@ -105,15 +159,11 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Kymograph.png")
         plt.close(fig)
 
-    # E. Diffusion Profiles
-    if profiles:
+        # Diffusion Profiles
         fig, ax = plt.subplots(figsize=(10, 6))
         n_curves = 7
         indices = np.linspace(0, len(t)-1, n_curves, dtype=int)
-        
-        # Use full Blue-to-Red gradient
         time_colors = utils.get_time_colormap(len(indices))
-        
         max_w = max(len(p) for p in profiles)
         x_axis = (pipette_x - np.arange(max_w)) * params.get('scale_factor', 0.629)
         
@@ -130,11 +180,10 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         ax.legend(title="Time")
         utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Diffusion_Profiles.png")
         plt.close(fig)
-        
-# --- 2. KYMOGRAPH PLOT ---
+
+# --- 2. KYMOGRAPH PLOT (Unchanged) ---
 def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Path, 
                    pipette_x: int, protrusions_px: List[float], time_data: List[float], params: Dict[str, Any]):
-    """Plots the mechanical kymograph with red detection trace."""
     if kymograph_matrix is None: return
     utils.set_paper_style()
     colors = utils.MFA_COLORS
@@ -162,7 +211,7 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     utils.save_plot_png(Path(output_dir) / f"trap_{trap_index:02d}_kymograph.png")
     plt.close(fig)
 
-# --- 3. PROTRUSION TRACE PLOT ---
+# --- 3. PROTRUSION TRACE PLOT (Unchanged) ---
 def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarray, protrusions: np.ndarray, 
                           trap_index: int, save_path: Path, params: Dict[str, Any], 
                           rupture_time: Optional[float], intensities: Optional[np.ndarray]):
@@ -173,28 +222,22 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
     gs = gridspec.GridSpec(3, 4, height_ratios=[1, 1.5, 1.5])
     fig.suptitle(f'Trap #{trap_index}: Protrusion Dynamics')
 
-    # Row 0: Images
     valid = [img for img in debug_images if img is not None]
     if valid:
         idxs = np.linspace(0, len(valid)-1, min(4, len(valid)), dtype=int)
         for i, idx in enumerate(idxs):
             ax = fig.add_subplot(gs[0, i])
-            # Display image as-is (OpenCV BGR -> RGB)
             ax.imshow(cv2.cvtColor(valid[idx], cv2.COLOR_BGR2RGB))
             ax.set_title(f"t={time_points[idx]:.1f}s")
             ax.axis('off')
 
-    # Row 1: Length
     ax1 = fig.add_subplot(gs[1, :])
-    # Use Black (primary) for data points
     ax1.plot(time_points, protrusions, 'o-', color=colors['primary'], markersize=4, label='Length')
     ax1.set_ylabel('Length (μm)')
     ax1.grid(True, alpha=0.3)
     
-    # Row 2: Rupture / Intensity
     ax2 = fig.add_subplot(gs[2, :], sharex=ax1)
     if intensities is not None:
-        # Use 'quaternary' (Dark Red) to match the box in the images
         ax2.plot(time_points, intensities, '-', color=colors['quaternary'], linewidth=2, label='Haze Intensity')
     ax2.set_ylabel('Intensity (a.u.)'); ax2.set_xlabel('Time (s)')
     ax2.grid(True, alpha=0.3)
@@ -207,9 +250,8 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
     utils.save_plot_png(save_path)
     plt.close(fig)
 
-# --- 4. FITTING ANALYSIS PLOT ---
+# --- 4. FITTING ANALYSIS PLOT (Unchanged) ---
 class MFAPlotter:
-    """Handles visualization for fitting results."""
     def __init__(self, fitter, params=None):
         self.fitter = fitter
         self.colors = utils.MFA_COLORS
@@ -221,26 +263,22 @@ class MFAPlotter:
         utils.set_paper_style()
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 12))
         
-        # Panel 1: Raw Data
         ax1.plot(self.fitter.t_raw, self.fitter.l_raw, 'o-', color=self.colors['primary'], alpha=0.6)
         if summary['rupture_detected']:
             ax1.axvline(summary['rupture_time_s'], color=self.colors['rupture'], linestyle='--')
         ax1.set_title('Raw Data')
         
-        # Panel 2: Best Fit
         ax2.plot(self.fitter.t_fit, self.fitter.l_fit, 'o', color=self.colors['primary'], alpha=0.5, label='Data')
         pred = self.fitter.predict(summary['best_model_name'], self.fitter.t_fit)
         ax2.plot(self.fitter.t_fit, pred, '-', color=self.colors['secondary'], linewidth=3, label='Fit')
         ax2.set_title(f"Best Fit: {summary['best_model_name']}")
         ax2.legend()
         
-        # Panel 3: Residuals
         res = self.fitter.l_fit - pred
         ax3.plot(self.fitter.t_fit, res, 'o-', color=self.colors['primary'])
         ax3.axhline(0, color='black')
         ax3.set_title('Residuals')
         
-        # Panel 4: Text Summary
         ax4.axis('off')
         ax4.set_title("Fitted Parameters")
         text_str = f"Model: {summary['best_model_name']}\n"
@@ -260,9 +298,7 @@ class MFAPlotter:
         utils.set_paper_style()
         fig, ax = plt.subplots(figsize=(18, 12))
         
-        # Use Black (primary) for Data points instead of lightgray
         ax.plot(self.fitter.t_fit, self.fitter.l_fit, 'o', color=self.colors['primary'], label='Data', alpha=0.6)
-        
         t_smooth = np.linspace(self.fitter.t_fit.min(), self.fitter.t_fit.max(), 300)
         
         for name, res in self.fitter.fit_results.items():
@@ -270,7 +306,6 @@ class MFAPlotter:
             l_pred = self.fitter.predict(name, t_smooth)
             if l_pred is not None:
                 style = '-' if name == self.fitter.best_fit_model_name else '--'
-                # Best fit = Red, Others = Default Cycle
                 color = self.colors['secondary'] if name == self.fitter.best_fit_model_name else None
                 ax.plot(t_smooth, l_pred, style, linewidth=2, color=color, label=f"{name} (R2={res['r_squared']:.3f})")
         
