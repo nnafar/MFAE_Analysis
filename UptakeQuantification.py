@@ -78,22 +78,47 @@ class DyeUptakeAnalyzer:
         
         BASELINE CALCULATION:
         Takes the N frames immediately BEFORE the pulse as baseline.
-        This captures the cell's pre-pulse state, including any mechanical
-        permeabilization from aspiration, and isolates the electrical effect.
+        Calculates intensity WITHIN the cell mask to correct for autofluorescence/initial brightness.
         """
         
-        # 1. Calculate Baseline (Background Level)
+        # 1. Calculate Baseline (Cell-Specific F0)
         baseline_start = max(0, self.pulse_frame - self.baseline_len)
         baseline_end = self.pulse_frame
         
-        baseline_imgs = self.dye_imgs[baseline_start:baseline_end]
+        baseline_vals = []
         
-        if not baseline_imgs:
-            logger.warning("Pulse frame is too early; cannot calculate baseline. Using 0.")
-            bg_level = 0.0
+        # Iterate through specific baseline indices to access both Mem and Dye channels
+        for k in range(baseline_start, baseline_end):
+            # Check bounds
+            if k >= len(self.mem_imgs) or k >= len(self.dye_imgs): continue
+            
+            mem_ref = self.mem_imgs[k]
+            dye_ref = self.dye_imgs[k]
+            
+            if mem_ref is not None and dye_ref is not None:
+                # Generate mask for this specific baseline frame
+                mask_prot_ref, mask_body_ref = self._generate_dual_masks(mem_ref)
+                mask_total_ref = cv2.bitwise_or(mask_prot_ref, mask_body_ref)
+                
+                # Measure dye intensity ONLY inside the cell mask
+                mean_val = cv2.mean(dye_ref, mask=mask_total_ref)[0]
+                
+                # Only add valid measurements
+                if mean_val > 0:
+                    baseline_vals.append(mean_val)
+        
+        # Compute F0
+        if baseline_vals:
+            bg_level = np.mean(baseline_vals)
         else:
-            bg_level = np.mean([np.mean(img) for img in baseline_imgs])
-        
+            # Fallback to global mean if detection failed entirely in baseline
+            logger.warning("Could not detect cell in baseline frames. Fallback to Global Mean.")
+            valid_baseline_imgs = [img for img in self.dye_imgs[baseline_start:baseline_end] if img is not None]
+            if valid_baseline_imgs:
+                bg_level = np.mean([np.mean(img) for img in valid_baseline_imgs])
+            else:
+                bg_level = 0.0
+
         # Store for export
         self.results['baseline_intensity'] = bg_level
         
@@ -105,7 +130,7 @@ class DyeUptakeAnalyzer:
             f"Dye Uptake Analysis:\n"
             f"   Start Frame: {self.start_idx+1} (Cell Entry)\n"
             f"   Pulse Frame: {self.pulse_frame+1} (t={pulse_time:.1f}s)\n"
-            f"   Baseline Intensity: {bg_level:.2f} a.u."
+            f"   Baseline Intensity (F0): {bg_level:.2f} a.u."
         )
 
        # 2. Determine Processing Range
@@ -129,7 +154,8 @@ class DyeUptakeAnalyzer:
             # A. Create Dual Masks
             mask_prot, mask_body = self._generate_dual_masks(mem_img)
             
-            # B. Quantify Dye Signal (Background Corrected)
+            # B. Quantify Dye Signal (Baseline Subtracted)
+            # Subtracting the CELL'S initial brightness, not just dark background
             dye_float = dye_img.astype(float)
             dye_corrected = dye_float - bg_level
             dye_corrected[dye_corrected < 0] = 0
@@ -140,12 +166,14 @@ class DyeUptakeAnalyzer:
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
             val_total = cv2.mean(dye_corrected, mask=mask_total)[0]
             
-            # D. Store Absolute Values
+            # D. Store Absolute Values (Corrected Intensity)
             self.results['uptake_protrusion'].append(val_prot)
             self.results['uptake_cell_body'].append(val_body)
             self.results['uptake_total'].append(val_total)
             
             # E. Calculate and Store Normalized Values (ΔF/F₀)
+            # Formula: (F_current - F0) / F0
+            # val_prot is already (F_current - F0), so we just divide by F0 (bg_level)
             epsilon = 1e-6
             if bg_level > epsilon:
                 norm_prot = val_prot / bg_level
@@ -283,6 +311,7 @@ class DyeUptakeAnalyzer:
         save_path = output_dir / f"Trap_{trap_idx:02d}_Mask_Debug.avi"
         
         # Get dimensions from the first valid frame
+        if not self.mem_imgs: return
         h, w = self.mem_imgs[0].shape[:2]
         fps = 5
         
@@ -369,7 +398,7 @@ class DyeUptakeAnalyzer:
         
         # Add baseline as header comment
         with open(save_path, 'w') as f:
-            f.write(f"# Baseline Intensity: {self.results['baseline_intensity']:.2f} a.u.\n")
+            f.write(f"# Baseline Intensity (Cell Mask): {self.results['baseline_intensity']:.2f} a.u.\n")
             f.write(f"# Pulse Frame: {self.pulse_frame + 1}\n")
             df.to_csv(f, index=False)
         
