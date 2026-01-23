@@ -73,25 +73,25 @@ rupture_detection:
   
   # --- TIMING ---
   entry_velocity_threshold_px: 2.0  # Speed to mark "Time 0" (Cell Entry)
-  cusum_settling_buffer: 3          # Frames to ignore after entry (let dust settle)
-  cusum_baseline_len: 5             # Frames to establish baseline noise
+  cusum_settling_buffer: 0        # [Was 3] Start immediately after entry
+  cusum_baseline_len: 5           # Keep at 5 for good statistics
+  cusum_baseline_lag: 2           # [Was 3] 2 frames (3.4s) is enough to skip the ramp
 
   # --- ALGORITHM TUNING (MULTI-MODE) ---
   
   # 1. SPIKE DETECTION (Transient Bursts)
   #    Formula: Signal > (Mean + Sigma * Threshold)
   enable_spike_check: True
-  spike_sigma_threshold: 5.0        # Sensitivity: Lower (3.0) = More sensitive, Higher (6.0) = Safer
+  spike_sigma_threshold: 3.5        # Sensitivity: Lower (3.0) = More sensitive, Higher (6.0) = Safer
 
   # 2. STEP DETECTION (Fast Leaks)
   #    Faster reaction time than CUSUM for catastrophic failure.
   enable_step_check: True
-  step_sigma_threshold: 5.0         # Sensitivity: Needs a distinct jump to trigger.
+  step_sigma_threshold: 4.0         # Sensitivity: Needs a distinct jump to trigger.
 
   # 3. DRIFT DETECTION (CUSUM - Slow Leaks)
-  #    Catches subtle, accumulating haze (Trap 2) that Spikes/Steps miss.
-  min_intensity_noise_floor: 3.0    # Minimum assumed noise (prevents div/0 errors on clean images)
-  min_drift_tolerance: 2.5          # Minimum change to register as drift (0.1 = very sensitive)
+  min_intensity_noise_floor: 1.0    # Minimum assumed noise (prevents div/0 errors on clean images)
+  min_drift_tolerance: 3.0          # Minimum change to register as drift (0.1 = very sensitive)
   min_cusum_threshold: 5.0          # Accumulation threshold to trigger alarm
   
   cusum_drift_tolerance_factor: 0.5 # (k) Multiplier for noise sigma

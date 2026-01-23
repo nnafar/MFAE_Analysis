@@ -801,7 +801,7 @@ class LineDetectionMFA:
         # A. IMMEDIATE LEVEL CHECK
         if valid_intensities:
             baseline_mean = np.median(valid_intensities[:5])
-            if baseline_mean > 12.0: 
+            if baseline_mean > 20.0: 
                  candidates.append((0, 'Immediate High Haze'))
 
         # B. Spike (Transient Burst)
@@ -843,27 +843,41 @@ class LineDetectionMFA:
     def _detect_intensity_anomaly(self, trace: List[float], mode: str = 'spike') -> Tuple[bool, Optional[int]]:
         """
         Unified detector for Spikes (transient) and Steps (sustained).
-        Uses Robust Z-Score: (Value - Median) / Sigma
         """
-        settling = self.params.get('cusum_settling_buffer', 3)
-        baseline_len = self.params.get('cusum_baseline_len', 5)
+        r_params = self.params.get('rupture_detection', {})
         
-        if len(trace) < settling + baseline_len + 1: return False, None
+        settling = r_params.get('cusum_settling_buffer', 3)
+        baseline_len = r_params.get('cusum_baseline_len', 5)
+        lag = r_params.get('cusum_baseline_lag', 0)
         
-        # Robust Baseline Calculation
-        baseline = trace[settling : settling + baseline_len]
-        median = np.median(baseline)
+        # We need enough data for: Settling + Baseline + Lag + Current Frame
+        min_len = settling + baseline_len + lag + 1
+        if len(trace) < min_len: return False, None
         
-        # Estimate noise (Sigma) using Inter-Quartile Range (IQR)
-        # This prevents outliers in the baseline from skewing the noise estimate.
-        q75, q25 = np.percentile(baseline, [75, 25])
-        iqr = q75 - q25
-        sigma = max(iqr * 0.7413, self.min_intensity_noise_floor)
-        
+        # Get threshold parameters
         threshold_sigma = self.spike_sigma if mode == 'spike' else self.step_sigma
         
-        for i in range(settling + baseline_len, len(trace)):
-            deviation = trace[i] - median
+        # Start scanning AFTER the initial baseline + lag period
+        for i in range(settling + baseline_len + lag, len(trace)):
+            
+            # DYNAMIC BASELINE: 
+            # Look back 'lag' frames from the current test window.
+            # Window: [i - lag - baseline_len : i - lag]
+            # Example: If i=20, lag=3, len=5 -> Baseline is frames 12-17.
+            
+            b_end = i - lag
+            b_start = b_end - baseline_len
+            
+            baseline = trace[b_start : b_end]
+            median = np.median(baseline)
+            
+            # Robust Noise Estimation (IQR)
+            q75, q25 = np.percentile(baseline, [75, 25])
+            iqr = q75 - q25
+            sigma = max(iqr * 0.7413, self.min_intensity_noise_floor)
+            
+            current_val = trace[i]
+            deviation = current_val - median
             
             # Only trigger on positive deviations (getting brighter)
             if deviation > (threshold_sigma * sigma):
