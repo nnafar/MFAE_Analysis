@@ -19,7 +19,6 @@ import cv2
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
-from scipy.ndimage import gaussian_filter1d
 import pandas as pd
 
 import Utils_MFA as utils
@@ -39,39 +38,50 @@ class LineDetectionMFA:
     def __init__(self, roi_images: List[np.ndarray], pipette_coords: List[int], params: Optional[Dict[str, Any]] = None) -> None:
         """
         Initialize the detection object.
-
-        Args:
-            roi_images: List of cropped numpy arrays (Regions of Interest).
-            pipette_coords: [x, y] coordinates of the pipette tip (user-selected).
-            params: Dictionary of configuration parameters.
         """
         self.roi_images = roi_images
         self.pipette_coords = pipette_coords
         self.params = params or {}
-        self.rup_params = self.params.get('rupture_detection', {})
+
+        # --- EXTRACT RUPTURE SUB-DICTIONARY ---
+        # This was the missing link. We must pull from the sub-dict, not the root.
+        r_params = self.params.get('rupture_detection', {}) 
 
         # Interactive Window parameters
-        workflow_settings = self.params.get('workflow_settings', {})
-        self.window_scale = workflow_settings.get('window_scale_factor', 1.0)
-        
-        # Apply scale to window dimensions
-        base_w = workflow_settings.get('interactive_window_width', 1200)
-        base_h = workflow_settings.get('interactive_window_height', 800)
+        self.window_scale = self.params.get('window_scale_factor', 1.0)
+        base_w = self.params.get('interactive_window_width', 1200)
+        base_h = self.params.get('interactive_window_height', 800)
         self.window_width = int(base_w * self.window_scale)
         self.window_height = int(base_h * self.window_scale)
         
-        # CUMSUM parameters
-        self.entry_velocity_threshold = self.params.get('rupture_detection', {}).get('entry_velocity_threshold_px', 2.0)
-        self.min_cusum_baseline = self.params.get('rupture_detection', {}).get('min_cusum_baseline_frames', 5)
-        self.min_sigma = self.params.get('rupture_detection', {}).get('min_intensity_noise_floor', 0.2)
-        self.min_drift = self.params.get('rupture_detection', {}).get('min_drift_tolerance', 0.2)
-        self.min_cusum_thresh = self.params.get('rupture_detection', {}).get('min_cusum_threshold', 2.0)
+        # --- Rupture Parameters (Read from r_params) ---
+        self.entry_velocity_threshold = r_params.get('entry_velocity_threshold_px', 2.0)
+        
+        self.rupture_offset = r_params.get('rupture_offset_from_tip_px', 5)
+        self.rupture_width = r_params.get('rupture_window_width_px', 5)       
+        
+        # 1. Spike (Transient Burst)
+        self.enable_spike = r_params.get('enable_spike_check', True)
+        self.spike_sigma = r_params.get('spike_sigma_threshold', 6.0)
+
+        # 2. Step (Fast Leak)
+        self.enable_step = r_params.get('enable_step_check', True)
+        self.step_sigma = r_params.get('step_sigma_threshold', 6.0)
+
+        # 3. CUSUM (Slow Drift)
+        self.min_cusum_baseline = r_params.get('min_cusum_baseline_frames', 5)
+        # This defaults to 1.0 if not found, making detection hyper-sensitive
+        self.min_intensity_noise_floor = r_params.get('min_intensity_noise_floor', 1.0)
+        
+        self.cusum_drift_tol = r_params.get('cusum_drift_tolerance_factor', 0.5)
+        self.cusum_thresh_fac = r_params.get('cusum_threshold_factor', 8.0)
+        self.min_drift = r_params.get('min_drift_tolerance', 0.2)
+        self.min_cusum_thresh = r_params.get('min_cusum_threshold', 2.0)
         
         # Processing Parameters
-        img_params = self.params.get('image_processing', {})
-        self.min_area_threshold: int = img_params.get('min_area_threshold', 100)         
-        self.small_object_threshold: int = img_params.get('small_object_threshold', 50)  
-        self.wall_clip_margin: float = img_params.get('wall_clip_margin', 0.40)         
+        self.min_area_threshold = self.params.get('min_area_threshold', 100)         
+        self.small_object_threshold = self.params.get('small_object_threshold', 50)  
+        self.wall_clip_margin = self.params.get('wall_clip_margin', 0.40)         
 
         # --- Results Container ---
         self.results: Dict[str, Any] = {
@@ -631,28 +641,6 @@ class LineDetectionMFA:
             
         return max(0.0, min(float(w), x_start + offset))
 
-    def _measure_downstream_intensity(self, image: np.ndarray, tip_x: float, pipette_x: int) -> float:
-        """
-        Measures brightness *ahead* of the cell tip (inside the empty pipette).
-        High brightness here indicates a leak/rupture (cytoplasm spraying out).
-        """
-        offset = self.rup_params.get('rupture_offset_from_tip_px', 10)
-        width = self.rup_params.get('rupture_window_width_px', 15)
-
-        x_end = int(tip_x - offset)
-        x_start = max(0, x_end - width)
-        
-        if x_end <= x_start: return 0.0
-        
-        h, w = image.shape[:2]
-        margin = int(h * self.wall_clip_margin)
-        y_start, y_end = margin, h - margin
-        if y_end <= y_start: y_start, y_end = 0, h
-            
-        roi = image[y_start:y_end, x_start:x_end]
-        if roi.size == 0: return 0.0
-        return np.mean(roi)
-
     def _process_all_frames(self, pipette_start_x: int, threshold: int) -> None:
         """
         Loops through frames to calculate Protrusion Length (Membrane Channel).
@@ -755,19 +743,15 @@ class LineDetectionMFA:
         cv2.line(debug_img, (pipette_x, 0), (pipette_x, debug_img.shape[0]), c_pip, 1)
         
         # 4. Detected Tip (Medium Red - Secondary)
-        # Calculated here for both drawing and the rupture box
         c_tip = utils.get_ui_color('pipette')
         tip_x = int(pipette_x - protrusion_len)
         cv2.line(debug_img, (tip_x, 0), (tip_x, debug_img.shape[0]), c_tip, 1)
 
         # 5. Rupture Monitoring Box (Dark Red - Mask)
-        # Matches the 'quaternary' color in the plot
         c_rupture = utils.get_ui_color('mask')
-        offset = self.rup_params.get('rupture_offset_from_tip_px', 10)
-        width = self.rup_params.get('rupture_window_width_px', 15)
-        
-        x_end = int(tip_x - offset)
-        x_start = max(0, x_end - width)
+                
+        x_end = int(tip_x - self.rupture_offset)
+        x_start = max(0, x_end - self.rupture_width)
         y_start, y_end = margin, h - margin
         
         if x_end > x_start:
@@ -785,107 +769,157 @@ class LineDetectionMFA:
     #                       RUPTURE DETECTION LOGIC
     # =========================================================================
     
-    def _detect_rupture_from_haze(self, intensity_trace: List[float]) -> Tuple[bool, Optional[int]]:
+    def _generate_comprehensive_results(self) -> None:
         """
-        Analyzes the intensity timeline to find sudden, sustained increases in brightness.
+        Runs multiple detectors to find the FIRST failure point.
+        Includes logic to handle 'Already Inside' cases (Trap 2, 14).
+        """
+        scale = self.params.get('scale_factor', 0.63)
+        self.results['protrusion_lengths_um'] = [p * scale for p in self.results['protrusion_lengths_px']]
         
-        Algorithm: CUSUM (Cumulative Sum)
-        CUSUM is better than a simple threshold at detecting "drifts" in the mean,
-        which is what a slow leak or haze buildup looks like.
-        """
-        # SAFETY: Need at least a few frames to analyze
-        if not intensity_trace or len(intensity_trace) < self.min_cusum_baseline: 
-            return False, None
+        protrusions_um = self.results['protrusion_lengths_um']
+        intensities = self.results['downstream_intensities']
+        
+        # --- 1. Determine Entry Point ---
+        # If the cell starts > 20um inside, it's "Already Inside". Start at index 0.
+        # Otherwise, wait for movement (velocity > threshold).
+        start_len = protrusions_um[0] if protrusions_um else 0
+        
+        if start_len > 20.0:
+            # Trap 2 Case: Already inside at frame 0
+            entry_idx = 0
+        else:
+            # Standard Case: Wait for entry
+            velocity = np.diff(self.results['protrusion_lengths_px'], prepend=0)
+            entry_idx = next((i for i, v in enumerate(velocity) if v > self.entry_velocity_threshold), 0)
+            if entry_idx >= len(protrusions_um): entry_idx = 0
+            
+        self.results['entry_frame_index'] = entry_idx
+        valid_intensities = intensities[entry_idx:]
+        candidates = []
 
-        # 1. READ PARAMETERS
-        settling_buffer = self.params.get('cusum_settling_buffer', 3)
-        baseline_len_req = self.params.get('cusum_baseline_len', 5)
-        sensitivity = self.params.get('cusum_sensitivity_sigma', 0.7413)
+        # A. IMMEDIATE LEVEL CHECK
+        if valid_intensities:
+            baseline_mean = np.median(valid_intensities[:5])
+            if baseline_mean > 12.0: 
+                 candidates.append((0, 'Immediate High Haze'))
+
+        # B. Spike (Transient Burst)
+        if self.enable_spike:
+            is_spike, spike_idx = self._detect_intensity_anomaly(valid_intensities, mode='spike')
+            if is_spike: candidates.append((spike_idx, 'Intensity Spike'))
         
-        # 2. Slice the trace to ignore the entry artifact
-        valid_trace = intensity_trace[settling_buffer:]
-        if len(valid_trace) < baseline_len_req: return False, None
+        # C. Step (Fast Leak)
+        if self.enable_step:
+            is_step, step_idx = self._detect_intensity_anomaly(valid_intensities, mode='step')
+            if is_step: candidates.append((step_idx, 'Intensity Step'))
+
+        # D. CUSUM (Slow Drift)
+        is_cusum, cusum_idx = self._detect_cusum_drift(valid_intensities)
+        if is_cusum: candidates.append((cusum_idx, 'Haze Drift'))
         
-        # 3. Establish Baseline
-        #    We must lock in the baseline BEFORE the rupture happens.
-        baseline_len = min(baseline_len_req, len(valid_trace) // 2)
-        baseline = valid_trace[:baseline_len]
+        # E. LATE SAFETY CHECK
+        # If we missed the event but final intensity > 25, it definitely ruptured.
+        if not candidates and valid_intensities:
+            final_mean = np.mean(valid_intensities[-5:])
+            if final_mean > 25.0:
+                # Find the steepest rise to mark the likely moment
+                grad = np.gradient(valid_intensities)
+                max_grad_idx = np.argmax(grad)
+                candidates.append((max_grad_idx, 'Late High Haze'))
+
+        # Arbitrate
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            best_idx, reason = candidates[0]
+            self.results['rupture_detected'] = True
+            self.results['rupture_frame_index'] = entry_idx + best_idx
+            self.results['rupture_reason'] = reason
+        else:
+            self.results['rupture_detected'] = False
+            self.results['rupture_frame_index'] = None
+            self.results['rupture_reason'] = None
         
+    def _detect_intensity_anomaly(self, trace: List[float], mode: str = 'spike') -> Tuple[bool, Optional[int]]:
+        """
+        Unified detector for Spikes (transient) and Steps (sustained).
+        Uses Robust Z-Score: (Value - Median) / Sigma
+        """
+        settling = self.params.get('cusum_settling_buffer', 3)
+        baseline_len = self.params.get('cusum_baseline_len', 5)
+        
+        if len(trace) < settling + baseline_len + 1: return False, None
+        
+        # Robust Baseline Calculation
+        baseline = trace[settling : settling + baseline_len]
+        median = np.median(baseline)
+        
+        # Estimate noise (Sigma) using Inter-Quartile Range (IQR)
+        # This prevents outliers in the baseline from skewing the noise estimate.
+        q75, q25 = np.percentile(baseline, [75, 25])
+        iqr = q75 - q25
+        sigma = max(iqr * 0.7413, self.min_intensity_noise_floor)
+        
+        threshold_sigma = self.spike_sigma if mode == 'spike' else self.step_sigma
+        
+        for i in range(settling + baseline_len, len(trace)):
+            deviation = trace[i] - median
+            
+            # Only trigger on positive deviations (getting brighter)
+            if deviation > (threshold_sigma * sigma):
+                return True, i
+                
+        return False, None
+
+    def _detect_cusum_drift(self, trace: List[float]) -> Tuple[bool, Optional[int]]:
+        """
+        Standard CUSUM (Cumulative Sum) Control Chart.
+        Detects small shifts in the mean that persist over time.
+        """
+        settling = self.params.get('cusum_settling_buffer', 3)
+        baseline_len = self.params.get('cusum_baseline_len', 5)
+        if len(trace) < settling + baseline_len: return False, None
+        
+        # Baseline
+        baseline = trace[settling : settling + baseline_len]
         mu = np.median(baseline)
         q75, q25 = np.percentile(baseline, [75 ,25])
         iqr = q75 - q25
         
-        # Estimate noise (Sigma)
-        sigma = max(iqr * sensitivity, self.min_sigma)
+        # Use the higher noise floor (3.0) to ignore background static
+        sigma = max(iqr * 0.7413, self.min_intensity_noise_floor)
         
-        if sigma < self.min_sigma * 1.5:  # Signal variance suspiciously low
-            logger.debug("Intensity variance below threshold. No rupture analysis possible.")
-            return False, None  # Don't force-trigger on clean data
-                
-        # CUSUM Parameters (now configurable via config.yaml)
-        drift_factor = self.params.get('cusum_drift_tolerance_factor', 0.5)
-        threshold_factor = self.params.get('cusum_threshold_factor', 10.0)
-        
-        k = max(self.min_drift, drift_factor * sigma)             # Drift tolerance
-        h = max(self.min_cusum_thresh, threshold_factor * sigma)  # Detection threshold
+        # CUSUM Parameters
+        k = max(self.min_drift, self.cusum_drift_tol * sigma)
+        h = max(self.min_cusum_thresh, self.cusum_thresh_fac * sigma)
         
         S_pos = 0.0
-        start_cand = None
-        
-        # Scan the valid trace
-        for i, x in enumerate(valid_trace):
+        for i, x in enumerate(trace[settling:]):
             deviation = x - mu - k
             if deviation > 0:
                 S_pos += deviation
-                if start_cand is None: start_cand = i
             else:
-                S_pos = max(0, S_pos + deviation)
-                if S_pos == 0: start_cand = None
+                S_pos = max(0, S_pos + deviation) # Reset accumulation if signal drops
             
             if S_pos > h:
-                found_idx = start_cand if start_cand is not None else i
-                return True, found_idx + settling_buffer
-
+                return True, i + settling
         return False, None
 
-    def _generate_comprehensive_results(self) -> None:
+    def _measure_downstream_intensity(self, image: np.ndarray, tip_x: float, pipette_x: int) -> float:
         """
-        Final data aggregation step.
-        Determines exactly WHEN to start looking for rupture by analyzing cell entry speed.
-        """
-        self.results['protrusion_lengths_um'] = [p * self.params.get('scale_factor', 0.63) for p in self.results['protrusion_lengths_px']]
+        Measures the mean brightness in a small window *ahead* of the cell tip.
+        Uses the settings loaded in __init__.
+        """        
+        x_end = int(tip_x - self.rupture_offset)
+        x_start = max(0, x_end - self.rupture_width)
         
-        protrusions = self.results['protrusion_lengths_px']
-        intensities = self.results['downstream_intensities']
+        if x_end <= x_start: return 0.0
         
-        # Calculate velocity (change in length between frames)
-        velocity = np.diff(protrusions)
-        
-        # --- RESIDUE FILTER ---
-        # Find the index 'i' where the jump occurs (between frame i and i+1).
-        # We want to start analysis at frame i+1 (the first frame with the cell).
-        velocity_threshold = self.entry_velocity_threshold
-        jump_idx = next((i for i, v in enumerate(velocity) if v > velocity_threshold), None)
-        
-        if jump_idx is not None:
-            # Shift by +1: If jump is at 0 (Frame 0->1), start at Frame 1.
-            entry_idx = jump_idx + 1
-        else:
-            # No jump found: Cell likely present from start (Frame 0) or never enters.
-            entry_idx = 0
-            
-        # Safety: If the jump was at the very last frame, cap it.
-        if entry_idx >= len(protrusions):
-            entry_idx = 0
-        
-        # Save for other modules
-        self.results['entry_frame_index'] = entry_idx
-        
-        # Pass the trace starting from entry. 
-        is_ruptured, local_idx = self._detect_rupture_from_haze(intensities[entry_idx:])
-        
-        self.results['rupture_detected'] = is_ruptured
-        self.results['rupture_frame_index'] = entry_idx + local_idx if is_ruptured and local_idx is not None else None
+        h, w = image.shape[:2]
+        margin = int(h * self.wall_clip_margin)
+        # Extract ROI
+        roi = image[max(0, margin):min(h, h-margin), max(0, x_start):min(w, x_end)]
+        return np.mean(roi) if roi.size > 0 else 0.0
 
     def export_results_to_csv(self, output_dir: Union[str, Path], experiment_id: str = "experiment", 
                               dir_full: Optional[Path] = None, dir_filtered: Optional[Path] = None) -> List[Path]:

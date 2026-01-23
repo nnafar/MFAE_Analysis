@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-CORRECTED Validation suite for MFA pipeline using synthetic data.
+COMPREHENSIVE VALIDATION SUITE for MFA Pipeline.
+
+Combines:
+1. Synthetic Data Validation (System Tests)
+2. Mathematical Unit Tests (Physics Checks)
 """
 
 import numpy as np
@@ -10,11 +14,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Import specific functions to test
 from Calculation_MFA import (
     calculate_recommended_fstar, 
+    compute_shear_metrics,
     jeffreys_length, 
     kelvin_voigt_length,
-    estimate_initial_parameters
+    burgers_length,
+    estimate_initial_parameters,
+    validate_jeffreys_parameters
 )
 from synthetic_data_generators import (
     create_synthetic_protrusion_image,
@@ -23,11 +31,12 @@ from synthetic_data_generators import (
 )
 
 # =============================================================================
-# TEST 1: Verify Son (2007) f* Calculation Against Published Table
+# TEST 1: Geometric Corrections (Son, 2007)
 # =============================================================================
 
 def test_son_factor_table1():
     """Tests if calculate_recommended_fstar() reproduces Table 1 from Son (2007)."""
+    # Format: (Height, Width, Expected_f*)
     test_cases = [
         (0.5, 10.0, 0.9365),   # Aspect ratio 0.05
         (1.0, 10.0, 0.8820),   # Aspect ratio 0.10
@@ -38,343 +47,202 @@ def test_son_factor_table1():
     
     for height, width, expected_fstar in test_cases:
         calculated_fstar, _, _ = calculate_recommended_fstar(width, height)
-        aspect_ratio = min(height, width) / max(height, width)
         error = abs(calculated_fstar - expected_fstar)
         
-        # TOLERANCE: 0.5% accounts for numerical precision differences
         assert error < 0.005, (
-            f"f* mismatch at aspect ratio {aspect_ratio:.2f}\n"
-            f"  Expected: {expected_fstar:.4f}, Calculated: {calculated_fstar:.4f}, "
-            f"Error: {error:.6f} ({error/expected_fstar*100:.2f}%)"
+            f"f* mismatch. Expected: {expected_fstar:.4f}, Got: {calculated_fstar:.4f}"
         )
-    
-    print("✓ Son (2007) f* calculation validated (all cases within 0.5%)")
-
+    print("✓ Son (2007) f* calculation validated")
 
 # =============================================================================
-# TEST 2: Verify Jeffreys Model Reduces to Kelvin-Voigt in Limits
+# TEST 2: Viscoelastic Model Physics
 # =============================================================================
 
 def test_jeffreys_newtonian_limit():
     """Tests if Jeffreys model reduces to Kelvin-Voigt when η₂ → ∞."""
-    time = np.linspace(0, 10, 100)
+    time = np.linspace(0, 10, 50)
+    # Huge eta2 effectively removes the series dashpot (no linear flow)
     L_jeffreys = jeffreys_length(time, 5.0, 1000.0, 1.0, 1000.0, 500.0, 1e12)
-    L_kelvin_voigt = kelvin_voigt_length(time, 5.0, 1000.0, 1.0, 1000.0, 500.0)
+    L_kelvin = kelvin_voigt_length(time, 5.0, 1000.0, 1.0, 1000.0, 500.0)
     
-    assert np.allclose(L_jeffreys, L_kelvin_voigt, rtol=0.01)
+    assert np.allclose(L_jeffreys, L_kelvin, rtol=0.01)
     print("✓ Jeffreys → Kelvin-Voigt limit validated")
 
+def test_burgers_physics():
+    """Tests the 4-parameter Burgers model behavior."""
+    time = np.linspace(0, 10, 50)
+    # Burgers = Maxwell + Kelvin-Voigt
+    # If we make the Kelvin part rigid (E2 -> inf), it should look like Maxwell (Linear + Jump)
+    L_burgers = burgers_length(time, 5.0, 1000.0, 1.0, 
+                               E1=1000.0, eta1=5000.0, 
+                               E2=1e9, eta2=5000.0)
+    
+    # Maxwell slope check: (r_eff * dP) / (3 * pi * eta1)
+    expected_slope = (5.0 * 1000.0) / (3 * np.pi * 5000.0)
+    actual_slope = (L_burgers[-1] - L_burgers[0]) / (time[-1] - time[0])
+    
+    assert np.isclose(actual_slope, expected_slope, rtol=0.1)
+    print("✓ Burgers model physics validated")
 
 # =============================================================================
-# TEST 3: Test CUSUM Rupture Detection on Synthetic Signal
+# TEST 3: Shear Stress & Rate Calculations
+# =============================================================================
+
+def test_shear_metrics():
+    """Validates shear calculations against dimensional analysis."""
+    W, H, L = 10.0, 5.0, 100.0 # microns
+    dP = 1000.0 # Pa
+    visc = 0.001 # Pa.s
+    
+    metrics = compute_shear_metrics(W, H, L, dP, visc)
+    
+    # 1. Check for required keys
+    assert "Wall_Shear_Stress_Pa" in metrics
+    assert "Wall_Shear_Rate_s1" in metrics
+    
+    # 2. Physics check: Shear Rate ≈ Stress / Viscosity
+    # (Approximate for Newtonian fluid in rectangular channel)
+    sigma = metrics["Wall_Shear_Stress_Pa"]
+    gamma = metrics["Wall_Shear_Rate_s1"]
+    
+    calc_visc = sigma / gamma
+    
+    # Should be close to input viscosity (order of magnitude check due to shape factors)
+    assert 0.0005 < calc_visc < 0.002
+    print("✓ Shear stress/rate calculations validated")
+
+# =============================================================================
+# TEST 4: Rupture Detection (CUSUM)
 # =============================================================================
 
 def test_cusum_detects_synthetic_rupture():
-    """
-    Tests CUSUM rupture detection on synthetic signal.
-    
-    **Key improvements:**
-    1. Sets random seed for reproducibility (no more flaky tests!)
-    2. Uses cleaner signal (lower noise, bigger jump)
-    3. Adjusts CUSUM parameters to reduce false positives
-    """
-    # CRITICAL: Set random seed for reproducible tests
+    """Tests CUSUM detection on a noisy synthetic trace."""
     np.random.seed(42)
-    
-    # Generate cleaner signal (less noise, bigger jump)
     trace, ground_truth = create_synthetic_rupture_trace(
-        n_frames=100,
-        rupture_frame=50,
-        baseline_mean=100.0,
-        baseline_noise=1.0,       # Reduced from 2.0 (cleaner baseline)
-        post_rupture_mean=135.0,  # Increased from 130 (bigger jump)
-        transition_frames=5       # Slower transition (more realistic)
+        n_frames=100, rupture_frame=50,
+        baseline_mean=100.0, baseline_noise=1.0,
+        post_rupture_mean=135.0, transition_frames=5
     )
     
+    # Instantiate detector with strict but valid params
     from LineDetection_MFA import LineDetectionMFA
-    
-    dummy_image = np.zeros((50, 200), dtype=np.uint8)
-    
-    # ADJUSTED CUSUM PARAMETERS to reduce false positives
     detector = LineDetectionMFA(
-        roi_images=[dummy_image],
-        pipette_coords=[100, 25],
+        roi_images=[np.zeros((10,10))], pipette_coords=[0,0],
         params={'rupture_detection': {
             'enable': True,
-            'cusum_settling_buffer': 5,        # Increased from 3 (skip more early frames)
-            'cusum_baseline_len': 10,          # Increased from 5 (better noise estimate)
-            'min_intensity_noise_floor': 0.5,  # Increased from 0.2 (less aggressive)
-            'cusum_sensitivity_sigma': 0.7413,
-            'cusum_drift_tolerance_factor': 1.0,  # Increased from 0.5 (less sensitive)
-            'cusum_threshold_factor': 12.0,       # Increased from 10.0 (higher bar)
-            'min_drift_tolerance': 0.5,          # Increased from 0.2
-            'min_cusum_threshold': 5.0           # Increased from 2.0
+            'cusum_settling_buffer': 5,
+            'cusum_baseline_len': 10,
+            'min_intensity_noise_floor': 0.5,
+            'cusum_threshold_factor': 10.0
         }}
     )
     
     detected, detected_frame = detector._detect_rupture_from_haze(trace.tolist())
     
-    # Validation
-    assert detected == True, (
-        f"Failed to detect rupture.\n"
-        f"Signal: {trace.min():.1f} → {trace.max():.1f}\n"
-        f"This suggests CUSUM is not sensitive enough."
-    )
-    
-    # Allow ±5 frame tolerance (accounts for transition period)
-    frame_error = abs(detected_frame - ground_truth['rupture_frame'])
-    assert frame_error <= 5, (
-        f"Detected at frame {detected_frame}, expected ~{ground_truth['rupture_frame']}\n"
-        f"Error: {frame_error} frames (tolerance: ±5)\n"
-        f"Baseline mean: {trace[:50].mean():.1f}, Post-rupture: {trace[55:].mean():.1f}"
-    )
-    
-    print(f"✓ CUSUM detected rupture at frame {detected_frame} (true: {ground_truth['rupture_frame']}, error: {frame_error} frames)")
+    assert detected is True
+    assert abs(detected_frame - ground_truth['rupture_frame']) <= 5
+    print(f"✓ CUSUM detected rupture at frame {detected_frame} (True: 50)")
 
 # =============================================================================
-# TEST 4: Test Protrusion Length Measurement on Synthetic Image
+# TEST 5: Protrusion Measurement Accuracy
 # =============================================================================
 
 def test_protrusion_length_measurement():
-    """Tests protrusion length measurement accuracy."""
-    # CRITICAL: Set random seed for reproducibility
+    """Tests sub-pixel length measurement."""
     np.random.seed(42)
-    
-    protrusion_length_true = 30.5
-    
-    image, ground_truth = create_synthetic_protrusion_image(
-        width=200,
-        height=50,
-        protrusion_length_px=protrusion_length_true,
-        pipette_x=150,
-        cell_brightness=180,
-        background_brightness=50,
-        noise_level=5.0,
-        blur_sigma=1.0
-    )
+    true_len = 30.5
+    image, _ = create_synthetic_protrusion_image(protrusion_length_px=true_len)
     
     from LineDetection_MFA import LineDetectionMFA
-    
     detector = LineDetectionMFA(
-        roi_images=[image],
-        pipette_coords=[ground_truth['pipette_x'], 25],
-        params={
-            'scale_factor': 1.0,
-            'image_processing': {
-                'wall_clip_margin': 0.25,
-                'clahe_clip_limit': 2.0,
-                'clahe_tile_grid_size': [8, 8],
-                'gaussian_kernel_size': [3, 3]
-            },
-            'workflow_settings': {
-                'verify_traps_interactively': False
-            }
-        }
+        roi_images=[image], pipette_coords=[150, 25],
+        params={'scale_factor': 1.0, 'workflow_settings': {'verify_traps_interactively': False}}
     )
     
-    results = detector.run_automatic()
-    measured_lengths = results.get('protrusion_lengths_px', [])
+    res = detector.run_automatic()
+    measured = res['protrusion_lengths_px'][0]
     
-    assert len(measured_lengths) == 1, f"Expected 1 measurement, got {len(measured_lengths)}"
-    measured_length = measured_lengths[0]
-    error = abs(measured_length - protrusion_length_true)
-    
-    # TOLERANCE: ±2.5 pixels is realistic for blurred edges with noise
-    # Justification: Gaussian blur (σ=1.0) spreads edge over ~3 pixels
-    #                Sub-pixel detection has ±1-2 pixel uncertainty
-    #                This corresponds to 7-8% relative error, which is excellent
-    assert error <= 2.5, (
-        f"Protrusion measurement inaccurate:\n"
-        f"  True: {protrusion_length_true:.2f} px\n"
-        f"  Measured: {measured_length:.2f} px\n"
-        f"  Error: {error:.2f} px (tolerance: ±2.5)\n"
-        f"  Relative error: {error/protrusion_length_true*100:.1f}%"
-    )
-    
-    print(f"✓ Protrusion: {measured_length:.2f} px (true: {protrusion_length_true:.2f} px, "
-          f"error: {error:.2f} px = {error/protrusion_length_true*100:.1f}%)")
+    assert abs(measured - true_len) < 2.5
+    print(f"✓ Protrusion length accuracy: {abs(measured - true_len):.2f} px error")
 
 # =============================================================================
-# TEST 5: Test Parameter Recovery from Synthetic Fitting Data
+# TEST 6: Parameter Recovery (Fitting)
 # =============================================================================
 
 def test_parameter_recovery_jeffreys():
-    """
-    Tests that fitting produces reasonable results, even if exact parameter recovery fails.
-    
-    **Reality check:**
-    Viscoelastic parameter fitting is ILL-CONDITIONED. Multiple parameter combinations
-    can produce nearly identical curves. This is a fundamental limitation, not a bug.
-    
-    **What we CAN validate:**
-    1. The fit converges (doesn't crash or return NaN)
-    2. R² is high (the curve matches the data well)
-    3. Parameters are in the right ballpark (order of magnitude)
-    4. The fitted curve could plausibly come from a viscoelastic material
-    
-    **What we CANNOT expect:**
-    Exact recovery of E, η₁, η₂ from noisy data with 50 points.
-    """
-    E_true, eta1_true, eta2_true = 3000.0, 5000.0, 15000.0
-    r_eff, delta_p = 5.0, 1000.0
-    
-    # Generate MORE data points and LESS noise (easier problem)
-    time, lengths, ground_truth = create_synthetic_time_series(
-        n_frames=100,      # Increased from 50 to 100
-        model='jeffreys',
-        E=E_true,
-        eta1=eta1_true,
-        eta2=eta2_true,
-        r_eff=r_eff,
-        delta_p=delta_p,
-        noise_level_um=0.1,  # Reduced from 0.2 (cleaner data)
-        frame_interval=1.0
+    """Tests if the fitter can recover E, eta1, eta2 from synthetic data."""
+    # Generate clean data
+    time, lengths, gt = create_synthetic_time_series(
+        n_frames=100, model='jeffreys',
+        E=3000, eta1=5000, eta2=15000,
+        noise_level_um=0.05
     )
-    
-    print(f"\n[DEBUG] Generated {len(time)} points, range: {lengths.min():.2f}-{lengths.max():.2f} μm")
     
     from Fitting_MFA import FittingMFA
+    fitter = FittingMFA(time, lengths, r_eff=5.0, delta_p=1000.0)
     
-    fitter = FittingMFA(t_data=time, l_data=lengths, r_eff=r_eff, delta_p=delta_p, C=1.0)
-    
-    fit_params = {
-        'debug_mode': False,
+    # Use global optimization for best chance of recovery
+    params = {
         'use_global_optimization': True,
-        'exclude_early_fraction': 0.0,
-        'enable_outlier_rejection': False,
-        'enable_rupture_detection': False,
-        'enable_smoothing': False,
-        'default_initial_guess': [3000.0, 5000.0, 15000.0],
-        'fitting_bounds': {
-            'E': [100.0, 100000.0],
-            'eta1': [100.0, 500000.0],
-            'eta2': [500.0, 1000000.0]
-        },
-        'clipping_bounds_guess': {
-            'E': [500.0, 25000.0],
-            'eta1': [1000.0, 50000.0],
-            'eta2': [5000.0, 100000.0]
-        },
-        'jeffreys_maxfev': 50000
+        'fitting_bounds': {'E': [100, 1e5], 'eta1': [100, 5e5], 'eta2': [500, 1e6]},
+        'jeffreys_maxfev': 10000
     }
+    fitter.run(params)
     
-    fitter.run(params=fit_params)
-    summary = fitter.get_best_fit_summary()
+    res = fitter.fit_results.get('Jeffreys')
+    assert res is not None
+    assert res['r_squared'] > 0.95
     
-    assert summary is not None, "Fitting failed to produce results"
+    # Check parameters (allow 20% tolerance due to ill-posed nature of viscoelastic fitting)
+    p = dict(zip(res['param_names'], res['params']))
+    assert abs(p['E'] - 3000)/3000 < 0.2
     
-    # Check if Jeffreys was fitted
-    if 'Jeffreys' in fitter.fit_results and fitter.fit_results['Jeffreys']['params'] is not None:
-        fitted_params = dict(zip(
-            fitter.fit_results['Jeffreys']['param_names'],
-            fitter.fit_results['Jeffreys']['params']
-        ))
-        r2 = fitter.fit_results['Jeffreys']['r_squared']
-    else:
-        pytest.skip("Jeffreys fit failed - can happen with difficult data")
-    
-    E_fitted = fitted_params['E']
-    eta1_fitted = fitted_params['eta1']
-    eta2_fitted = fitted_params['eta2']
-    
-    error_E = abs(E_fitted - E_true) / E_true * 100
-    error_eta1 = abs(eta1_fitted - eta1_true) / eta1_true * 100
-    error_eta2 = abs(eta2_fitted - eta2_true) / eta2_true * 100
-    
-    print(f"[DEBUG] Fitted vs True:")
-    print(f"  E:   {E_fitted:.0f} Pa (true: {E_true:.0f}, error: {error_E:.1f}%)")
-    print(f"  η₁:  {eta1_fitted:.0f} Pa·s (true: {eta1_true:.0f}, error: {error_eta1:.1f}%)")
-    print(f"  η₂:  {eta2_fitted:.0f} Pa·s (true: {eta2_true:.0f}, error: {error_eta2:.1f}%)")
-    print(f"  R²:  {r2:.4f}")
-    
-    # ==================================================================
-    # REALISTIC VALIDATION CRITERIA
-    # ==================================================================
-    
-    # 1. CRITICAL: R² must be high (fit quality)
-    assert r2 > 0.90, (
-        f"R² = {r2:.4f} is too low.\n"
-        f"The fitted curve doesn't match the data well.\n"
-        f"This suggests a serious problem with the fitting algorithm."
-    )
-    
-    # 2. CRITICAL: Parameters must be physically reasonable (order of magnitude)
-    assert 100 < E_fitted < 100000, (
-        f"E = {E_fitted:.0f} Pa is outside reasonable range (100-100000 Pa).\n"
-        f"This suggests the optimizer went completely off track."
-    )
-    
-    assert 100 < eta1_fitted < 500000, f"η₁ = {eta1_fitted:.0f} Pa·s is unreasonable"
-    assert 100 < eta2_fitted < 1000000, f"η₂ = {eta2_fitted:.0f} Pa·s is unreasonable"
-    
-    # 3. NICE TO HAVE: At least ONE parameter should be close
-    # (This acknowledges that E and η can trade off)
-    errors = [error_E, error_eta1, error_eta2]
-    min_error = min(errors)
-    
-    assert min_error < 50, (
-        f"All parameters have >50% error (E: {error_E:.0f}%, η₁: {error_eta1:.0f}%, η₂: {error_eta2:.0f}%).\n"
-        f"At least one parameter should be recoverable."
-    )
-    
-    # 4. SANITY CHECK: Viscosity ratio should be reasonable
-    # Theory: η₂ (series) should be larger than η₁ (parallel)
-    viscosity_ratio = eta2_fitted / eta1_fitted
-    if not (0.5 < viscosity_ratio < 20):
-        print(f"[WARNING] Unusual viscosity ratio: η₂/η₁ = {viscosity_ratio:.1f}")
-        print(f"[WARNING] This fit might be physically implausible.")
-    
-    print(f"✓ Fitting validation passed:")
-    print(f"  - R² = {r2:.4f} (excellent fit quality)")
-    print(f"  - Best parameter recovery: {min_error:.1f}% error")
-    print(f"  - All parameters physically reasonable")
+    print(f"✓ Parameter recovery passed (R²={res['r_squared']:.4f})")
 
 # =============================================================================
-# RUN ALL TESTS
+# TEST 7: Validation Logic
+# =============================================================================
+
+def test_validation_logic():
+    """Tests that physical impossibility checks work."""
+    ranges = {'E': (100, 1000), 'eta1': (100, 1000), 'eta2': (100, 1000)}
+    
+    # Case 1: Valid
+    valid, _ = validate_jeffreys_parameters(500, 500, 500, ranges)
+    # (Note: ratio check might warn, but bounds are valid)
+    
+    # Case 2: Negative value (Impossible)
+    valid_neg, msgs = validate_jeffreys_parameters(-500, 500, 500, ranges)
+    assert not valid_neg
+    assert any("outside typical range" in m for m in msgs)
+    
+    print("✓ Parameter validation logic verified")
+
+# =============================================================================
+# RUNNER
 # =============================================================================
 
 if __name__ == '__main__':
-    print("=" * 70)
-    print("RUNNING MFA VALIDATION SUITE")
-    print("=" * 70)
-    print()
+    print("=" * 60)
+    print("RUNNING COMPLETE MFA VALIDATION SUITE")
+    print("=" * 60)
     
     try:
         test_son_factor_table1()
+        test_shear_metrics()
         test_jeffreys_newtonian_limit()
+        test_burgers_physics()
+        test_validation_logic()
         test_cusum_detects_synthetic_rupture()
         test_protrusion_length_measurement()
         test_parameter_recovery_jeffreys()
         
-        print()
-        print("=" * 70)
-        print("✓ ALL VALIDATION TESTS PASSED")
-        print("=" * 70)
+        print("\n" + "=" * 60)
+        print("✓ ALL SYSTEMS GO: PIPELINE VERIFIED")
+        print("=" * 60)
         
     except AssertionError as e:
-        print()
-        print("=" * 70)
-        print("✗ TEST FAILED")
-        print("=" * 70)
-        print(str(e))
-        
-        
-"""
-SUMMARY of Validation on Synthetic Data:
-    
-Geometric Corrections: 
-    Son (2007) shape factor f* reproduced published values within 0.5% across aspect ratios 0.05-1.0 (5 test cases, Table 1).
-
-Edge Detection: 
-    Sub-pixel protrusion measurement achieved 4.6% relative error on synthetic images with realistic blur (σ=1.0 pixel) and noise (σ=5 intensity units).
-
-Rupture Detection: 
-    CUSUM algorithm detected step-change events with 98% temporal accuracy (1-frame error on 100-frame sequence).
-
-Parameter Recovery: 
-    On noise-corrupted synthetic data (σ=0.1 μm), 
-    viscoelastic fitting recovered elastic modulus E within 2.3%, 
-    parallel viscosity η₁ within 4.9%, 
-    and series viscosity η₂ within 0.8% of ground truth values 
-    (R²=0.995).
-"""
+        print("\n" + "=" * 60)
+        print("✗ VALIDATION FAILED")
+        print("=" * 60)
+        print(e)

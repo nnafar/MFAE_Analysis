@@ -12,10 +12,10 @@
 # Tell the code where to find your data and where to save results.
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
-  data_folder: "C:\\Data\\MFA_EP\\Experiment_207"
+  data_folder: "C:\\Data\\MFA_EP\\Experiment_5"
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "test_004"
+  experiment_id: "Experiment_5_v5"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -56,65 +56,60 @@ model_parameters:
   fluid_viscosity_pa_s: 1e-3 # [Pa·s]
 
 # ===================================================================
-# --- 4. RUPTURE DETECTION (CUSUM) ---
+# --- 4. RUPTURE DETECTION (INTENSITY ANALYSIS) ---
 # ===================================================================
-
 # Settings for identifying when the cell membrane breaks (bursts).
+# NOTE: This pipeline uses "Haze Detection" (intensity changes inside the pipette)
+# rather than length drops, making it safe for electroporation (retraction) experiments.
+
 rupture_detection:
   # Main Switch: Set to True to enable rupture check. Set False for raw data only.
   enable: True
   
-  # --- RUPTURE ALGORITHM (CUSUM) TUNING ---
-  # Monitoring the brightness *inside* the pipette, ahead of the cell.
+  # --- SPATIAL MONITORING ("The Eyes") ---
+  # Where to look inside the pipette (ahead of the cell tip)
+  rupture_offset_from_tip_px: 5     # Gap between cell tip and box [pixels]
+  rupture_window_width_px: 5        # Width of the monitoring box [pixels]
   
-  # I. The "Eyes": Where to look
-  rupture_offset_from_tip_px: 5     # Gap between cell tip and monitoring box; prevents tracking the tip itself [pixels].
-  rupture_window_width_px: 5        # Width of the monitoring box [pixels].
-  
-  # II. The "Timeline": When to start
-  entry_velocity_threshold_px: 2.0  # Speed required to mark "Time 0" (Cell Entry); prevents analyzing static debris [px/frame].
-  cusum_settling_buffer: 5          # Frames to ignore immediately after entry. Default: 3. 
-  
-  # III. The "Baseline": Establishing "Normal"
-  min_cusum_baseline_frames: 3      # Safety: Minimum valid frames required to run the algorithm at all.
-  cusum_baseline_len: 10             # Frames used to calculate the "clean" reference brightness and noise level.
-  min_intensity_noise_floor: 0.2    # Safety: Minimum assumed noise level; prevents false alarms on perfectly clean videos.
-  cusum_sensitivity_sigma: 0.7413   # Statistical constant to convert IQR to Standard Deviation (Do not change).
- 
-  # IV. The "Brain": Decision Logic (CUSUM)
+  # --- TIMING ---
+  entry_velocity_threshold_px: 2.0  # Speed to mark "Time 0" (Cell Entry)
+  cusum_settling_buffer: 3          # Frames to ignore after entry (let dust settle)
+  cusum_baseline_len: 5             # Frames to establish baseline noise
 
-  # --- Safety Floors (Prevents bugs on perfectly clean video) ---
-  # These prevent the algorithm from becoming infinitely sensitive if camera noise is zero.
-  min_drift_tolerance: 0.2          # The algorithm will never track brightness changes smaller than this.
-  min_cusum_threshold: 2.0          # The algorithm will never trigger an alarm on total evidence lower than this.
+  # --- ALGORITHM TUNING (MULTI-MODE) ---
   
-  # --- Tuning Knobs (Adjust these to fix detection issues) ---
-  # i. Per-Frame Sensitivity ("The Filter")
-  #    How much must a single frame brighten to count as "suspicious"?
-  #    Lower (0.2) = Very sensitive; catches faint, slow leaks.
-  #    Higher (1.0) = Less sensitive; ignores flickers, only catches sharp bursts.
-  cusum_drift_tolerance_factor: 0.5
+  # 1. SPIKE DETECTION (Transient Bursts)
+  #    Formula: Signal > (Mean + Sigma * Threshold)
+  enable_spike_check: True
+  spike_sigma_threshold: 5.0        # Sensitivity: Lower (3.0) = More sensitive, Higher (6.0) = Safer
+
+  # 2. STEP DETECTION (Fast Leaks)
+  #    Faster reaction time than CUSUM for catastrophic failure.
+  enable_step_check: True
+  step_sigma_threshold: 5.0         # Sensitivity: Needs a distinct jump to trigger.
+
+  # 3. DRIFT DETECTION (CUSUM - Slow Leaks)
+  #    Catches subtle, accumulating haze (Trap 2) that Spikes/Steps miss.
+  min_intensity_noise_floor: 3.0    # Minimum assumed noise (prevents div/0 errors on clean images)
+  min_drift_tolerance: 2.5          # Minimum change to register as drift (0.1 = very sensitive)
+  min_cusum_threshold: 5.0          # Accumulation threshold to trigger alarm
   
-  # ii. Total Confidence ("The Trigger")
-  #     How much "suspicion" must pile up over time to confirm a rupture?
-  #     Lower (5.0)  = Faster reaction, but more prone to false alarm.
-  #     Higher (20.0) = Slower reaction, but you can be more certain it's real.
-  cusum_threshold_factor: 10.0
+  cusum_drift_tolerance_factor: 0.5 # (k) Multiplier for noise sigma
+  cusum_threshold_factor: 8.0       # (h) Multiplier for noise sigma to trigger
 
   # --- DATA CLEANING ---
-  # Ignored Data: Fraction of early points to skip (artifacts from initial entry).
   exclude_early_fraction: 0.03
 
-  # Slip Detection: If length drops suddenly, assume it's a slip, not physics.
-  drop_threshold: 0.4               # Ignore drops larger than 40% of length.
-  absolute_threshold: 1.0           # Ignore drops larger than 1.0 µm.
-  window_size: 15                   # How many frames to look back for slips.
+  # Slip/Retraction Handling (Physics logic only, NOT used for rupture)
+  drop_threshold: 0.4               
+  absolute_threshold: 1.0           
+  window_size: 15                   
 
-  # Outlier Removal: Statistical cleaning of jagged noise.
+  # Outlier Removal
   enable_outlier_rejection: False
-  enable_smoothing: False           # Set True to smooth the final lines (Rolling Median).
-  outlier_rejection_window: 11      # # Frames to compare for outlier check.
-  outlier_rejection_std_dev: 2.5    # Strictness: Lower (2.0) deletes more points; Higher (3.0) keeps more.
+  enable_smoothing: False           
+  outlier_rejection_window: 11      
+  outlier_rejection_std_dev: 2.5
 
 # ===================================================================
 # --- 5. AUTOMATION & PERFORMANCE ---
@@ -165,7 +160,7 @@ dye_uptake_parameters:
   dye_channel_pattern: "C2"         # e.g., Fluorescence / TRITC
   
   # Timing: When did you shock the cell?
-  pulse_frame: 15                   # The exact frame number of the electric pulse.
+  pulse_frame: 10                   # The exact frame number of the electric pulse.
   baseline_frames: 5                # How many frames before the pulse to check for background signal.
 
 # ===================================================================
@@ -174,7 +169,7 @@ dye_uptake_parameters:
 # Modify these only if the image processing or fitting is failing.
 
 image_processing:
-  wall_clip_margin: 0.25           # Ignore top/bottom 25% of image (hides pipette walls).
+  wall_clip_margin: 0.20           # Ignore top/bottom 20% of image (hides pipette walls).
   clahe_clip_limit: 2.0            # Contrast enhancement strength.
   clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
   canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).
