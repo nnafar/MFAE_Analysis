@@ -203,13 +203,26 @@ class RuptureDetectionConfig(BaseModel):
     outlier_rejection_std_dev: float = Field(gt=0.0, lt=10.0)
     enable_smoothing: bool = Field(default=True, description="Apply rolling median smoothing to raw length data")
     
-    cusum_settling_buffer: int = Field(default=3, ge=1, description="Frames to skip after entry before monitoring rupture")
+    # --- UPDATED TIMING FIELDS ---
+    # 1. Allow 0 buffer to start immediately
+    cusum_settling_buffer: int = Field(default=3, ge=0, description="Frames to skip after entry before monitoring rupture")
+    
+    # 2. Add the NEW lag parameter (Missing in previous schema)
+    cusum_baseline_lag: int = Field(default=0, ge=0, description="Frames to gap between baseline and test window")
+    
     cusum_baseline_len: int = Field(default=5, ge=3, description="Number of frames to establish baseline noise")
     cusum_sensitivity_sigma: float = Field(default=0.7413, gt=0.0, description="Multiplier for IQR to determine noise sigma")
     
+    # --- TUNING FIELDS ---
     cusum_drift_tolerance_factor: float = Field(default=0.5, gt=0.0, le=2.0, description="Drift tolerance as multiple of sigma (k parameter)")
     cusum_threshold_factor: float = Field(default=10.0, gt=1.0, le=50.0, description="Detection threshold as multiple of sigma (h parameter)")
     
+    # New Tuning Parameters for Spike/Step check
+    enable_spike_check: bool = Field(default=True)
+    spike_sigma_threshold: float = Field(default=6.0, gt=0.0)
+    enable_step_check: bool = Field(default=True)
+    step_sigma_threshold: float = Field(default=6.0, gt=0.0)
+
     @validator('outlier_rejection_window')
     def window_must_be_odd(cls, v: int) -> int:
         if v % 2 == 0:

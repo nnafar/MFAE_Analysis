@@ -210,7 +210,7 @@ def normalize_to_8bit(image: np.ndarray) -> np.ndarray:
         logger.warning("normalize_to_8bit received a None image. Returning black square.")
         return np.zeros((100, 100), dtype=np.uint8)
     if image.dtype == np.uint8:
-        return image.copy()
+        return image
     try:
         normalized = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
         return normalized.astype(np.uint8)

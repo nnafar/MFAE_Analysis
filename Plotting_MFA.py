@@ -289,7 +289,7 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
     ax2.set_ylabel('Intensity (a.u.)'); ax2.set_xlabel('Time (s)')
     ax2.grid(True, alpha=0.3)
 
-    if rupture_time:
+    if rupture_time is not None:  # Explicit check allows 0.0s to be valid
         for ax in [ax1, ax2]:
             ax.axvline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2.5, label='Rupture Detected')
             ax.legend()

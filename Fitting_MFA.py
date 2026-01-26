@@ -234,6 +234,7 @@ class FittingMFA:
             "Burgers": {
                 # 4-Parameter Model (Maxwell + Kelvin-Voigt)
                 "func": lambda t, E1, eta1, E2, eta2: calc.burgers_length(t, self.r_eff, self.delta_p, self.C, E1, eta1, E2, eta2),
+                # Note: p0[1] maps 'eta2_guess' (Slope/Flow) to Burgers 'eta1' (Maxwell/Flow)
                 "p0": [e_guess, eta2_guess, e_guess, eta1_guess],
                 "bounds": ([e_bounds[0], eta2_bounds[0], e_bounds[0], eta1_bounds[0]],
                            [e_bounds[1], eta2_bounds[1], e_bounds[1], eta1_bounds[1]]),

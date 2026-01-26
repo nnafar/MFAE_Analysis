@@ -114,7 +114,7 @@ def compute_reff(width: float, height: float, f_star: float) -> float:
     
     See Also
     --------
-    README.md : Section "Geometric Corrections" for mathematical derivation
+    README.md : Section "Geometric Corrections" for mathematical derivationYes
     
     References
     ----------
