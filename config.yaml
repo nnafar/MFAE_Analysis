@@ -12,10 +12,10 @@
 # Tell the code where to find your data and where to save results.
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
-  data_folder: "C:\\Data\\MFA_EP\\Experiment_5"
+  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment1-100V-5ms-frame10"
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "Experiment_5_v5"
+  experiment_id: "260128_Experiment1-100V-5ms-frame10"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---

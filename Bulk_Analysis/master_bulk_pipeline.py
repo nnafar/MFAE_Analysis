@@ -61,7 +61,6 @@ def main():
     try: bp.plot_recoil_fits_multipanel(grouped_data, results_dir)
     except Exception as e: logger.error(f"Plot 10 Failed: {e}")
 
-    # NEW: Plot 11
     try: bp.plot_uptake_traces_multipanel(grouped_data, results_dir)
     except Exception as e: logger.error(f"Plot 11 Failed: {e}")
 
