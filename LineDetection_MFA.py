@@ -780,60 +780,64 @@ class LineDetectionMFA:
         protrusions_um = self.results['protrusion_lengths_um']
         intensities = self.results['downstream_intensities']
         
-        # --- 1. Determine Entry Point ---
-        # If the cell starts > 20um inside, it's "Already Inside". Start at index 0.
-        # Otherwise, wait for movement (velocity > threshold).
+        # --- 1. Determine Entry Point & Candidates ---
+        candidates = []
+        
+        # A. IMMEDIATE LEVEL CHECK (The Fix: Check this BEFORE calculating entry_idx)
+        # We check the first few frames regardless of length. 
+        # If intensity is high immediately, it's either "Already Inside" or a "Ghost".
+        if intensities:
+            baseline_mean = np.median(intensities[:5])
+            # You might want to tune this '20.0' threshold in config if 90 is too high/low
+            if baseline_mean > 50.0: 
+                 candidates.append((0, 'Immediate High Haze'))
+
+        # Standard Entry Logic (for Length calculations)
         start_len = protrusions_um[0] if protrusions_um else 0
         
         if start_len > 20.0:
-            # Trap 2 Case: Already inside at frame 0
+            # Case: Physically tracking as inside
             entry_idx = 0
         else:
-            # Standard Case: Wait for entry
+            # Case: Wait for movement
             velocity = np.diff(self.results['protrusion_lengths_px'], prepend=0)
             entry_idx = next((i for i, v in enumerate(velocity) if v > self.entry_velocity_threshold), 0)
             if entry_idx >= len(protrusions_um): entry_idx = 0
             
         self.results['entry_frame_index'] = entry_idx
+        
+        # Only search for NEW events after the entry point
+        # (Unless we already found an immediate candidate at 0)
         valid_intensities = intensities[entry_idx:]
-        candidates = []
-
-        # A. IMMEDIATE LEVEL CHECK
-        if valid_intensities:
-            baseline_mean = np.median(valid_intensities[:5])
-            if baseline_mean > 20.0: 
-                 candidates.append((0, 'Immediate High Haze'))
 
         # B. Spike (Transient Burst)
         if self.enable_spike:
             is_spike, spike_idx = self._detect_intensity_anomaly(valid_intensities, mode='spike')
-            if is_spike: candidates.append((spike_idx, 'Intensity Spike'))
+            if is_spike: candidates.append((entry_idx + spike_idx, 'Intensity Spike'))
         
         # C. Step (Fast Leak)
         if self.enable_step:
             is_step, step_idx = self._detect_intensity_anomaly(valid_intensities, mode='step')
-            if is_step: candidates.append((step_idx, 'Intensity Step'))
+            if is_step: candidates.append((entry_idx + step_idx, 'Intensity Step'))
 
         # D. CUSUM (Slow Drift)
         is_cusum, cusum_idx = self._detect_cusum_drift(valid_intensities)
-        if is_cusum: candidates.append((cusum_idx, 'Haze Drift'))
+        if is_cusum: candidates.append((entry_idx + cusum_idx, 'Haze Drift'))
         
         # E. LATE SAFETY CHECK
-        # If we missed the event but final intensity > 25, it definitely ruptured.
         if not candidates and valid_intensities:
             final_mean = np.mean(valid_intensities[-5:])
             if final_mean > 25.0:
-                # Find the steepest rise to mark the likely moment
                 grad = np.gradient(valid_intensities)
                 max_grad_idx = np.argmax(grad)
-                candidates.append((max_grad_idx, 'Late High Haze'))
+                candidates.append((entry_idx + max_grad_idx, 'Late High Haze'))
 
-        # Arbitrate
+        # Arbitrate: Pick the earliest detected event
         if candidates:
             candidates.sort(key=lambda x: x[0])
             best_idx, reason = candidates[0]
             self.results['rupture_detected'] = True
-            self.results['rupture_frame_index'] = entry_idx + best_idx
+            self.results['rupture_frame_index'] = best_idx
             self.results['rupture_reason'] = reason
         else:
             self.results['rupture_detected'] = False

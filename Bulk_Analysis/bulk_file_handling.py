@@ -149,6 +149,7 @@ class BulkDataLoader:
             prot_dict = self._csv_to_dict(f_file)
 
             # 2. Load Uptake Data
+            # Try 02d format first (Trap_01), then single digit (Trap_1)
             u_file_name = f"Trap_{trap_id:02d}_Uptake_Data.csv"
             u_file = dir_uptake / u_file_name
             uptake_dict = {}

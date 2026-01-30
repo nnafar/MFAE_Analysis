@@ -12,10 +12,10 @@
 # Tell the code where to find your data and where to save results.
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
-  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment1-100V-5ms-frame10"
+  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260130_Experiment463-100V-100us-frame10"
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "260128_Experiment1-100V-5ms-frame10"
+  experiment_id: "260130_Experiment463-100V-100us-frame10"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -68,7 +68,7 @@ rupture_detection:
   
   # --- SPATIAL MONITORING ("The Eyes") ---
   # Where to look inside the pipette (ahead of the cell tip)
-  rupture_offset_from_tip_px: 5     # Gap between cell tip and box [pixels]
+  rupture_offset_from_tip_px: 10     # Gap between cell tip and box [pixels]
   rupture_window_width_px: 5        # Width of the monitoring box [pixels]
   
   # --- TIMING ---
