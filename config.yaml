@@ -15,8 +15,9 @@ paths:
 
   data_folder: "C:\\Data\\MFA_EP\\Experiment_5"
 
+
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "Experiment_5_v5"
+  experiment_id: "260130_Experiment463-100V-100us-frame10"
 
 
 # ===================================================================
@@ -70,7 +71,7 @@ rupture_detection:
   
   # --- SPATIAL MONITORING ("The Eyes") ---
   # Where to look inside the pipette (ahead of the cell tip)
-  rupture_offset_from_tip_px: 5     # Gap between cell tip and box [pixels]
+  rupture_offset_from_tip_px: 10     # Gap between cell tip and box [pixels]
   rupture_window_width_px: 5        # Width of the monitoring box [pixels]
   
   # --- TIMING ---
