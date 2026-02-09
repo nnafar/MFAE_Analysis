@@ -12,10 +12,12 @@
 # Tell the code where to find your data and where to save results.
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
+
   data_folder: "C:\\Data\\MFA_EP\\Experiment_5"
 
   # Name for this analysis run. New output folders will be created with this name.
   experiment_id: "Experiment_5_v5"
+
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -156,8 +158,8 @@ dye_uptake_parameters:
   enable: True
   
   # File Naming: Strings used to identify which image is which channel.
-  membrane_channel_pattern: "C1"    # e.g., Membrane label
-  dye_channel_pattern: "C2"         # e.g., Fluorescence / TRITC
+  membrane_channel_pattern: "c002"    # e.g., Membrane label
+  dye_channel_pattern: "c001"         # e.g., Fluorescence / TRITC/ PI dye
   
   # Timing: When did you shock the cell?
   pulse_frame: 10                   # The exact frame number of the electric pulse.
