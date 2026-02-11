@@ -320,6 +320,14 @@ class DyeUptakeConfig(BaseModel):
     pulse_frame: int = Field(default=10, ge=1, description="Frame number where pulse is applied (1-based index)")
     baseline_frames: int = Field(default=5, ge=1, description="Number of pre-pulse frames to average for baseline")
 
+class ActinParameters(BaseModel):
+    """Configuration for Actin (cytoskeleton) distribution analysis."""
+    enable: bool = False
+    channel_pattern: str = Field(default="C3", description="Substring to identify actin images")
+    
+    # Normalization
+    normalize_to_body: bool = Field(default=True, description="Calculate Protrusion/Body intensity ratio")
+
 class MFAConfig(BaseModel):
     """The master schema that combines all sub-configurations."""
     
@@ -329,12 +337,15 @@ class MFAConfig(BaseModel):
     rupture_detection: RuptureDetectionConfig
     workflow_settings: WorkflowConfig
     dye_uptake_parameters: DyeUptakeConfig = Field(default_factory=DyeUptakeConfig)
-    
+    dye_uptake_parameters: DyeUptakeConfig = Field(default_factory=DyeUptakeConfig)
+    actin_parameters: ActinParameters = Field(default_factory=ActinParameters) # <--- ADD THIS
+        
     image_processing: ImageProcessingConstants = Field(default_factory=ImageProcessingConstants)
     kymograph_parameters: KymographConstants = Field(default_factory=KymographConstants)
     plotting_parameters: PlottingConstants = Field(default_factory=PlottingConstants)
     fitting_parameters: FittingParameters = Field(default_factory=FittingParameters)
     validation_parameters: ValidationParameters = Field(default_factory=ValidationParameters)
+    
 
     class Config:
         extra = 'forbid'

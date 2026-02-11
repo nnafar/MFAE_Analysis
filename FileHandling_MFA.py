@@ -93,26 +93,35 @@ class FileRead():
             else:
                 logger.info(f"Dye Channel: Found {len(self.dye_files)} files matching '{dye_pattern}'.")
                 
-            # Ensure synchronization
-            if len(self.tif_files) != len(self.dye_files):
-                logger.warning(f"Channel Count Mismatch! Membrane: {len(self.tif_files)}, Dye: {len(self.dye_files)}")
-                min_len = min(len(self.tif_files), len(self.dye_files))
-                if min_len > 0:
-                    logger.warning(f"Truncating both channels to {min_len} frames to maintain sync.")
-                    self.tif_files = self.tif_files[:min_len]
-                    self.dye_files = self.dye_files[:min_len]
-                    
-            # Explicit warning for synchronization issues
-            diff = abs(len(self.tif_files) - len(self.dye_files))
-            if diff > 1:
-                logger.warning(
-                    f"POTENTIAL SYNC ISSUE: Significant frame count mismatch!\n"
-                    f"   Membrane: {len(self.tif_files)} frames\n"
-                    f"   Dye:      {len(self.dye_files)} frames\n"
-                    f"   Diff:     {diff} frames.\n"
-                    f"   Please check if camera triggers are synchronized (Hardware Sync)."
-                )
+        # --- 3. FILTER ACTIN FILES ---
+        actin_pattern = self.params.get('actin_parameters', {}).get('channel_pattern', 'C3')
+        enable_actin = self.params.get('actin_parameters', {}).get('enable', False)
+        self.actin_files = []
+
+        if enable_actin:
+            self.actin_files = [f for f in all_files if actin_pattern in f.name]
+            self.actin_files = self.sort_by_time_index(self.actin_files)
             
+            if not self.actin_files:
+                logger.warning(f"Actin analysis enabled but no files found matching '{actin_pattern}'.")
+            else:
+                logger.info(f"Actin Channel: Found {len(self.actin_files)} files matching '{actin_pattern}'.")
+
+        # --- SYNCHRONIZATION ---
+        # Find minimum length across all active channels
+        lengths = [len(self.tif_files)]
+        if self.dye_files: lengths.append(len(self.dye_files))
+        if self.actin_files: lengths.append(len(self.actin_files))
+        
+        min_len = min(lengths)
+        
+        if len(self.tif_files) > min_len:
+            self.tif_files = self.tif_files[:min_len]
+        if self.dye_files and len(self.dye_files) > min_len:
+            self.dye_files = self.dye_files[:min_len]
+        if self.actin_files and len(self.actin_files) > min_len:
+            self.actin_files = self.actin_files[:min_len] # Sync Actin
+        
         # Extract timestamps (using the primary membrane files)
         self.time_data = self.extract_timestamps_from_metadata()
         

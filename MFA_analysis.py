@@ -19,7 +19,6 @@ import yaml
 import multiprocessing
 import traceback
 import logging
-#import sys
 import cv2
 import tempfile
 import shutil
@@ -39,6 +38,7 @@ from Calculation_MFA import compute_reff, compute_shear_metrics
 from Fitting_MFA import FittingMFA
 from Kymograph_MFA import create_kymograph_for_trap
 from UptakeQuantification import DyeUptakeAnalyzer
+from ActinQuantification import ActinAnalyzer
 from config_schema import MFAConfig, validate_config
 import Plotting_MFA
 import Utils_MFA as utils
@@ -256,7 +256,52 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             Plotting_MFA.plot_dye_uptake_dashboard(
                 dye_results, trap_index + 1, dirs['dye'], params, pipette_x=det_res.get('pipette_start_x_used')
             )
-
+        
+        # 9. Optional: Actin Analysis
+        actin_files = config_dict.get('actin_files_path')
+        # Check if enabled in config AND if files exist
+        if params.get('actin_parameters', {}).get('enable', False) and actin_files:
+            dirs['actin'] = dirs['root'] / "Actin Analysis"
+            dirs['actin'].mkdir(parents=True, exist_ok=True)
+            worker_logger.info("Running Actin Analysis...")
+            
+            # Load Actin Frames specific to this trap
+            actin_rois = []
+            for f_path in actin_files:
+                img = cv2.imread(str(f_path), cv2.IMREAD_UNCHANGED)
+                if img is not None:
+                    actin_rois.append(cropper.process_frame(img, trap_index))
+                else:
+                    actin_rois.append(None)
+            
+            # Reuse thresholds from detection
+            thr_prot = config_dict.get('tuned_threshold_prot', 30)
+            thr_body = config_dict.get('tuned_threshold_body', thr_prot)
+            
+            # Run Analyzer
+            # Note: We pass 'rois' (Membrane BF) for masking, and 'actin_rois' for signal
+            actin_analyzer = ActinAnalyzer(
+                membrane_rois=rois,
+                actin_rois=actin_rois,
+                pipette_x=det_res.get('pipette_start_x_used'),
+                threshold_prot=thr_prot,
+                threshold_body=thr_body,
+                params=params
+            )
+            
+            actin_results = actin_analyzer.run(time_data)
+            
+            # Export Results
+            actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
+            
+            Plotting_MFA.plot_actin_dashboard(
+                actin_results, 
+                trap_index + 1, 
+                dirs['actin'], 
+                params, 
+                pipette_x=det_res.get('pipette_start_x_used')
+            )
+        
         # Cleanup memory
         del all_frames
         del rois
@@ -410,8 +455,8 @@ class MFAAnalysis:
                     'shape': shape,
                     'dtype': dtype,
                     'output_dirs': self.subdirs,
-                    # Pass path to dye files for direct loading
-                    'dye_files_path': self.file_reader.dye_files 
+                    'dye_files_path': self.file_reader.dye_files, 
+                    'actin_files_path': self.file_reader.actin_files
                 })
                 worker_args.append(full_config)
 

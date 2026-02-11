@@ -375,3 +375,98 @@ def plot_shear_analysis_card(metrics: Dict[str, float], save_path: Path):
         
     utils.save_plot_png(save_path)
     plt.close(fig)
+    
+def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: float):
+    """
+    Generates dashboard for Actin analysis:
+    1. Intensity Traces & Ratio (Timecourse)
+    2. Kymograph (Heatmap)
+    3. Spatial Profiles (Line plots at specific times) - NEW
+    """
+    utils.set_paper_style()
+    output_dir = Path(output_dir)
+    t = np.array(results['time_s'])
+    if len(t) == 0: return
+    
+    colors = utils.MFA_COLORS
+    scale = params.get('scale_factor', 0.629)
+    
+    # --- 1. Intensity Traces & Ratio ---
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
+    
+    # Absolute Intensity
+    ax1.plot(t, results['actin_protrusion_mean'], color=colors['secondary'], label='Protrusion', linewidth=2)
+    ax1.plot(t, results['actin_body_mean'], color=colors['tertiary'], label='Body', linewidth=2)
+    ax1.set_ylabel("Mean Intensity (a.u.)")
+    ax1.set_title(f"Trap {trap_idx}: Actin Intensity")
+    ax1.legend()
+    
+    # Ratio
+    ax2.plot(t, results['actin_ratio_pb'], color=colors['primary'], linewidth=2)
+    ax2.axhline(1.0, linestyle='--', color='gray', alpha=0.5)
+    ax2.set_ylabel("Protrusion / Body Ratio")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_title("Actin Accumulation (>1.0 = Enrichment)")
+    
+    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Traces.png")
+    plt.close(fig)
+    
+    # --- 2. Kymograph ---
+    profiles = results['spatial_profiles']
+    if not profiles: return
+
+    max_w = max(len(p) for p in profiles)
+    kymo = np.zeros((len(profiles), max_w))
+    for i, p in enumerate(profiles): kymo[i, :len(p)] = p
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Extent: 0 at entrance, negative into the pipette (matches visual left-right)
+    extent = [0, -max_w * scale, t[-1], t[0]]
+    
+    # Use Viridis or Magma for clear intensity visualization
+    im = ax.imshow(kymo, aspect='auto', extent=extent, cmap='viridis', interpolation='nearest')
+    
+    ax.set_xlabel("Position relative to entrance (µm)")
+    ax.set_ylabel("Time (s)")
+    ax.set_title(f"Trap {trap_idx}: Actin Kymograph")
+    plt.colorbar(im, ax=ax, label="Intensity")
+    
+    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Kymograph.png")
+    plt.close(fig)
+
+    # --- 3. Spatial Distribution Profiles (The "Diffusion" Plot) ---
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Select ~7 time points evenly spaced across the experiment
+    n_curves = 7
+    indices = np.linspace(0, len(t)-1, n_curves, dtype=int)
+    time_colors = utils.get_time_colormap(len(indices))
+    
+    # X-axis logic (Consistent with Dye Module)
+    # Calculates distance from pipette entrance (pipette_x) in microns
+    x_axis = (pipette_x - np.arange(max_w)) * scale
+    
+    for i, idx in enumerate(indices):
+        if idx >= len(profiles): continue
+        p = profiles[idx]
+        
+        # Create full-width array
+        y = np.zeros(max_w)
+        y[:len(p)] = p
+        
+        ax.plot(x_axis, y, color=time_colors[i], linewidth=2.5, label=f"{t[idx]:.1f}s")
+        
+    ax.axvline(0, color=colors['primary'], linestyle='--', alpha=0.6, label='Entrance')
+    
+    # Standard orientation: Cell body is on the right (positive), Protrusion on the left
+    # Inverting X makes 0 the entrance, with protrusion growing leftwards
+    ax.invert_xaxis() 
+    
+    ax.set_xlabel("Position relative to channel entrance (µm)")
+    ax.set_ylabel("Mean Intensity (a.u.)")
+    ax.set_title(f"Trap {trap_idx}: Actin Spatial Distribution")
+    ax.legend(title="Time")
+    
+    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Profiles.png")
+    plt.close(fig)
