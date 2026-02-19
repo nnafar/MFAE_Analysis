@@ -13,11 +13,11 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "C:\\Data\\MFA_EP\\Experiment_5"
+  data_folder: "W:\\staff-groups\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260130_Experiment463-100V-100us-frame10"
 
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "260130_Experiment463-100V-100us-frame10"
+  experiment_id: "260130_Experiment463-100V-100us-frame10-actin"
 
 
 # ===================================================================

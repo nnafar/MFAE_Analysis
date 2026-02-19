@@ -75,7 +75,7 @@ class KymographAnalysis:
         center_y = h // 2
         
         # Define the slice thickness (averaging over a few lines reduces noise)
-        thickness = self.params.get('kymograph_line_thickness', 3)
+        thickness = self.params.get('kymograph_parameters', {}).get('default_line_width_px', 10)
         y_start = max(0, center_y - thickness // 2)
         y_end = min(h, center_y + thickness // 2 + 1)
         

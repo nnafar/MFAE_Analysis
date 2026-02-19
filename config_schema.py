@@ -320,6 +320,11 @@ class DyeUptakeConfig(BaseModel):
     pulse_frame: int = Field(default=10, ge=1, description="Frame number where pulse is applied (1-based index)")
     baseline_frames: int = Field(default=5, ge=1, description="Number of pre-pulse frames to average for baseline")
 
+class ActinConfig(BaseModel):
+    """Configuration for actin distribution analysis."""
+    enable: bool = False
+    channel_pattern: str = Field(default="C3", description="Substring to identify actin images")
+
 class MFAConfig(BaseModel):
     """The master schema that combines all sub-configurations."""
     
@@ -329,6 +334,7 @@ class MFAConfig(BaseModel):
     rupture_detection: RuptureDetectionConfig
     workflow_settings: WorkflowConfig
     dye_uptake_parameters: DyeUptakeConfig = Field(default_factory=DyeUptakeConfig)
+    actin_parameters: ActinConfig = Field(default_factory=ActinConfig)
     
     image_processing: ImageProcessingConstants = Field(default_factory=ImageProcessingConstants)
     kymograph_parameters: KymographConstants = Field(default_factory=KymographConstants)

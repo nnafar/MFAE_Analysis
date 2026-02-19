@@ -192,7 +192,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         for i, p in enumerate(profiles): kymo[i, :len(p)] = p
         
         fig, ax = plt.subplots(figsize=(10, 6))
-        scale = params.get('scale_factor', 0.629)
+        scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
         mfa_cmap = utils.get_mfa_continuous_cmap()
         
@@ -234,7 +234,7 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     if kymograph_matrix is None: return
     utils.set_paper_style()
     colors = utils.MFA_COLORS
-    scale = params.get('scale_factor', 0.629)
+    scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
     
     h, w = kymograph_matrix.shape
     total_time = time_data[-1] if time_data else h
@@ -361,6 +361,24 @@ class MFAPlotter:
         utils.save_plot_png(save_path)
         plt.close(fig)
         
+# --- 4. ACTIN PLOT ---
+def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None):
+    """Generates the suite of Actin distribution plots."""
+    utils.set_paper_style()
+    output_dir = Path(output_dir)
+    t = np.array(results.get('time_s', []))
+    if len(t) == 0: return
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(t, results.get('actin_ratio_pb', []), 'o-', color=utils.MFA_COLORS['secondary'], linewidth=2)
+    ax.set_ylabel("Actin Ratio (Protrusion / Body)")
+    ax.set_xlabel("Time (s)")
+    ax.set_title(f"Trap {trap_idx}: Actin Distribution")
+    
+    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Ratio.png")
+    plt.close(fig)
+
+
 def plot_shear_analysis_card(metrics: Dict[str, float], save_path: Path):
     utils.set_paper_style(base_fontsize=12)
     fig, ax = plt.subplots(figsize=(8, 5))
