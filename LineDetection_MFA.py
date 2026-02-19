@@ -579,12 +579,25 @@ class LineDetectionMFA:
         return opened
 
     def _remove_left_border_objects(self, binary_image: np.ndarray) -> np.ndarray:
-        """Helper: Removes blobs that are touching the left edge of the image (artifacts)."""
+        """
+        Removes blobs touching the left edge of the image (wall/border artifacts).
+
+        The trick: OpenCV's floodFill needs a seed pixel that is already foreground (255)
+        to spread and paint things background (0). Rather than iterating the actual
+        image border (which might be background), we *pad* a 1-pixel-wide foreground
+        column onto the left edge. This guarantees every left-border pixel is 255,
+        so floodFill can reach and erase any blob that touches the true edge.
+        The padding column is then stripped before returning.
+
+        Why not just zero-out the left column directly? That would only delete the
+        border pixel itself, not the entire connected blob attached to it.
+        """
         padded = np.pad(binary_image, ((0, 0), (1, 0)), mode='constant', constant_values=255)
         h, w = padded.shape
         mask = np.zeros((h + 2, w + 2), np.uint8)
         for y in range(h):
-            if padded[y, 0] == 255: cv2.floodFill(padded, mask, (0, y), 0)
+            if padded[y, 0] == 255:
+                cv2.floodFill(padded, mask, (0, y), 0)
         return padded[:, 1:]
 
     def _refine_edge_subpixel(self, image: np.ndarray, int_edge_x: int, stat_entry: np.ndarray, search_window: int = 10) -> float:
@@ -780,10 +793,8 @@ class LineDetectionMFA:
         """
         Runs multiple detectors to find the FIRST failure point.
         Includes logic to handle 'Already Inside' cases (Trap 2, 14).
+        Note: protrusion_lengths_um is already set by _process_all_frames; no recalculation needed.
         """
-        scale = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
-        self.results['protrusion_lengths_um'] = [p * scale for p in self.results['protrusion_lengths_px']]
-        
         protrusions_um = self.results['protrusion_lengths_um']
         intensities = self.results['downstream_intensities']
         

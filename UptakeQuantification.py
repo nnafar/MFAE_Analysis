@@ -108,7 +108,6 @@ class DyeUptakeAnalyzer:
         """
         Main execution loop with region-specific baseline correction and normalization.
         """
-        
         # 1. Calculate Baseline (Cell-Specific F0 for each region)
         baseline_start = max(0, self.pulse_frame - self.baseline_len)
         baseline_end = self.pulse_frame
@@ -118,26 +117,38 @@ class DyeUptakeAnalyzer:
         base_vals_total = []
         
         for k in range(baseline_start, baseline_end):
-            # Explicitly define the image from the list before passing it
             mem_ref_img = self.mem_imgs[k]
+            dye_ref_img = self.dye_imgs[k]
+
+            # Safety check: skip missing frames in baseline
+            if mem_ref_img is None or dye_ref_img is None:
+                logger.warning(f"Baseline frame {k} is missing. Skipping.")
+                continue
             
-            # Call centralized utility instead of internal method
+            # Define the masks for baseline
             mask_prot_ref, mask_body_ref = utils.generate_dual_masks(
                 mem_ref_img, self.pipette_x, self.threshold_prot, 
                 self.threshold_body, self.params
             )
-        
-        # Compute specific F0s
+            
+            # Define mask_total for the baseline period
+            mask_total_ref = cv2.bitwise_or(mask_prot_ref, mask_body_ref)
+            
+            # Collect mean intensities for region-specific F0
+            base_vals_prot.append(cv2.mean(dye_ref_img, mask=mask_prot_ref)[0])
+            base_vals_body.append(cv2.mean(dye_ref_img, mask=mask_body_ref)[0])
+            base_vals_total.append(cv2.mean(dye_ref_img, mask=mask_total_ref)[0])
+            
+        # --- Compute the F0 values ---
         bg_total = np.mean(base_vals_total) if base_vals_total else 0.0
         bg_body = np.mean(base_vals_body) if base_vals_body else bg_total
-        # If protrusion hasn't formed yet, use total cell baseline
         bg_prot = np.mean(base_vals_prot) if base_vals_prot else bg_total
 
         if bg_total == 0.0:
             logger.warning("Complete baseline failure. Fallback to global mean.")
             valid_imgs = [img for img in self.dye_imgs[baseline_start:baseline_end] if img is not None]
             bg_total = bg_body = bg_prot = np.mean([np.mean(img) for img in valid_imgs]) if valid_imgs else 0.0
-
+        
         # Store for export
         self.results['baseline_intensity'] = bg_total
         
@@ -151,7 +162,7 @@ class DyeUptakeAnalyzer:
             f"   Baseline Intensity (Total F0): {bg_total:.2f} a.u."
         )
 
-       # 2. Determine Processing Range
+        # 2. Determine Processing Range
         valid_frames = min(len(self.mem_imgs), len(self.dye_imgs))
         if self.rupture_idx is not None:
              valid_frames = min(valid_frames, self.rupture_idx + 1)
@@ -161,31 +172,36 @@ class DyeUptakeAnalyzer:
             current_mem = self.mem_imgs[i]
             current_dye = self.dye_imgs[i]
             
+            # Safety check to prevent NoneType propagation
+            if current_mem is None or current_dye is None:
+                self._record_empty_frame()
+                continue
+            
             # Call centralized utility
             mask_prot, mask_body = utils.generate_dual_masks(
                 current_mem, self.pipette_x, self.threshold_prot, 
                 self.threshold_body, self.params
             )
+            mask_total = cv2.bitwise_or(mask_prot, mask_body)
             
-            # Intensity logic using utils.calculate_spatial_profile
-            dye_corrected = np.maximum(current_dye.astype(float) - self.results['baseline_intensity'], 0)
-            profile = utils.calculate_spatial_profile(dye_corrected, cv2.bitwise_or(mask_prot, mask_body))
-            self.results['spatial_profiles'].append(profile)
-
-            # B. Body-Only Morphology Assessment
+            # A. Body-Only Morphology Assessment
             area_um2, solidity = self._calculate_body_morphology(mask_body)
             self.results['body_area_um2'].append(area_um2)
             self.results['body_solidity'].append(solidity)
             
-            # C. Quantify Pixel Counts (N) - Required for SEM calculation
+            # B. Quantify Pixel Counts (N) - Required for SEM calculation
             n_prot = cv2.countNonZero(mask_prot)
             n_body = cv2.countNonZero(mask_body)
             n_total = cv2.countNonZero(mask_total)
             
-            # D. Quantify Dye Signal with Region-Specific Background Subtraction
-            dye_float = dye_img.astype(float)
+            self.results['count_protrusion'].append(n_prot)
+            self.results['count_cell_body'].append(n_body)
+            self.results['count_total'].append(n_total)
             
-            # E. Quantify Mean AND Standard Deviation (Applying distinct baselines)
+            # C. Quantify Dye Signal with Region-Specific Background Subtraction
+            dye_float = current_dye.astype(float)
+            
+            # D. Quantify Mean AND Standard Deviation (Applying distinct baselines)
             def get_stats(mask_array: np.ndarray, bg_val: float) -> Tuple[float, float]:
                 if cv2.countNonZero(mask_array) == 0:
                     return 0.0, 0.0
@@ -197,7 +213,7 @@ class DyeUptakeAnalyzer:
             val_body, std_body = get_stats(mask_body, bg_body)
             val_total, std_total = get_stats(mask_total, bg_total)
             
-            # F. Store Absolute Values
+            # E. Store Absolute Values
             self.results['uptake_protrusion'].append(val_prot)
             self.results['uptake_cell_body'].append(val_body)
             self.results['uptake_total'].append(val_total)
@@ -206,40 +222,21 @@ class DyeUptakeAnalyzer:
             self.results['uptake_cell_body_std'].append(std_body)
             self.results['uptake_total_std'].append(std_total)
             
-            self.results['count_protrusion'].append(n_prot)
-            self.results['count_cell_body'].append(n_body)
-            self.results['count_total'].append(n_total)
-            
-            # G. Calculate Normalized Values (ΔF/F₀)
+            # F. Calculate Normalized Values (ΔF/F₀)
             epsilon = 1e-6
             
-            norm_prot = val_prot / bg_prot if bg_prot > epsilon else 0.0
-            norm_body = val_body / bg_body if bg_body > epsilon else 0.0
-            norm_total = val_total / bg_total if bg_total > epsilon else 0.0
+            self.results['uptake_protrusion_norm'].append(val_prot / bg_prot if bg_prot > epsilon else 0.0)
+            self.results['uptake_cell_body_norm'].append(val_body / bg_body if bg_body > epsilon else 0.0)
+            self.results['uptake_total_norm'].append(val_total / bg_total if bg_total > epsilon else 0.0)
             
-            norm_std_prot = std_prot / bg_prot if bg_prot > epsilon else 0.0
-            norm_std_body = std_body / bg_body if bg_body > epsilon else 0.0
-            norm_std_total = std_total / bg_total if bg_total > epsilon else 0.0
-            
-            if bg_total <= epsilon and i == 0:
-                logger.warning("Baseline intensities are near zero. Normalization (dF/F0) will yield zeros.")
-            
-            self.results['uptake_protrusion_norm'].append(norm_prot)
-            self.results['uptake_cell_body_norm'].append(norm_body)
-            self.results['uptake_total_norm'].append(norm_total)
-            
-            self.results['uptake_protrusion_norm_std'].append(norm_std_prot)
-            self.results['uptake_cell_body_norm_std'].append(norm_std_body)
-            self.results['uptake_total_norm_std'].append(norm_std_total)
+            self.results['uptake_protrusion_norm_std'].append(std_prot / bg_prot if bg_prot > epsilon else 0.0)
+            self.results['uptake_cell_body_norm_std'].append(std_body / bg_body if bg_body > epsilon else 0.0)
+            self.results['uptake_total_norm_std'].append(std_total / bg_total if bg_total > epsilon else 0.0)
             
             # H. Spatial Profile
-            # Dye corrected matrix needed specifically for the spatial profile plot
             dye_corrected_total = np.maximum(dye_float - bg_total, 0)
             profile = self._calculate_spatial_profile(dye_corrected_total, mask_total)
-            self.results['spatial_profiles'].append(profile)
-
-        self.results['time_s'] = time_data[:len(self.results['uptake_total'])]
-        
+            self.results['spatial_profiles'].append(profile)    
         # 4. Sync Time Vector
         processed_count = len(self.results['uptake_total'])
         self.results['time_s'] = time_data[self.start_idx : self.start_idx + processed_count]
@@ -339,7 +336,10 @@ class DyeUptakeAnalyzer:
             dye_img = self.dye_imgs[actual_idx]
             if mem_img is None or dye_img is None: continue
 
-            mask_prot, mask_body = self._generate_dual_masks(mem_img)
+            mask_prot, mask_body = utils.generate_dual_masks(
+                mem_img, self.pipette_x, self.threshold_prot, 
+                self.threshold_body, self.params
+            )
             
             norm_dye = cv2.normalize(dye_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             display = cv2.cvtColor(norm_dye, cv2.COLOR_GRAY2BGR)

@@ -179,7 +179,7 @@ actin_parameters:
 # Modify these only if the image processing or fitting is failing.
 
 image_processing:
-  wall_clip_margin: 0.30           # Ignore top/bottom 20% of image (hides pipette walls).
+  wall_clip_margin: 0.25           # Ignore top/bottom 20% of image (hides pipette walls).
   clahe_clip_limit: 2.0            # Contrast enhancement strength.
   clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
   canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).

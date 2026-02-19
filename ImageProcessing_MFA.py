@@ -155,7 +155,15 @@ class CropImage():
         self.vertical_line_pos: Optional[int] = None
         self.moving_line: bool = False
         self.trap_spacing_factor: float = self.params.get('trap_spacing_factor', 1.43)
-        self.verify_traps_interactively: bool = self.params.get('verify_traps_interactively', True)
+        # Read verify_traps_interactively from the nested workflow_settings sub-dict,
+        # matching how LineDetectionMFA.run() reads it. Falls back to a flat-dict
+        # lookup so the worker path (which merges workflow_settings into a flat dict)
+        # still works without change.
+        self.verify_traps_interactively: bool = (
+            self.params.get('workflow_settings', {}).get('verify_traps_interactively')
+            if 'workflow_settings' in self.params
+            else self.params.get('verify_traps_interactively', True)
+        )
         self.all_trap_rois: List[Optional[List[int]]] = []
         self.max_traps: int = self.params.get('max_traps', 18)
 

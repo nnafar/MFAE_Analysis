@@ -52,28 +52,30 @@ logger = logging.getLogger(__name__)
 
 def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Processes a single trap in an independent process.
+    Processes a single trap in an independent process with guaranteed cleanup.
     """
     trap_index = config_dict['trap_index']
     params = config_dict['params']
     
-    # --- Shared Memory Access (MEMBRANE) ---
-    mmap_path = config_dict['mmap_path']
-    dtype = config_dict['dtype']
-    shape = config_dict['shape']
-
+    # Initialize handles to None for safe reference in the finally block
+    all_frames = None
+    all_dye_frames = None
+    all_actin_frames = None
+    
     # Unpack Output Directories
     dirs = config_dict['output_dirs']
-    
     worker_logger = logging.getLogger(f"Worker-{trap_index+1:02d}")
     
     try:
         worker_logger.info(f"Starting analysis for Trap {trap_index+1}...")
         
-        # 1. Access Shared Image Data (Memmap)
-        all_frames = np.memmap(mmap_path, dtype=dtype, mode='r', shape=shape)
+        # 1. Access Shared Image Data (Membrane Membrane)
+        all_frames = np.memmap(config_dict['mmap_path'], 
+                               dtype=config_dict['dtype'], 
+                               mode='r', 
+                               shape=config_dict['shape'])
 
-        # 2. Re-create minimal Cropper
+        # 2. Re-create minimal Cropper for this worker
         crop_params = {
             **params.get('experiment_parameters', {}),
             **params.get('workflow_settings', {}),
@@ -81,24 +83,24 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         }
         cropper = CropImage(crop_params)
         cropper.rotation_angle = config_dict['rotation_angle']
-        cropper.all_trap_rois = [None] * (trap_index + 1) 
+        cropper.all_trap_rois = [None] * (trap_index + 1)
         cropper.all_trap_rois[trap_index] = config_dict['roi_coords']
         
-        # 3. Process ROIs (Direct slice from mmap array - skip rotation)
-        num_frames = shape[0]
+        # 3. Extract Trap-Specific ROIs (Direct slice from shared memory)
+        num_frames = config_dict['shape'][0]
         rois = []
         for j in range(num_frames):
-            # Pass rotation_angle=0 because frames in mmap are already rotated
+            # Slicing from mmap; rotation is already handled in the shared memory stack
             rois.append(utils.crop_single_trap(all_frames[j], config_dict['roi_coords'], 0.0))
 
-        # 4. Run Detection
+        # 4. Run Length Detection
         pip_x = config_dict['tuned_pipette_x']
         thr_prot = config_dict['tuned_threshold_prot']
         
         det_full = LineDetectionMFA(rois, [pip_x, 0], params)
         det_res = det_full.run_detection_with_parameters(pip_x, thr_prot)
 
-        # --- Extract Rupture Time & Index ---
+        # --- Extract Key Timing Data ---
         rupture_time = None
         rupture_idx = None
         time_data = config_dict['time_data']
@@ -108,7 +110,6 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             if rupture_idx is not None and rupture_idx < len(time_data):
                 rupture_time = time_data[rupture_idx]
         
-        # Extract Pulse Time
         pulse_time = None
         dye_params = params.get('dye_uptake_parameters', {})
         if dye_params.get('enable', False):
@@ -116,11 +117,10 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             if 0 <= p_idx < len(time_data):
                 pulse_time = time_data[p_idx]
         
-        # Safety Check
+        # 5. Data Safety Check
         if not (det_res and det_res['protrusion_lengths_um'] and any(p > 0 for p in det_res['protrusion_lengths_um'])):
             return {'trap_index': trap_index, 'status': 'no_detection'}
 
-        # 5. Generate Basic Outputs
         trap_data = {
             'trap_index': trap_index,
             'time': time_data,
@@ -130,183 +130,166 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             'rupture_idx': rupture_idx
         }
 
-        # Export Raw CSV
-        det_full.export_results_to_csv(
-            output_dir=dirs['root'], 
-            experiment_id=f"trap_{trap_index+1:02d}",
-            dir_full=dirs['full_csv'],
-            dir_filtered=dirs['filtered_csv']
-        )
+        # Export Raw CSV and Plot Trace.
+        # Each step is wrapped independently: a plotting or I/O failure will not
+        # discard the detection result — it will only log a warning for that step.
+        try:
+            det_full.export_results_to_csv(dirs['root'], f"trap_{trap_index+1:02d}", dirs['full_csv'], dirs['filtered_csv'])
+        except Exception:
+            worker_logger.warning(f"Trap {trap_index+1}: CSV export failed.", exc_info=True)
 
-        # Plot Trace
-        Plotting_MFA.plot_protrusion_trace(
-            debug_images=det_full.results['debug_images'],
-            time_points=np.array(time_data),
-            protrusions=np.array(det_res['protrusion_lengths_um']),
-            trap_index=trap_index + 1,
-            save_path=dirs['traces'] / f"trap_{trap_index+1:02d}_detection_trace.png",
-            params=params,
-            rupture_time=rupture_time,
-            intensities=det_res.get('downstream_intensities'),
-            pulse_time=pulse_time
-        )
-
-        # 6. Kymograph
-        if params.get('workflow_settings', {}).get('create_kymographs', True):
-            dirs['kymographs'].mkdir(parents=True, exist_ok=True)
-            kymo_params = {**params, **params.get('kymograph_parameters', {})}
-            det_res['pipette_start_x_used'] = config_dict['tuned_pipette_x']
-
-            create_kymograph_for_trap(
-                roi_images=rois,
-                detection_results=det_res,
-                params=kymo_params,
-                output_dir=str(dirs['kymographs']),
+        try:
+            Plotting_MFA.plot_protrusion_trace(
+                debug_images=det_full.results['debug_images'],
+                time_points=np.array(time_data),
+                protrusions=np.array(det_res['protrusion_lengths_um']),
                 trap_index=trap_index + 1,
-                time_data=time_data,
+                save_path=dirs['traces'] / f"trap_{trap_index+1:02d}_detection_trace.png",
+                params=params,
+                rupture_time=rupture_time,
+                intensities=det_res.get('downstream_intensities'),
                 pulse_time=pulse_time
             )
-        
+        except Exception:
+            worker_logger.warning(f"Trap {trap_index+1}: Trace plot failed.", exc_info=True)
+
+        # 6. Kymograph Generation
+        if params.get('workflow_settings', {}).get('create_kymographs', True):
+            try:
+                dirs['kymographs'].mkdir(parents=True, exist_ok=True)
+                # Pass dirs['kymographs'] directly as a Path — no str() conversion needed.
+                create_kymograph_for_trap(rois, det_res, params, dirs['kymographs'], trap_index + 1, time_data)
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Kymograph generation failed.", exc_info=True)
+
         # 7. Viscoelastic Fitting
         trap_fit_rows = []
         if params.get('model_parameters', {}).get('perform_fitting', True):
-            dirs['fitting'].mkdir(parents=True, exist_ok=True)
-            
-            model_params = params.get('model_parameters', {})
-            exp_params = params.get('experiment_parameters', {})
-            
-            channel_width = model_params['channel_width_um']
-            channel_height = model_params['channel_height_um']
-            f_star = model_params['fstar']
-            delta_p = exp_params['constant_pressure']
-            r_eff = compute_reff(channel_width, channel_height, f_star)
-            
-            t_pts = np.array(trap_data['time'], dtype=float)
-            l_pts = np.array(trap_data['protrusions'], dtype=float)
-            if rupture_idx is not None:
-                 t_pts = t_pts[:rupture_idx+1]
-                 l_pts = l_pts[:rupture_idx+1]
-            
-            fit_config = {**params, **params.get('fitting_parameters', {}), **params.get('rupture_detection', {})}
-            fitter = FittingMFA(
-                t_data=t_pts, l_data=l_pts, r_eff=r_eff, delta_p=delta_p,
-                rupture_detected=(rupture_idx is not None),
-                rupture_time=rupture_time
-            )
-            fitter.run(params=fit_config)
-            
-            if fitter.best_fit_model_name:
-                plotter = Plotting_MFA.MFAPlotter(fitter, params=params)
-                plotter.create_analysis_plot(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_analysis_plot.png")
-                plotter.plot_all_models_comparison(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_model_comparison.png")
-                
-                for model_name, results in fitter.fit_results.items():
-                    model_row = {
-                        'Trap_Number': trap_index + 1,
-                        'Model_Name': model_name,
-                        'Is_Best_Fit': model_name == fitter.best_fit_model_name,
-                        'R_Squared': results.get('r_squared'),
-                        'Rupture_Detected': fitter.rupture_detected,
-                        'Effective_Radius_um': r_eff, 
-                        'F_Star': f_star              
-                    }
-                    if results.get('params') is not None:
-                        params_dict = dict(zip(results['param_names'], results['params']))
-                        model_row.update(params_dict)
-                    trap_fit_rows.append(model_row)
+            try:
+                dirs['fitting'].mkdir(parents=True, exist_ok=True)
+
+                r_eff = compute_reff(params['model_parameters']['channel_width_um'],
+                                     params['model_parameters']['channel_height_um'],
+                                     params['model_parameters']['fstar'])
+                t_pts = np.array(time_data[:rupture_idx+1]) if rupture_idx is not None else np.array(time_data)
+                l_pts = np.array(det_res['protrusion_lengths_um'][:rupture_idx+1]) if rupture_idx is not None else np.array(det_res['protrusion_lengths_um'])
+                delta_p = params['experiment_parameters']['constant_pressure']
+                fit_run_params = {**params, **params.get('fitting_parameters', {})}
+
+                # --- Determine pulse index (1-indexed frame number → 0-indexed array position) ---
+                pulse_idx = None
+                if pulse_time is not None:
+                    p_frame = params.get('dye_uptake_parameters', {}).get('pulse_frame', 10)
+                    # Clamp to the available range after any rupture truncation
+                    pulse_idx = min(p_frame - 1, len(t_pts) - 1)
+                    if pulse_idx <= 0:
+                        pulse_idx = None  # Pulse at or before frame 1: no usable pre-pulse window
+
+                def _run_fitter(t, l, phase, rupture_det, rupt_time):
+                    """Instantiate, run, and return a FittingMFA for one time window."""
+                    fitter = FittingMFA(t, l, r_eff, delta_p,
+                                        rupture_detected=rupture_det,
+                                        rupture_time=rupt_time,
+                                        phase=phase)
+                    fitter.run(params=fit_run_params)
+                    return fitter
+
+                def _collect_rows(fitter, phase_label):
+                    """Convert a fitted FittingMFA into summary rows for the CSV."""
+                    rows = []
+                    if fitter.best_fit_model_name:
+                        for model_name, res_fit in fitter.fit_results.items():
+                            rows.append({
+                                'Trap_Number': trap_index + 1,
+                                'Phase': phase_label,
+                                'Model_Name': model_name,
+                                'R_Squared': res_fit['r_squared'],
+                                'AIC': res_fit['aic'],
+                                'N_Params': res_fit['n_params'],
+                                'Is_Best_Fit': model_name == fitter.best_fit_model_name
+                            })
+                    return rows
+
+                # --- Phase A: Full trace (always run, preserves backward compatibility) ---
+                fitter_full = _run_fitter(t_pts, l_pts, 'full',
+                                          rupture_det=(rupture_idx is not None),
+                                          rupt_time=rupture_time)
+                trap_fit_rows.extend(_collect_rows(fitter_full, 'full'))
+
+                # Use the full-trace fitter for the analysis plot (most complete view)
+                if fitter_full.best_fit_model_name:
+                    try:
+                        plotter = Plotting_MFA.MFAPlotter(fitter_full, params=params)
+                        plotter.create_analysis_plot(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_analysis_plot.png")
+                    except Exception:
+                        worker_logger.warning(f"Trap {trap_index+1}: Fit plot failed.", exc_info=True)
+
+                # --- Phases B & C: Pre- and post-pulse (only when a pulse was applied) ---
+                if pulse_idx is not None:
+                    # Pre-pulse: frames 0 → pulse_idx (exclusive).
+                    # Standard time and lengths — this is normal baseline aspiration.
+                    try:
+                        t_pre = t_pts[:pulse_idx]
+                        l_pre = l_pts[:pulse_idx]
+                        fitter_pre = _run_fitter(t_pre, l_pre, 'pre_pulse',
+                                                  rupture_det=False, rupt_time=None)
+                        trap_fit_rows.extend(_collect_rows(fitter_pre, 'pre_pulse'))
+                    except Exception:
+                        worker_logger.warning(f"Trap {trap_index+1}: Pre-pulse fitting failed.", exc_info=True)
+
+                    # Post-pulse: frames pulse_idx → end.
+                    # Time is re-zeroed to the pulse moment so the model sees t=0 at the pulse.
+                    # Length is offset by L at the pulse so the model starts from ~0 deformation,
+                    # satisfying the physical assumption of deforming from rest under constant pressure.
+                    # The extracted E and η are therefore "post-pulse apparent parameters" and can be
+                    # directly compared to the pre-pulse values.
+                    try:
+                        t_post = t_pts[pulse_idx:] - t_pts[pulse_idx]
+                        l_post = l_pts[pulse_idx:] - l_pts[pulse_idx]
+                        fitter_post = _run_fitter(t_post, l_post, 'post_pulse',
+                                                   rupture_det=(rupture_idx is not None),
+                                                   rupt_time=(rupture_time - t_pts[pulse_idx]) if rupture_time is not None else None)
+                        trap_fit_rows.extend(_collect_rows(fitter_post, 'post_pulse'))
+                    except Exception:
+                        worker_logger.warning(f"Trap {trap_index+1}: Post-pulse fitting failed.", exc_info=True)
+
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Fitting failed.", exc_info=True)
 
         # 8. Dye Uptake Analysis
         dye_config = config_dict.get('dye_mmap')
-        # Check if enabled AND if cache exists
         if params.get('dye_uptake_parameters', {}).get('enable', False) and dye_config and dye_config['path']:
-            dirs['dye'].mkdir(parents=True, exist_ok=True)
-            worker_logger.info("Running Dye Uptake Analysis...")
-            
-            # Load from Shared Memory (Fast Local Read)
-            all_dye_frames = np.memmap(dye_config['path'], dtype=dye_config['dtype'], mode='r', shape=dye_config['shape'])
-            
-            # Crop ROIs (frames already rotated in shared memory)
-            dye_rois = []
-            for j in range(len(all_dye_frames)):
-                # Use skip_rotation=True to avoid double rotation
-                dye_rois.append(cropper.process_frame(all_dye_frames[j], trap_index, skip_rotation=True))
-            
-            # Clean up handle
-            del all_dye_frames
-            
-            # Run Analyzer
-            thr_prot = config_dict.get('tuned_threshold_prot', 30)
-            thr_body = config_dict.get('tuned_threshold_body', thr_prot)
-            
-            uptake_analyzer = DyeUptakeAnalyzer(
-                membrane_rois=rois,
-                dye_rois=dye_rois,
-                pipette_x=det_res.get('pipette_start_x_used'),
-                threshold_prot=thr_prot,
-                threshold_body=thr_body,
-                rupture_idx=rupture_idx,
-                params=params,
-                start_idx=det_res.get('entry_frame_index', 0)
-            )
-            
-            dye_results = uptake_analyzer.run(time_data)
-            uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
-            uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])
-            Plotting_MFA.plot_dye_uptake_dashboard(
-                dye_results, trap_index + 1, dirs['dye'], params, pipette_x=det_res.get('pipette_start_x_used')
-            )
-        
-        # 9. Actin Analysis
-        actin_config = config_dict.get('actin_mmap')
-        if params.get('actin_parameters', {}).get('enable', False) and actin_config and actin_config['path']:
-            dirs['actin'] = dirs['root'] / "Actin Analysis"
-            dirs['actin'].mkdir(parents=True, exist_ok=True)
-            worker_logger.info("Running Actin Analysis...")
-            
-            # Load from Shared Memory (Fast Local Read)
-            all_actin_frames = np.memmap(actin_config['path'], dtype=actin_config['dtype'], mode='r', shape=actin_config['shape'])
-            
-            # Crop ROIs (frames already rotated in shared memory)
-            actin_rois = []
-            for j in range(len(all_actin_frames)):
-                # Use skip_rotation=True to avoid double rotation
-                actin_rois.append(cropper.process_frame(all_actin_frames[j], trap_index, skip_rotation=True))
-            
-            del all_actin_frames
-            
-            thr_prot = config_dict.get('tuned_threshold_prot', 30)
-            thr_body = config_dict.get('tuned_threshold_body', thr_prot)
-            
-            actin_analyzer = ActinAnalyzer(
-                membrane_rois=rois,
-                actin_rois=actin_rois,
-                pipette_x=det_res.get('pipette_start_x_used'),
-                threshold_prot=thr_prot,
-                threshold_body=thr_body,
-                params=params
-            )
-            
-            actin_results = actin_analyzer.run(time_data)
-            actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
-            Plotting_MFA.plot_actin_dashboard(
-                actin_results, 
-                trap_index + 1, 
-                dirs['actin'], 
-                params, 
-                pipette_x=det_res.get('pipette_start_x_used')
-            )
-        
-        # Cleanup memory
-        del all_frames
-        del rois
-        gc.collect()
-        
+            try:
+                dirs['dye'].mkdir(parents=True, exist_ok=True)
+                all_dye_frames = np.memmap(dye_config['path'], dtype=dye_config['dtype'], mode='r', shape=dye_config['shape'])
+                dye_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_dye_frames]
+
+                uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params)
+                dye_results = uptake_analyzer.run(time_data)
+                uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
+                Plotting_MFA.plot_dye_uptake_dashboard(dye_results, trap_index + 1, dirs['dye'], params, det_res['pipette_start_x_used'])
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Dye uptake analysis failed.", exc_info=True)
+
         return {'trap_index': trap_index, 'status': 'success', 'data': trap_data, 'fit_rows': trap_fit_rows}
 
     except Exception:
         worker_logger.error("A fatal error occurred in worker", exc_info=True)
         return {'trap_index': trap_index, 'status': 'error', 'error': traceback.format_exc()}
 
+    finally:
+        # --- CLEANUP: Explicitly release all Shared Memory handles ---
+        for mmap_obj in [all_frames, all_dye_frames, all_actin_frames]:
+            if mmap_obj is not None:
+                try:
+                    mmap_obj.flush()
+                    # Force OS-level lock release for Windows
+                    if hasattr(mmap_obj, '_mmap') and mmap_obj._mmap is not None:
+                        mmap_obj._mmap.close()
+                    del mmap_obj
+                except Exception: 
+                    pass
+        gc.collect()
 
 class MFAAnalysis:
     """
@@ -617,8 +600,7 @@ class MFAAnalysis:
 
     def _aggregate_and_export_results(self, all_results: List[Dict[str, Any]]) -> None:
         """Combines results from all workers into Summary CSVs."""
-        #self._save_consolidated_protrusions_wide(all_results)
-        #self._save_consolidated_protrusions_long(all_results)
+        self._save_consolidated_protrusions_long(all_results)
         
         all_fits_data = []
         for res in all_results:
