@@ -159,12 +159,19 @@ dye_uptake_parameters:
   enable: True
   
   # File Naming: Strings used to identify which image is which channel.
-  membrane_channel_pattern: "c002"    # e.g., Membrane label
-  dye_channel_pattern: "c001"         # e.g., Fluorescence / TRITC/ PI dye
+  membrane_channel_pattern: "C1"    # e.g., Membrane label
+  dye_channel_pattern: "C2"         # e.g., Fluorescence / TRITC/ PI dye
   
   # Timing: When did you shock the cell?
   pulse_frame: 10                   # The exact frame number of the electric pulse.
   baseline_frames: 5                # How many frames before the pulse to check for background signal.
+
+# ===================================================================
+# --- 7. ACTIN QUANTIFICATION ---
+# ===================================================================
+actin_parameters:
+  enable: True                      # Set to True to enable, False to skip
+  channel_pattern: "C3"             # Substring to identify actin images
 
 # ===================================================================
 # ADVANCED / DEVELOPER PARAMETERS
@@ -172,7 +179,7 @@ dye_uptake_parameters:
 # Modify these only if the image processing or fitting is failing.
 
 image_processing:
-  wall_clip_margin: 0.20           # Ignore top/bottom 20% of image (hides pipette walls).
+  wall_clip_margin: 0.30           # Ignore top/bottom 20% of image (hides pipette walls).
   clahe_clip_limit: 2.0            # Contrast enhancement strength.
   clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
   canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).

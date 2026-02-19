@@ -11,8 +11,6 @@ from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
 
 import Utils_MFA as utils
-# We reuse the masking logic from UptakeQuantification to ensure consistency
-from UptakeQuantification import DyeUptakeAnalyzer 
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +26,10 @@ class ActinAnalyzer:
         self.mem_imgs = membrane_rois
         self.actin_imgs = actin_rois
         self.pipette_x = pipette_x
+        self.threshold_prot = threshold_prot
+        self.threshold_body = threshold_body
         self.params = params
         
-        # Borrow mask generation from Dye Analyzer (DRY principle)
-        self._mask_helper = DyeUptakeAnalyzer(
-            membrane_rois, [], pipette_x, threshold_prot, threshold_body, None, params
-        )
-
         # Pulse Timing Logic
         dye_params = params.get('dye_uptake_parameters', {})
         self.pulse_enabled = dye_params.get('enable', False)
@@ -67,7 +62,10 @@ class ActinAnalyzer:
                 continue
                 
             # 1. Generate Masks (Using Membrane Channel)
-            mask_prot, mask_body = self._mask_helper._generate_dual_masks(mem_img)
+            mask_prot, mask_body = utils.generate_dual_masks(
+                mem_img, self.pipette_x, self.threshold_prot, 
+                self.threshold_body, self.params
+            )
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
             
             # 2. Measure Actin Intensity
@@ -79,7 +77,7 @@ class ActinAnalyzer:
             ratio = (mean_prot / mean_body) if mean_body > 1.0 else 0.0
             
             # 4. Spatial Profile (Kymograph data)
-            profile = self._mask_helper._calculate_spatial_profile(act_img.astype(float), mask_total)
+            profile = utils.calculate_spatial_profile(act_img.astype(float), mask_total)
             
             self.results['actin_protrusion_mean'].append(mean_prot)
             self.results['actin_body_mean'].append(mean_body)

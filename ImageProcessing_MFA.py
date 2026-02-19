@@ -289,7 +289,8 @@ class CropImage():
                 "Contrast: J/L | Brightness: I/K",
                 "ENTER: Confirm | R: Restart Setup | ESC: Stop Analysis"
             ])
-            cv2.imshow('Angle Adjustment', display_image)
+            display_resized = utils.prepare_display_image(display_image, self.window_width, self.window_height)
+            cv2.imshow('Angle Adjustment', display_resized)
 
             key = cv2.waitKey(30) & 0xFF
             angle_changed = False
@@ -347,10 +348,6 @@ class CropImage():
             # Standardized Guide Color (Medium Blue) for ROI Box
             guide_color = utils.get_ui_color('guide')
             cv2.rectangle(display_image, (x, y), (x + rw, y + rh), guide_color, 2)
-            
-            utils.draw_ui_text(display_image, 
-                               f"Size: {rw * self.scale_factor:.1f} x {rh * self.scale_factor:.1f} um", 
-                               (x, y - 10), color=guide_color)
             
             utils.draw_ui_text(display_image, 
                                f"Size: {rw * self.scale_factor:.1f} x {rh * self.scale_factor:.1f} um", 
@@ -798,15 +795,20 @@ class CropImage():
         cv2.imwrite(str(save_path), display)
         logger.info(f"Trap map saved to: {save_path.name}")
 
-    def process_frame(self, frame: np.ndarray, trap_idx: int = 0) -> Optional[np.ndarray]:
-        """Applies rotation and extracts the specified trap ROI from a single frame."""
+    def process_frame(self, frame: np.ndarray, trap_idx: int = 0, skip_rotation: bool = False) -> Optional[np.ndarray]:
+        """
+        Applies rotation and extracts the specified trap ROI from a single frame.
+        Optimization: skip_rotation=True skips the expensive cv2.warpAffine call.
+        """
         if frame is None:
             logger.warning(f"process_frame received a None frame for trap {trap_idx}.")
             return None
-        rotated = utils.rotate_image(frame, self.rotation_angle)
-        if trap_idx < len(self.all_trap_rois):
-            roi = self.all_trap_rois[trap_idx]
-            if roi is None: return None
-            y_min, y_max, x_min, x_max = roi
-            return rotated[y_min:y_max, x_min:x_max]
-        return None
+            
+        # Only rotate if the flag is False and an angle is actually set
+        if skip_rotation or self.rotation_angle == 0:
+            rotated = frame
+        else:
+            rotated = utils.rotate_image(frame, self.rotation_angle)
+            
+        y_min, y_max, x_min, x_max = self.all_trap_rois[trap_idx]
+        return rotated[y_min:y_max, x_min:x_max].copy()

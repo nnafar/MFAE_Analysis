@@ -259,9 +259,12 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     plt.close(fig)
 
 # --- 3. PROTRUSION TRACE PLOT (Unchanged) ---
-def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarray, protrusions: np.ndarray, 
-                          trap_index: int, save_path: Path, params: Dict[str, Any], 
-                          rupture_time: Optional[float], intensities: Optional[np.ndarray]):
+def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarray, 
+                          protrusions: np.ndarray, trap_index: int, save_path: Path, 
+                          params: Dict[str, Any], rupture_time: Optional[float], 
+                          intensities: Optional[np.ndarray], 
+                          pulse_time: Optional[float] = None):
+    """Generates the suite of protrusion dynamics plots."""
     utils.set_paper_style()
     colors = utils.MFA_COLORS
     
@@ -292,6 +295,11 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
     if rupture_time is not None:  # Explicit check allows 0.0s to be valid
         for ax in [ax1, ax2]:
             ax.axvline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2.5, label='Rupture Detected')
+            ax.legend()
+            
+    if pulse_time is not None:
+        for ax in [ax1, ax2]:
+            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2, label='Pulse Applied')
             ax.legend()
 
     utils.save_plot_png(save_path)

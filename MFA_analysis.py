@@ -84,11 +84,12 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         cropper.all_trap_rois = [None] * (trap_index + 1) 
         cropper.all_trap_rois[trap_index] = config_dict['roi_coords']
         
-        # 3. Process ROIs (Direct slice from mmap array)
+        # 3. Process ROIs (Direct slice from mmap array - skip rotation)
         num_frames = shape[0]
         rois = []
         for j in range(num_frames):
-            rois.append(cropper.process_frame(all_frames[j], trap_index))
+            # Pass rotation_angle=0 because frames in mmap are already rotated
+            rois.append(utils.crop_single_trap(all_frames[j], config_dict['roi_coords'], 0.0))
 
         # 4. Run Detection
         pip_x = config_dict['tuned_pipette_x']
@@ -187,7 +188,11 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                  l_pts = l_pts[:rupture_idx+1]
             
             fit_config = {**params, **params.get('fitting_parameters', {}), **params.get('rupture_detection', {})}
-            fitter = FittingMFA(t_data=t_pts, l_data=l_pts, r_eff=r_eff, delta_p=delta_p)
+            fitter = FittingMFA(
+                t_data=t_pts, l_data=l_pts, r_eff=r_eff, delta_p=delta_p,
+                rupture_detected=(rupture_idx is not None),
+                rupture_time=rupture_time
+            )
             fitter.run(params=fit_config)
             
             if fitter.best_fit_model_name:
@@ -210,7 +215,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                         model_row.update(params_dict)
                     trap_fit_rows.append(model_row)
 
-        # 8. Dye Uptake Analysis (OPTIMIZED)
+        # 8. Dye Uptake Analysis
         dye_config = config_dict.get('dye_mmap')
         # Check if enabled AND if cache exists
         if params.get('dye_uptake_parameters', {}).get('enable', False) and dye_config and dye_config['path']:
@@ -220,10 +225,11 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             # Load from Shared Memory (Fast Local Read)
             all_dye_frames = np.memmap(dye_config['path'], dtype=dye_config['dtype'], mode='r', shape=dye_config['shape'])
             
-            # Crop ROIs
+            # Crop ROIs (frames already rotated in shared memory)
             dye_rois = []
             for j in range(len(all_dye_frames)):
-                dye_rois.append(cropper.process_frame(all_dye_frames[j], trap_index))
+                # Use skip_rotation=True to avoid double rotation
+                dye_rois.append(cropper.process_frame(all_dye_frames[j], trap_index, skip_rotation=True))
             
             # Clean up handle
             del all_dye_frames
@@ -250,7 +256,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 dye_results, trap_index + 1, dirs['dye'], params, pipette_x=det_res.get('pipette_start_x_used')
             )
         
-        # 9. Actin Analysis (OPTIMIZED)
+        # 9. Actin Analysis
         actin_config = config_dict.get('actin_mmap')
         if params.get('actin_parameters', {}).get('enable', False) and actin_config and actin_config['path']:
             dirs['actin'] = dirs['root'] / "Actin Analysis"
@@ -260,10 +266,11 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             # Load from Shared Memory (Fast Local Read)
             all_actin_frames = np.memmap(actin_config['path'], dtype=actin_config['dtype'], mode='r', shape=actin_config['shape'])
             
-            # Crop ROIs
+            # Crop ROIs (frames already rotated in shared memory)
             actin_rois = []
             for j in range(len(all_actin_frames)):
-                actin_rois.append(cropper.process_frame(all_actin_frames[j], trap_index))
+                # Use skip_rotation=True to avoid double rotation
+                actin_rois.append(cropper.process_frame(all_actin_frames[j], trap_index, skip_rotation=True))
             
             del all_actin_frames
             
@@ -397,6 +404,7 @@ class MFAAnalysis:
                 logger.info(f"Cleaned up temporary directory: {self.temp_dir}")
             except Exception as e:
                 logger.warning(f"Could not cleanup temp dir: {e}")
+                    
 
     def run_analysis(self) -> bool:
         """
@@ -405,12 +413,12 @@ class MFAAnalysis:
         try:
             logger.info("== MFA ANALYSIS START ==")
             
-            # --- Phase 0: Load Metadata ---
+            # --- Phase 0: Load Metadata ---'
+            # 1. Load file list
             self.file_reader.run()
-            # The loader handles caching for the interactive phase
-            max_cache = self.params.get('workflow_settings', {}).get('max_cache_size', 50)
-            self.loader = utils.MemoryEfficientFrameLoader(self.file_reader, max_cache)
-            
+            self.loader = utils.MemoryEfficientFrameLoader(self.file_reader, 
+                self.params.get('workflow_settings', {}).get('max_cache_size', 50))
+         
             trap_configs = []
             
             # --- Phase 1: Interactive Setup (Geometry) ---
@@ -520,28 +528,26 @@ class MFAAnalysis:
             return None, None, None
 
         logger.info(f"Caching {tag} images to shared memory...")
-        # Read first file to get dimensions/dtype
+        
+        # Determine rotation and final dimensions
+        rotation_angle = self.cropper.rotation_angle if self.cropper else 0.0
         first_img = self.file_reader.read_img(file_list[0])
-        if first_img is None:
-             logger.warning(f"Could not read first file for {tag} cache.")
-             return None, None, None
+        if rotation_angle != 0:
+            first_img = utils.rotate_image(first_img, rotation_angle)
              
         h, w = first_img.shape[:2]
         is_color = len(first_img.shape) == 3
-        n_frames = len(file_list)
-        
-        shape = (n_frames, h, w, 3) if is_color else (n_frames, h, w)
+        shape = (len(file_list), h, w, 3) if is_color else (len(file_list), h, w)
         dtype = first_img.dtype
         mmap_path = self.temp_dir / f"image_stack_{tag}.dat"
         
-        # 'w+' creates or overwrites the file
         fp = np.memmap(mmap_path, dtype=dtype, mode='w+', shape=shape)
         
-        # Load loop
-        for i, f in enumerate(tqdm(file_list, desc=f"Loading {tag}")):
+        for i, f in enumerate(tqdm(file_list, desc=f"Caching {tag} (Rotated)")):
             img = self.file_reader.read_img(f)
-            if img is not None: fp[i] = img
-            else: fp[i] = np.zeros_like(first_img)
+            if rotation_angle != 0:
+                img = utils.rotate_image(img, rotation_angle)
+            fp[i] = img if img is not None else np.zeros_like(first_img)
         
         fp.flush()
         return str(mmap_path), shape, dtype

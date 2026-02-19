@@ -89,12 +89,14 @@ class LineDetectionMFA:
             'protrusion_lengths_px': [],    # Raw length data in pixels
             'protrusion_lengths_um': [],    # Converted length in microns 
             'cell_area_px': [],             # Area of the tracked cell in pixels
+            'entry_frame_index': None,
             # Rupture Detection
             'downstream_intensities': [],   # Brightness values inside the pipette (for rupture)'
             'rupture_detected': False,      # Boolean flag for rupture event
             'rupture_frame_index': None,    # Frame index where rupture occurred
             'rupture_time': None,           # Time in seconds
             'debug_images': [],             # Visualizations with overlays
+            'rupture_reason': None,
             # Protrusion Detection
             'pipette_start_x_used': None,   # The X-coordinate used as "Zero"
             'threshold_prot': None,         # Primary threshold (clipped)
@@ -627,22 +629,18 @@ class LineDetectionMFA:
         # Determine 50% threshold for the edge
         threshold = bg_floor + (0.5 * dynamic_range)
         
-        # Scan RIGHT-TO-LEFT to find the exact drop-off point
-        found_edge = False
-        edge_idx = 0
-        for i in range(len(profile) - 1, -1, -1):
-            if profile[i] < threshold:
-                edge_idx = i
-                found_edge = True
-                break
+        # Vectorized Search
+        edge_indices = np.where(profile < threshold)[0]
+        if edge_indices.size == 0:
+            return float(int_edge_x)
+            
+        # The rightmost index where signal drops below threshold
+        edge_idx = edge_indices[-1]
         
-        if not found_edge: return float(x_start)
-        
-        # Linear interpolation between pixels
+        # Linear interpolation for sub-pixel cross point
         if edge_idx < len(profile) - 1:
-            val_low = profile[edge_idx]
-            val_high = profile[edge_idx + 1]
-            fraction = (threshold - val_low) / (val_high - val_low) if val_high != val_low else 0.5
+            v_low, v_high = profile[edge_idx], profile[edge_idx + 1]
+            fraction = (threshold - v_low) / (v_high - v_low) if v_high != v_low else 0.5
             offset = edge_idx + fraction
         else:
             offset = float(edge_idx)
@@ -904,7 +902,7 @@ class LineDetectionMFA:
             if deviation > 0:
                 S_pos += deviation
             else:
-                S_pos = max(0, S_pos + deviation) # Reset accumulation if signal drops
+                S_pos = 0.0 # Reset accumulation if signal drops
             
             if S_pos > h:
                 return True, i + settling

@@ -118,28 +118,19 @@ class DyeUptakeAnalyzer:
         base_vals_total = []
         
         for k in range(baseline_start, baseline_end):
-            if k >= len(self.mem_imgs) or k >= len(self.dye_imgs): continue
+            # Explicitly define the image from the list before passing it
+            mem_ref_img = self.mem_imgs[k]
             
-            mem_ref = self.mem_imgs[k]
-            dye_ref = self.dye_imgs[k]
-            
-            if mem_ref is not None and dye_ref is not None:
-                mask_prot_ref, mask_body_ref = self._generate_dual_masks(mem_ref)
-                mask_total_ref = cv2.bitwise_or(mask_prot_ref, mask_body_ref)
-                
-                # Only measure if the mask actually contains pixels
-                if cv2.countNonZero(mask_prot_ref) > 0:
-                    base_vals_prot.append(cv2.mean(dye_ref, mask=mask_prot_ref)[0])
-                if cv2.countNonZero(mask_body_ref) > 0:
-                    base_vals_body.append(cv2.mean(dye_ref, mask=mask_body_ref)[0])
-                if cv2.countNonZero(mask_total_ref) > 0:
-                    base_vals_total.append(cv2.mean(dye_ref, mask=mask_total_ref)[0])
+            # Call centralized utility instead of internal method
+            mask_prot_ref, mask_body_ref = utils.generate_dual_masks(
+                mem_ref_img, self.pipette_x, self.threshold_prot, 
+                self.threshold_body, self.params
+            )
         
         # Compute specific F0s
         bg_total = np.mean(base_vals_total) if base_vals_total else 0.0
         bg_body = np.mean(base_vals_body) if base_vals_body else bg_total
-        
-        # Fallback: If protrusion hasn't formed yet, use total cell baseline
+        # If protrusion hasn't formed yet, use total cell baseline
         bg_prot = np.mean(base_vals_prot) if base_vals_prot else bg_total
 
         if bg_total == 0.0:
@@ -167,20 +158,19 @@ class DyeUptakeAnalyzer:
         
         # 3. Process Frames (Loop starts from start_idx)
         for i in range(self.start_idx, valid_frames):
-            mem_img = self.mem_imgs[i]
-            dye_img = self.dye_imgs[i]
+            current_mem = self.mem_imgs[i]
+            current_dye = self.dye_imgs[i]
             
-            if mem_img is None or dye_img is None:
-                self._record_empty_frame()
-                continue
+            # Call centralized utility
+            mask_prot, mask_body = utils.generate_dual_masks(
+                current_mem, self.pipette_x, self.threshold_prot, 
+                self.threshold_body, self.params
+            )
             
-            # Stop if image is effectively black/empty
-            if np.mean(mem_img) < 1.0 or np.mean(dye_img) < 1.0:
-                break
-            
-            # A. Create Dual Masks
-            mask_prot, mask_body = self._generate_dual_masks(mem_img)
-            mask_total = cv2.bitwise_or(mask_prot, mask_body)
+            # Intensity logic using utils.calculate_spatial_profile
+            dye_corrected = np.maximum(current_dye.astype(float) - self.results['baseline_intensity'], 0)
+            profile = utils.calculate_spatial_profile(dye_corrected, cv2.bitwise_or(mask_prot, mask_body))
+            self.results['spatial_profiles'].append(profile)
 
             # B. Body-Only Morphology Assessment
             area_um2, solidity = self._calculate_body_morphology(mask_body)
@@ -299,55 +289,6 @@ class DyeUptakeAnalyzer:
         area_um2 = area_px * (self.scale_factor ** 2)
         
         return area_um2, solidity
-
-    def _generate_dual_masks(self, mem_img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Creates separate masks for Protrusion and Cell Body."""
-        img_8u = utils.normalize_to_8bit(mem_img)
-        gray = img_8u if len(img_8u.shape) == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
-        
-        # 1. Preprocessing
-        clahe = cv2.createCLAHE(clipLimit=self.clahe_limit, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray)
-        blurred = cv2.GaussianBlur(enhanced, self.blur_kernel, 0)
-        
-        h, w = gray.shape
-        margin = int(h * self.clip_margin)
-        pip_x = max(0, min(w, int(self.pipette_x)))
-        
-        # 2. Protrusion Mask (Left)
-        _, bin_prot = cv2.threshold(blurred, self.threshold_prot, 255, cv2.THRESH_BINARY)
-        mask_prot = self._clean_mask(bin_prot)
-        
-        if margin > 0:
-            mask_prot[:margin, :] = 0
-            mask_prot[h-margin:, :] = 0
-        mask_prot[:, pip_x:] = 0
-        
-        # --- Debris Removal ---
-        mask_prot = self._keep_connected_to_pipette(mask_prot, pip_x)
-
-        # 3. Body Mask (Right)
-        _, bin_body = cv2.threshold(blurred, self.threshold_body, 255, cv2.THRESH_BINARY)
-        mask_body = self._clean_mask(bin_body)
-        mask_body[:, :pip_x] = 0
-
-        return mask_prot, mask_body
-    
-    def _keep_connected_to_pipette(self, mask: np.ndarray, pip_x: int, tolerance: int = 5) -> np.ndarray:
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        if num_labels <= 1: return mask
-        new_mask = np.zeros_like(mask)
-        for i in range(1, num_labels):
-            x, y, w, h_rect, area = stats[i]
-            if (x + w) >= (pip_x - tolerance):
-                new_mask[labels == i] = 255
-        return new_mask
-    
-    def _clean_mask(self, binary: np.ndarray) -> np.ndarray:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
-        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)))
-        return cleaned
 
     def _calculate_spatial_profile(self, dye_img: np.ndarray, mask: np.ndarray) -> np.ndarray:
         col_sums = np.sum(dye_img * (mask > 0), axis=0)

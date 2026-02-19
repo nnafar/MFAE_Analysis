@@ -31,16 +31,20 @@ class FittingMFA:
     Manages the multi-model fitting process for a single dataset (one trap).
     """
 
-    def __init__(self, t_data: np.ndarray, l_data: np.ndarray, r_eff: float, delta_p: float, C: float = 1.0) -> None:
+    def __init__(self, t_data: np.ndarray, l_data: np.ndarray, r_eff: float, delta_p: float, C: float = 1.0,
+                 rupture_detected: bool = False, rupture_time: Optional[float] = None) -> None:
         """
         Initializes the fitter with experimental data and physical constants.
         
         Args:
-            t_data: Time points [seconds]
-            l_data: Protrusion lengths [microns]
+            t_data: Time points [seconds]. Must already be truncated at the rupture
+                    point by the caller before being passed in.
+            l_data: Protrusion lengths [microns]. Same truncation applies.
             r_eff: Effective radius of the channel [microns] (Geometric factor)
             delta_p: Applied pressure [Pascals]
             C: Geometric correction factor (usually ~1.0 or incorporated into r_eff)
+            rupture_detected: Whether LineDetectionMFA found a rupture event.
+            rupture_time: Time (seconds) of the rupture, as reported by LineDetectionMFA.
         """
         self.t_raw = np.asarray(t_data, dtype=float)
         self.l_raw = np.asarray(l_data, dtype=float)
@@ -62,9 +66,10 @@ class FittingMFA:
         self.best_fit_model_name: Optional[str] = None
         self.best_fit_params: Optional[Dict[str, Any]] = None
 
-        # Rupture detection results
-        self.rupture_detected: bool = False
-        self.rupture_time: Optional[float] = None
+        # Rupture info — set from LineDetectionMFA results passed in by the caller.
+        # This fitter never re-detects rupture; data it receives is already truncated.
+        self.rupture_detected: bool = rupture_detected
+        self.rupture_time: Optional[float] = rupture_time
         self.rupture_index: Optional[int] = None
 
         # Processing metadata
@@ -146,36 +151,9 @@ class FittingMFA:
                 if self.debug_mode:
                     logger.debug(f"   - Outlier rejection filtered {original_points - filtered_points} points.")
         # --- END: OUTLIER REJECTION ---
-        
-        # Redundant Rupture Check (Fallback if LineDetection missed it)
-        if params.get('enable_rupture_detection', True):
-            rupture_idx = self._detect_rupture(t_processed, l_processed, params)
-            if rupture_idx is not None:
-                self.rupture_detected = True
-                self.rupture_index = rupture_idx
-                self.rupture_time = t_processed[rupture_idx]
-                t_processed, l_processed = t_processed[:rupture_idx], l_processed[:rupture_idx]
 
         self.t_fit = t_processed
         self.l_fit = l_processed
-
-    def _detect_rupture(self, t: np.ndarray, l: np.ndarray, params: Dict[str, Any]) -> Optional[int]:
-        """Identifies a membrane rupture by detecting a sharp, unphysical DROP in protrusion length."""
-        window_size = params.get('rupture_window_size', 15)
-        if len(l) < window_size + 5: return None
-
-        drop_thresh = params.get('rupture_drop_threshold', 0.4)
-        abs_thresh = params.get('rupture_absolute_threshold', 3.0)
-        
-        # Look for drops relative to the recent maximum
-        rolling_max = np.array([np.max(l[max(0, i - window_size):i]) for i in range(1, len(l) + 1)])
-        absolute_drops = rolling_max - l
-        relative_drops = absolute_drops / (rolling_max + 1e-9)
-
-        rupture_mask = (relative_drops >= drop_thresh) & (absolute_drops >= abs_thresh)
-        rupture_candidates = np.where(rupture_mask)[0]
-
-        return rupture_candidates[0] if len(rupture_candidates) > 0 else None
 
     def _get_initial_guess(self) -> Tuple[float, float, float]:
         """
@@ -271,61 +249,56 @@ class FittingMFA:
         return self.models_cache
 
 
-    def _perform_multi_model_fitting(self) -> None:
-        """Iterates through models, performs fitting (Local or Global), and stores results."""
-        if self.t_fit is None or self.l_fit is None or len(self.t_fit) < 10:
-            raise RuntimeError(f"Insufficient data.")
-
-        models_to_fit = self._get_models_to_fit() # Note: You need to implement _get_models_to_fit as per original file
+    def _fit_with_multi_start(self, func, t, l, bounds, n_starts=7):
+        """
+        OPTIMIZATION: Multi-Start Levenberg-Marquardt.
+        Replaces slow Differential Evolution for faster fitting.
+        """
+        best_r2 = -np.inf
+        best_p = None
+        lower, upper = zip(*bounds)
         
-        # Strategy selection: Global vs Local optimization
+        for _ in range(n_starts):
+            # Generate a random initial guess within the physical bounds
+            guess = np.random.uniform(lower, upper)
+            try:
+                # Use the fast local optimizer (curve_fit)
+                popt, _ = curve_fit(func, t, l, p0=guess, bounds=(lower, upper), maxfev=2000)
+                
+                # Calculate R-squared to evaluate this specific start
+                r2 = self._calculate_r_squared(l, func(t, *popt))
+                if r2 > best_r2:
+                    best_r2, best_p = r2, popt
+            except Exception: continue
+        return best_p, best_r2
+
+    def _perform_multi_model_fitting(self) -> None:
+        """Iterates through models, performs fitting, and stores results."""
+        if self.t_fit is None or self.l_fit is None or len(self.t_fit) < 10:
+            raise RuntimeError("Insufficient data.")
+
+        models_to_fit = self._get_models_to_fit()
         use_global = self.params.get('use_global_optimization', False)
         
-        jeffreys_maxfev = self.params.get('jeffreys_maxfev', 50000)
-        empirical_maxfev = self.params.get('empirical_maxfev', 5000)
-
         for name, model_info in models_to_fit.items():
             try:
-                p_opt = None
-                
-                # STRATEGY A: GLOBAL OPTIMIZATION (Differential Evolution)
-                # Slower, but less likely to get stuck in local minima.
+                # Decide between the multi-start global approach or single local fit
                 if use_global:
-                    # Define cost function: Sum of Squared Residuals
-                    def cost_func(params):
-                        y_pred = model_info["func"](self.t_fit, *params)
-                        return np.sum((self.l_fit - y_pred) ** 2)
-                    
-                    # Convert bounds format for DE: [(min, max), (min, max)...]
-                    # Original bounds are ([mins], [maxs])
-                    de_bounds = list(zip(model_info["bounds"][0], model_info["bounds"][1]))
-                    
-                    # Fix infinite bounds for DE (replace with large numbers)
-                    de_bounds = [(max(-1e9, b[0]), min(1e9, b[1])) for b in de_bounds]
-                    
-                    res = differential_evolution(cost_func, de_bounds, maxiter=1000, polish=True)
-                    if res.success:
-                        p_opt = res.x
-                    else:
-                        raise RuntimeError(f"DE failed: {res.message}")
-
-                # STRATEGY B: LOCAL OPTIMIZATION (Levenberg-Marquardt)
-                # Standard curve fitting. Fast, but needs good initial guess.
+                    p_opt, r2 = self._fit_with_multi_start(
+                        model_info["func"], self.t_fit, self.l_fit, model_info["bounds"]
+                    )
                 else:
-                    maxfev = jeffreys_maxfev if 'jeffreys' in model_info['maxfev_key'] else empirical_maxfev
-                    p_opt, p_cov = curve_fit(
+                    # Fallback to standard local fit using the initial heuristic guess
+                    p_opt, _ = curve_fit(
                         model_info["func"], self.t_fit, self.l_fit,
                         p0=model_info["p0"], bounds=model_info["bounds"], 
-                        maxfev=maxfev
+                        maxfev=50000
                     )
+                    r2 = self._calculate_r_squared(self.l_fit, model_info["func"](self.t_fit, *p_opt))
 
-                # Calculate Goodness of Fit (R-squared)
-                l_pred = model_info["func"](self.t_fit, *p_opt)
-                r_squared = self._calculate_r_squared(self.l_fit, l_pred)
-                
                 self.fit_results[name] = {
                     "params": p_opt,
-                    "r_squared": r_squared,
+                    "r_squared": r2,
                     "param_names": model_info["param_names"]
                 }
             except Exception as e:
