@@ -57,65 +57,65 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
             return sem
         return None
 
-    def plot_3panel_metric(fig_name: str, title: str, ylabel: str, suffix: str):
-        """Helper to create a 1x3 horizontal panel plot with shared Y-axis."""
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+    # def plot_3panel_metric(fig_name: str, title: str, ylabel: str, suffix: str):
+    #     """Helper to create a 1x3 horizontal panel plot with shared Y-axis."""
+    #     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
         
-        for ax in [ax1, ax2, ax3]:
-            ax.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
+    #     for ax in [ax1, ax2, ax3]:
+    #         ax.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
 
-        # --- Panel 1: Protrusion (and Tip) ---
-        m_p = np.array(results.get(f'uptake_protrusion{suffix}', []))
-        s_p = get_sem(f'uptake_protrusion{suffix}_std', 'count_protrusion')
-        if len(m_p) > 0:
-            ax1.plot(t, m_p, marker_style, color=colors['secondary'], linewidth=2, markersize=ms, label='Protrusion')
-            if s_p is not None: 
-                ax1.fill_between(t, m_p - s_p, m_p + s_p, color=colors['secondary'], alpha=0.25)
+    #     # --- Panel 1: Protrusion (and Tip) ---
+    #     m_p = np.array(results.get(f'uptake_protrusion{suffix}', []))
+    #     s_p = get_sem(f'uptake_protrusion{suffix}_std', 'count_protrusion')
+    #     if len(m_p) > 0:
+    #         ax1.plot(t, m_p, marker_style, color=colors['secondary'], linewidth=2, markersize=ms, label='Protrusion')
+    #         if s_p is not None: 
+    #             ax1.fill_between(t, m_p - s_p, m_p + s_p, color=colors['secondary'], alpha=0.25)
                 
-        m_tip = np.array(results.get(f'uptake_tip{suffix}', []))
-        s_tip = get_sem(f'uptake_tip{suffix}_std', 'count_tip')
-        if len(m_tip) > 0:
-            ax1.plot(t, m_tip, marker_style, color=colors['quaternary'], linewidth=2, markersize=ms, label='Tip (Top 5%)')
-            if s_tip is not None: 
-                ax1.fill_between(t, m_tip - s_tip, m_tip + s_tip, color=colors['quaternary'], alpha=0.25)
+    #     m_tip = np.array(results.get(f'uptake_tip{suffix}', []))
+    #     s_tip = get_sem(f'uptake_tip{suffix}_std', 'count_tip')
+    #     if len(m_tip) > 0:
+    #         ax1.plot(t, m_tip, marker_style, color=colors['quaternary'], linewidth=2, markersize=ms, label='Tip (Top 5%)')
+    #         if s_tip is not None: 
+    #             ax1.fill_between(t, m_tip - s_tip, m_tip + s_tip, color=colors['quaternary'], alpha=0.25)
 
-        # --- Panel 2: Cell Body ---
-        m_b = np.array(results.get(f'uptake_cell_body{suffix}', []))
-        s_b = get_sem(f'uptake_cell_body{suffix}_std', 'count_cell_body')
-        if len(m_b) > 0:
-            ax2.plot(t, m_b, marker_style, color=colors['tertiary'], linewidth=2, markersize=ms, label='Cell Body')
-            if s_b is not None: 
-                ax2.fill_between(t, m_b - s_b, m_b + s_b, color=colors['tertiary'], alpha=0.25)
+    #     # --- Panel 2: Cell Body ---
+    #     m_b = np.array(results.get(f'uptake_cell_body{suffix}', []))
+    #     s_b = get_sem(f'uptake_cell_body{suffix}_std', 'count_cell_body')
+    #     if len(m_b) > 0:
+    #         ax2.plot(t, m_b, marker_style, color=colors['tertiary'], linewidth=2, markersize=ms, label='Cell Body')
+    #         if s_b is not None: 
+    #             ax2.fill_between(t, m_b - s_b, m_b + s_b, color=colors['tertiary'], alpha=0.25)
 
-        # --- Panel 3: Total Cell ---
-        m_t = np.array(results.get(f'uptake_total{suffix}', []))
-        s_t = get_sem(f'uptake_total{suffix}_std', 'count_total')
-        if len(m_t) > 0:
-            ax3.plot(t, m_t, marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total Cell')
-            if s_t is not None: 
-                ax3.fill_between(t, m_t - s_t, m_t + s_t, color=colors['primary'], alpha=0.25)
+    #     # --- Panel 3: Total Cell ---
+    #     m_t = np.array(results.get(f'uptake_total{suffix}', []))
+    #     s_t = get_sem(f'uptake_total{suffix}_std', 'count_total')
+    #     if len(m_t) > 0:
+    #         ax3.plot(t, m_t, marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total Cell')
+    #         if s_t is not None: 
+    #             ax3.fill_between(t, m_t - s_t, m_t + s_t, color=colors['primary'], alpha=0.25)
 
-        # --- Formatting & Styling ---
-        ax1.set_title("Protrusion")
-        ax2.set_title("Cell Body")
-        ax3.set_title("Total Cell")
-        ax1.set_ylabel(ylabel)
+    #     # --- Formatting & Styling ---
+    #     ax1.set_title("Protrusion")
+    #     ax2.set_title("Cell Body")
+    #     ax3.set_title("Total Cell")
+    #     ax1.set_ylabel(ylabel)
         
-        for ax in [ax1, ax2, ax3]:
-            ax.set_xlabel("Time (s)")
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc='upper left')
+    #     for ax in [ax1, ax2, ax3]:
+    #         ax.set_xlabel("Time (s)")
+    #         ax.grid(True, alpha=0.3)
+    #         ax.legend(loc='upper left')
 
-        fig.suptitle(f"Trap {trap_idx}: {title}", y=1.05, fontsize=16, weight='bold')
-        plt.tight_layout()
-        utils.save_plot_png(output_dir / fig_name)
-        plt.close(fig)
+    #     fig.suptitle(f"Trap {trap_idx}: {title}", y=1.05, fontsize=16, weight='bold')
+    #     plt.tight_layout()
+    #     utils.save_plot_png(output_dir / fig_name)
+    #     plt.close(fig)
 
-    # --- Generate the three 3-panel plots ---
-    plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_Absolute.png", "Dye Uptake (Absolute)", "Mean Intensity (a.u.) ± SEM", "")
-    plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_Normalized.png", "Normalized Uptake", "Normalized Fluorescence ($\Delta F/F_0$) ± SEM", "_norm")
-    if 'uptake_total_minmax' in results:
-        plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_MinMax.png", "Min-Max Normalized Uptake", "Normalized Intensity (0-1) ± SEM", "_minmax")
+    # # --- Generate the three 3-panel plots ---
+    # plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_Absolute.png", "Dye Uptake (Absolute)", "Mean Intensity (a.u.) ± SEM", "")
+    # plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_Normalized.png", "Normalized Uptake", "Normalized Fluorescence ($\Delta F/F_0$) ± SEM", "_norm")
+    # if 'uptake_total_minmax' in results:
+    #     plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_MinMax.png", "Min-Max Normalized Uptake", "Normalized Intensity (0-1) ± SEM", "_minmax")
 
     # --- D. Heterogeneity Analysis (StdDev & CV) ---
     if 'uptake_total_std' in results:
@@ -408,59 +408,80 @@ def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, ou
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Profiles.png")
     plt.close(fig_prof)
 
+
 def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[float], output_dir: Path, experiment_id: str):
-    """Plots Area and Solidity for all traps on single figures."""
+    """Plots the change (Delta) in Area and Solidity for all traps as a bar chart."""
     utils.set_paper_style()
     output_dir = Path(output_dir)
-    colors = utils.get_time_colormap(max(len(all_results), 1))
     
-    fig_area, ax_area = plt.subplots(figsize=(10, 6))
-    fig_sol, ax_sol = plt.subplots(figsize=(10, 6))
+    trap_ids = []
+    delta_areas = []
+    delta_solidities = []
     
-    valid_plot_count = 0
-    for i, res in enumerate(sorted(all_results, key=lambda x: x['trap_index'])):
+    for res in sorted(all_results, key=lambda x: x['trap_index']):
         if res.get('status') in ('success', 'detection_only', 'fit_failed') and 'data' in res:
-            trap_id = res['data']['trap_index'] + 1
-            if 'area' in res['data'] and 'solidity' in res['data']:
-                t_pts = np.array(res['data']['time'])
-                area = np.array(res['data']['area'])
-                solidity = np.array(res['data']['solidity'])
+            data = res['data']
+            if 'area' in data and 'solidity' in data and len(data['area']) > 0:
+                area = np.array(data['area'])
+                solidity = np.array(data['solidity'])
                 
-                # Truncate at rupture if it happened
-                r_idx = res['data'].get('rupture_idx')
-                if r_idx is not None and r_idx < len(t_pts):
-                    t_pts, area, solidity = t_pts[:r_idx], area[:r_idx], solidity[:r_idx]
+                r_idx = data.get('rupture_idx')
+                # Determine the final valid frame (either rupture or end of experiment)
+                end_idx = r_idx if (r_idx is not None and r_idx < len(area)) else len(area) - 1
                 
-                ax_area.plot(t_pts, area, color=colors[i], linewidth=2, alpha=0.7, label=f"Trap {trap_id}")
-                ax_sol.plot(t_pts, solidity, color=colors[i], linewidth=2, alpha=0.7, label=f"Trap {trap_id}")
-                valid_plot_count += 1
+                if end_idx < 3: 
+                    continue # Not enough data to calculate a reliable change
+                
+                # Average the first 3 frames for a stable initial baseline
+                init_area = np.nanmean(area[:3])
+                init_sol = np.nanmean(solidity[:3])
+                
+                # Average the last 3 valid frames for a stable final reading
+                final_area = np.nanmean(area[max(0, end_idx-3):end_idx])
+                final_sol = np.nanmean(solidity[max(0, end_idx-3):end_idx])
+                
+                trap_ids.append(f"Trap {data['trap_index'] + 1}")
+                delta_areas.append(final_area - init_area)
+                delta_solidities.append(final_sol - init_sol)
 
-    if valid_plot_count > 0:
-        ax_area.set_ylabel("Total Cell Area (µm²)"); ax_area.set_xlabel("Time (s)")
-        ax_area.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Area.png")
-        
-        ax_sol.set_ylabel("Cell Body Solidity"); ax_sol.set_xlabel("Time (s)")
-        ax_sol.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Solidity.png")
-        
-    plt.close(fig_area); plt.close(fig_sol)
+    if not trap_ids:
+        return
 
-
-def plot_shear_analysis_card(metrics: Dict[str, float], save_path: Path):
-    utils.set_paper_style(base_fontsize=12)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.axis('off')
-    ax.text(0.5, 0.9, "Shear Analysis", ha='center', fontsize=16, weight='bold', color=utils.MFA_COLORS['primary'])
+    # --- 1. Plot Delta Area ---
+    fig_area, ax_area = plt.subplots(figsize=(12, 6))
+    bars = ax_area.bar(trap_ids, delta_areas, color=utils.MFA_COLORS['secondary'], alpha=0.8, edgecolor='black')
+    ax_area.axhline(0, color='black', linewidth=1.5)
+    ax_area.set_ylabel("Change in Total Cell Area ($\Delta$ µm²)")
+    ax_area.set_title(f"Cell Area Dynamics (Start vs. Rupture) - {experiment_id}")
+    plt.xticks(rotation=45, ha='right')
     
-    y = 0.7
-    for k, v in metrics.items():
-        ax.text(0.3, y, k, ha='left', color=utils.MFA_COLORS['tertiary'])
-        ax.text(0.7, y, f"{v:.4f}", ha='right')
-        y -= 0.1
+    # Add value labels on top of bars
+    for bar in bars:
+        yval = bar.get_height()
+        offset = 5 if yval >= 0 else -15
+        ax_area.text(bar.get_x() + bar.get_width()/2, yval + offset, f"{yval:.1f}", ha='center', va='bottom' if yval >=0 else 'top', fontsize=9)
         
-    utils.save_plot_png(save_path)
-    plt.close(fig)
+    plt.tight_layout()
+    utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Area.png")
+    plt.close(fig_area)
+    
+    # --- 2. Plot Delta Solidity ---
+    fig_sol, ax_sol = plt.subplots(figsize=(12, 6))
+    bars_sol = ax_sol.bar(trap_ids, delta_solidities, color=utils.MFA_COLORS['tertiary'], alpha=0.8, edgecolor='black')
+    ax_sol.axhline(0, color='black', linewidth=1.5)
+    ax_sol.set_ylabel("Change in Cell Body Solidity ($\Delta$)")
+    ax_sol.set_title(f"Cell Solidity Dynamics (Start vs. Rupture) - {experiment_id}")
+    plt.xticks(rotation=45, ha='right')
+    
+    for bar in bars_sol:
+        yval = bar.get_height()
+        offset = 0.01 if yval >= 0 else -0.02
+        ax_sol.text(bar.get_x() + bar.get_width()/2, yval + offset, f"{yval:.3f}", ha='center', va='bottom' if yval >=0 else 'top', fontsize=9)
+
+    plt.tight_layout()
+    utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Solidity.png")
+    plt.close(fig_sol)
+    
 
 def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Path, experiment_id: str, params: Dict[str, Any]):
     """Plots Dye Uptake (Absolute, Normalized, MinMax) for all traps on single 3-panel figures."""
@@ -534,7 +555,7 @@ def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Pa
 
     # Trigger the 3 versions
     _plot_aggregated_3panel("", "Dye Uptake (Absolute)", "Mean Intensity (a.u.)", "_Absolute")
-    _plot_aggregated_3panel("_norm", "Normalized Uptake", "Normalized Fluorescence (ΔF/F0)", "_Normalized")
+    _plot_aggregated_3panel("_norm", "Normalized Uptake", "Normalized Fluorescence ($\Delta$F/F0)", "_Normalized")
     
     # Safe check for MinMax incase it gets disabled in config
     if f'uptake_total_minmax' in valid_results[0]['dye_data']:

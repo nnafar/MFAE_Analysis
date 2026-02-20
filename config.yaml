@@ -103,7 +103,7 @@ rupture_detection:
   min_drift_tolerance: 3.0          # Minimum change to register as drift (0.1 = very sensitive)
   min_cusum_threshold: 5.0          # Accumulation threshold to trigger alarm
   
-  cusum_drift_tolerance_factor: 0.5 # (k) Multiplier for noise sigma
+  cusum_drift_tolerance_factor: 0.3 # (k) Multiplier for noise sigma; lowered from 0.5
   cusum_threshold_factor: 8.0       # (h) Multiplier for noise sigma to trigger
 
   # --- DATA CLEANING ---

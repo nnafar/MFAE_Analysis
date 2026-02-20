@@ -136,8 +136,6 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         # Export Raw CSV and Plot Trace.
-        # Each step is wrapped independently: a plotting or I/O failure will not
-        # discard the detection result — it will only log a warning for that step.
         try:
             det_full.export_results_to_csv(dirs['root'], f"trap_{trap_index+1:02d}", dirs['full_csv'], dirs['filtered_csv'])
         except Exception:

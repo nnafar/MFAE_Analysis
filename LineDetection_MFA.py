@@ -854,11 +854,27 @@ class LineDetectionMFA:
         candidates = []
         
         if intensities:
-            baseline_mean = np.median(intensities[:5])
-            # Use config threshold
+            baseline_steady = np.median(intensities[:5])
             abs_threshold = self.params.get('rupture_detection', {}).get('absolute_intensity_threshold', 6.5)
-            if baseline_mean >= abs_threshold: 
-                 candidates.append((0, 'Immediate High Haze (DOA)'))
+            
+            if baseline_steady >= abs_threshold: 
+                # 1. Fetch physical movement
+                protrusions = self.results.get('protrusion_lengths_um', [])
+                
+                # 2. Fetch optical stability
+                haze_variance = np.std(intensities[:5]) if len(intensities) >= 5 else 0
+                
+                is_stagnant = False
+                if len(protrusions) >= 5:
+                    # If it grew less than 0.5um, it is mechanically dead
+                    growth = protrusions[4] - protrusions[0]
+                    is_stagnant = growth < 0.5
+                
+                # If it's physically stagnant OR the light is actively violently fluctuating (leaking)
+                if is_stagnant or haze_variance > 1.0:
+                    candidates.append((0, 'Immediate High Haze (DOA)'))
+                else:
+                    logger.info(f"Ignored high initial haze ({baseline_steady:.1f}); cell is actively creeping. Assuming debris.")
 
         start_len = protrusions_um[0] if protrusions_um else 0
         
