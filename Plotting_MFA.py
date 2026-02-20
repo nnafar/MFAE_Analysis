@@ -560,3 +560,18 @@ def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Pa
     # Safe check for MinMax incase it gets disabled in config
     if f'uptake_total_minmax' in valid_results[0]['dye_data']:
         _plot_aggregated_3panel("_minmax", "Min-Max Normalized Uptake", "Normalized Intensity (0-1)", "_MinMax")
+        
+def plot_shear_analysis_card(metrics: Dict[str, float], save_path: Path):
+    utils.set_paper_style(base_fontsize=12)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.axis('off')
+    ax.text(0.5, 0.9, "Shear Analysis", ha='center', fontsize=16, weight='bold', color=utils.MFA_COLORS['primary'])
+    
+    y = 0.7
+    for k, v in metrics.items():
+        ax.text(0.3, y, k, ha='left', color=utils.MFA_COLORS['tertiary'])
+        ax.text(0.7, y, f"{v:.4f}", ha='right')
+        y -= 0.1
+        
+    utils.save_plot_png(save_path)
+    plt.close(fig)

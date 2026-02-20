@@ -136,7 +136,7 @@ workflow_settings:
 
   # Speed: Number of CPU cores to use.
   # Recommendation: Set to (Total Cores - 1) or (Total Cores / 2) to prevent system lag.
-  n_workers: n-1    
+  n_workers: 6    
   
   # Memory: How many frames to keep in RAM (lowering this saves memory but slows processing).               
   max_cache_size: 50
