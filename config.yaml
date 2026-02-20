@@ -13,11 +13,11 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "W:\\staff-groups\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260130_Experiment463-100V-100us-frame10"
+  data_folder: "W:\\staff-groups\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment5-100V-5ms-frame10"
 
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "260130_Experiment463-100V-100us-frame10-actin"
+  experiment_id: "260128_Experiment5-100V-5ms-frame10-actin"
 
 
 # ===================================================================
@@ -91,6 +91,12 @@ rupture_detection:
   #    Faster reaction time than CUSUM for catastrophic failure.
   enable_step_check: True
   step_sigma_threshold: 4.0         # Sensitivity: Needs a distinct jump to trigger.
+
+  # --- DATA CLEANING & SAFETY NETS ---
+  absolute_intensity_threshold: 8   # Catch cells already ruptured at entry
+  max_baseline_sigma: 1.0           # Prevent entry noise from blinding the detector
+  
+  exclude_early_fraction: 0.03
 
   # 3. DRIFT DETECTION (CUSUM - Slow Leaks)
   min_intensity_noise_floor: 1.0    # Minimum assumed noise (prevents div/0 errors on clean images)

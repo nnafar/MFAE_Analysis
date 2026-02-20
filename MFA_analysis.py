@@ -54,6 +54,9 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Processes a single trap in an independent process with guaranteed cleanup.
     """
+    # Prevent OpenCV from spawning internal threads inside the worker
+    cv2.setNumThreads(0)
+    
     trap_index = config_dict['trap_index']
     params = config_dict['params']
     
@@ -127,7 +130,9 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             'protrusions': det_res['protrusion_lengths_um'],
             'pip': pip_x,
             'thr': thr_prot,
-            'rupture_idx': rupture_idx
+            'rupture_idx': rupture_idx,
+            'area': det_full.results.get('total_area_um2', []),    
+            'solidity': det_full.results.get('body_solidity', [])
         }
 
         # Export Raw CSV and Plot Trace.
@@ -144,7 +149,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 time_points=np.array(time_data),
                 protrusions=np.array(det_res['protrusion_lengths_um']),
                 trap_index=trap_index + 1,
-                save_path=dirs['traces'] / f"trap_{trap_index+1:02d}_detection_trace.png",
+                save_path=dirs['tracking_visuals'] / f"trap_{trap_index+1:02d}_detection_trace.png",
                 params=params,
                 rupture_time=rupture_time,
                 intensities=det_res.get('downstream_intensities'),
@@ -156,9 +161,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         # 6. Kymograph Generation
         if params.get('workflow_settings', {}).get('create_kymographs', True):
             try:
-                dirs['kymographs'].mkdir(parents=True, exist_ok=True)
-                # Pass dirs['kymographs'] directly as a Path — no str() conversion needed.
-                create_kymograph_for_trap(rois, det_res, params, dirs['kymographs'], trap_index + 1, time_data)
+                # Pass dirs['tracking_visuals'] to the Kymograph generator
+                create_kymograph_for_trap(rois, det_res, params, dirs['tracking_visuals'], trap_index + 1, time_data) # <-- UPDATED
             except Exception:
                 worker_logger.warning(f"Trap {trap_index+1}: Kymograph generation failed.", exc_info=True)
 
@@ -257,6 +261,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 worker_logger.warning(f"Trap {trap_index+1}: Fitting failed.", exc_info=True)
 
         # 8. Dye Uptake Analysis
+        dye_results = None
         dye_config = config_dict.get('dye_mmap')
         if params.get('dye_uptake_parameters', {}).get('enable', False) and dye_config and dye_config['path']:
             try:
@@ -268,17 +273,43 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 dye_results = uptake_analyzer.run(time_data)
                 uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
                 Plotting_MFA.plot_dye_uptake_dashboard(dye_results, trap_index + 1, dirs['dye'], params, det_res['pipette_start_x_used'])
+                
+                # Add the missing debug video call here
+                uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])
+                
             except Exception:
                 worker_logger.warning(f"Trap {trap_index+1}: Dye uptake analysis failed.", exc_info=True)
 
-        return {'trap_index': trap_index, 'status': 'success', 'data': trap_data, 'fit_rows': trap_fit_rows}
-
+        # 9. Actin Quantification
+        actin_config = config_dict.get('actin_mmap')
+        if params.get('actin_parameters', {}).get('enable', False) and actin_config and actin_config['path']:
+            try:
+                dirs['actin'].mkdir(parents=True, exist_ok=True)
+                all_actin_frames = np.memmap(actin_config['path'], dtype=actin_config['dtype'], mode='r', shape=actin_config['shape'])
+                actin_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_actin_frames]
+                
+                actin_analyzer = ActinAnalyzer(rois, actin_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], params)
+                actin_results = actin_analyzer.run(time_data)
+                actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
+                Plotting_MFA.plot_actin_dashboard(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'])
+                Plotting_MFA.plot_actin_kymograph_and_profiles(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'])
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Actin analysis failed.", exc_info=True)
+                
+        return {
+            'trap_index': trap_index,
+            'status': 'success',
+            'data': trap_data,
+            'fit_rows': trap_fit_rows,
+            'dye_data': dye_results
+        }
+            
     except Exception:
         worker_logger.error("A fatal error occurred in worker", exc_info=True)
         return {'trap_index': trap_index, 'status': 'error', 'error': traceback.format_exc()}
 
     finally:
-        # --- CLEANUP: Explicitly release all Shared Memory handles ---
+        # --- Cleanup: Explicitly release all Shared Memory handles ---
         for mmap_obj in [all_frames, all_dye_frames, all_actin_frames]:
             if mmap_obj is not None:
                 try:
@@ -366,16 +397,18 @@ class MFAAnalysis:
             'root': results_dir,
             'filtered_csv': results_dir / "Filtered protrusion detection",
             'full_csv': results_dir / "Full protrusion detection",
-            'traces': results_dir / "Protrusion traces",
+            'tracking_visuals': results_dir / "Tracking visuals", 
+            'morphology': results_dir / "Cell Morphology",
             'fitting': results_dir / "Fitting results",
-            'kymographs': results_dir / "Kymographs",
-            'dye': results_dir / "Dye Uptake"
+            'dye': results_dir / "Dye Uptake",
+            'actin': results_dir / "Actin Quantification" 
         }
         
         # Create core CSV folders immediately
         subdirs['filtered_csv'].mkdir(parents=True, exist_ok=True)
         subdirs['full_csv'].mkdir(parents=True, exist_ok=True)
-        subdirs['traces'].mkdir(parents=True, exist_ok=True)
+        subdirs['tracking_visuals'].mkdir(parents=True, exist_ok=True)
+        subdirs['morphology'].mkdir(parents=True, exist_ok=True)
             
         return results_dir, subdirs
     
@@ -533,8 +566,14 @@ class MFAAnalysis:
             fp[i] = img if img is not None else np.zeros_like(first_img)
         
         fp.flush()
+        
+        # Explicitly release the OS file lock in the main process
+        if hasattr(fp, '_mmap') and fp._mmap is not None:
+            fp._mmap.close()
+        del fp
+        
         return str(mmap_path), shape, dtype
-
+    
     def _collect_interactive_parameters(self) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Loops through EACH selected trap to let user tune Pipette & Thresholds.
@@ -614,6 +653,22 @@ class MFAAnalysis:
             df.to_csv(self.subdirs['fitting'] / f"{self.experiment_id}_summary_fits.csv", index=False)
 
         self._perform_shear_analysis()
+        
+        # Call the morphology aggregate plotter (Using the corrected 'self.subdirs')
+        Plotting_MFA.plot_aggregate_metrics(
+            all_results, 
+            self.file_reader.time_data, 
+            self.subdirs['morphology'],
+            self.experiment_id
+        )
+        
+        if self.params.get('dye_uptake_parameters', {}).get('enable', False):
+            Plotting_MFA.plot_aggregate_dye_metrics(
+                all_results,
+                self.subdirs['dye'],
+                self.experiment_id,
+                self.params
+            )
 
     def _perform_shear_analysis(self):
         """Calculates Son (2007) shear metrics."""

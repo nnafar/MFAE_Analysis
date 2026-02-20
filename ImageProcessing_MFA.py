@@ -274,11 +274,33 @@ class CropImage():
         utils.create_centered_window('Angle Adjustment', self.window_width, self.window_height)
         h, w = rotated_image.shape[:2]
         self.vertical_line_pos = w // 2
+        
+        # State dictionary to safely manage mouse dragging
+        state = {'moving': False}
 
         def move_line(event, x, y, flags, param):
-            if event == cv2.EVENT_LBUTTONDOWN: self.moving_line = True
-            elif event == cv2.EVENT_MOUSEMOVE and self.moving_line: self.vertical_line_pos = x
-            elif event == cv2.EVENT_LBUTTONUP: self.moving_line = False
+            # 1. Automatically match the exact 95% margin used by Utils_MFA.prepare_display_image
+            scale = min((self.window_width * 0.95) / w, (self.window_height * 0.95) / h)
+            
+            display_w = int(w * scale)
+            x_offset = (self.window_width - display_w) // 2
+            
+            # 2. Map the mouse's Window X back to the Original Image X
+            if scale > 0:
+                orig_x = int((x - x_offset) / scale)
+            else:
+                orig_x = x
+                
+            # 3. Clamp the value so dragging out of bounds doesn't crash the UI
+            orig_x = max(0, min(w - 1, orig_x))
+
+            if event == cv2.EVENT_LBUTTONDOWN: 
+                state['moving'] = True
+                self.vertical_line_pos = orig_x
+            elif event == cv2.EVENT_MOUSEMOVE and state['moving']: 
+                self.vertical_line_pos = orig_x
+            elif event == cv2.EVENT_LBUTTONUP: 
+                state['moving'] = False
         
         cv2.setMouseCallback('Angle Adjustment', move_line)
 

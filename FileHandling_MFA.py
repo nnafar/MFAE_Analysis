@@ -90,6 +90,7 @@ class FileRead():
         if enable_dye:
             self.dye_files = [f for f in all_files if dye_pattern in f.name]
             self.dye_files = self.sort_by_time_index(self.dye_files)
+            self.dye_files = self._reject_black_frames(self.dye_files)
             
             if not self.dye_files:
                 logger.warning(f"Dye analysis enabled but no files found matching '{dye_pattern}'. Check config.")
@@ -104,12 +105,8 @@ class FileRead():
         if enable_actin:
             self.actin_files = [f for f in all_files if actin_pattern in f.name]
             self.actin_files = self.sort_by_time_index(self.actin_files)
+            self.actin_files = self._reject_black_frames(self.actin_files)
             
-            if not self.actin_files:
-                logger.warning(f"Actin analysis enabled but no files found matching '{actin_pattern}'.")
-            else:
-                logger.info(f"Actin Channel: Found {len(self.actin_files)} files matching '{actin_pattern}'.")
-
         # --- SYNCHRONIZATION ---
         # Find minimum length across all active channels
         lengths = [len(self.tif_files)]

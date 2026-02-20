@@ -64,43 +64,46 @@ class DyeUptakeAnalyzer:
             'uptake_protrusion': [],
             'uptake_cell_body': [],
             'uptake_total': [],
+            'uptake_tip': [],
             
             # Standard Deviations (Spatial Heterogeneity)
             'uptake_protrusion_std': [],
             'uptake_cell_body_std': [],
             'uptake_total_std': [],
+            'uptake_tip_std': [],
             
             # Pixel Counts (For SEM calculation)
             'count_protrusion': [],
             'count_cell_body': [],
             'count_total': [],
+            'count_tip': [],
             
             # Baseline Normalized (dF/F0)
             'uptake_protrusion_norm': [],  
             'uptake_cell_body_norm': [],
             'uptake_total_norm': [],
+            'uptake_tip_norm': [],
             
             # Normalized StdDevs
             'uptake_protrusion_norm_std': [],
             'uptake_cell_body_norm_std': [],
             'uptake_total_norm_std': [],
+            'uptake_tip_norm_std': [],
             
             # Min-Max Normalized (0 to 1)
             'uptake_protrusion_minmax': [],
             'uptake_cell_body_minmax': [],
             'uptake_total_minmax': [],
+            'uptake_tip_minmax': [],
 
             # Min-Max Scaled StdDevs
             'uptake_protrusion_minmax_std': [],
             'uptake_cell_body_minmax_std': [],
             'uptake_total_minmax_std': [],
-
-            # Morphology Indicators (Body-Only)
-            'body_area_um2': [],
-            'body_solidity': [],
+            'uptake_tip_minmax_std': [],
             
             'spatial_profiles': [],
-            'baseline_intensity': None,  # Store for export (total cell baseline)
+            'baseline_intensity': None,  
             'pipette_x_px': pipette_x,
         }
         
@@ -183,12 +186,7 @@ class DyeUptakeAnalyzer:
                 self.threshold_body, self.params
             )
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
-            
-            # A. Body-Only Morphology Assessment
-            area_um2, solidity = self._calculate_body_morphology(mask_body)
-            self.results['body_area_um2'].append(area_um2)
-            self.results['body_solidity'].append(solidity)
-            
+                        
             # B. Quantify Pixel Counts (N) - Required for SEM calculation
             n_prot = cv2.countNonZero(mask_prot)
             n_body = cv2.countNonZero(mask_body)
@@ -201,42 +199,56 @@ class DyeUptakeAnalyzer:
             # C. Quantify Dye Signal with Region-Specific Background Subtraction
             dye_float = current_dye.astype(float)
             
-            # D. Quantify Mean AND Standard Deviation (Applying distinct baselines)
-            def get_stats(mask_array: np.ndarray, bg_val: float) -> Tuple[float, float]:
-                if cv2.countNonZero(mask_array) == 0:
-                    return 0.0, 0.0
-                valid_pixels = dye_float[mask_array > 0]
-                corrected_pixels = np.maximum(valid_pixels - bg_val, 0)
-                return np.mean(corrected_pixels), np.std(corrected_pixels)
-
-            val_prot, std_prot = get_stats(mask_prot, bg_prot)
-            val_body, std_body = get_stats(mask_body, bg_body)
-            val_total, std_total = get_stats(mask_total, bg_total)
+            # D. Calculate Means and Standard Deviations Inline
+            val_prot = (np.mean(dye_float[mask_prot > 0]) - bg_prot) if n_prot > 0 else 0.0
+            val_body = (np.mean(dye_float[mask_body > 0]) - bg_body) if n_body > 0 else 0.0
+            val_total = (np.mean(dye_float[mask_total > 0]) - bg_total) if n_total > 0 else 0.0
+            
+            std_prot = np.std(dye_float[mask_prot > 0]) if n_prot > 0 else 0.0
+            std_body = np.std(dye_float[mask_body > 0]) if n_body > 0 else 0.0
+            std_total = np.std(dye_float[mask_total > 0]) if n_total > 0 else 0.0
+            
+            # Isolate the leading edge (Top 5% brightest pixels in the protrusion)
+            if n_prot > 10:
+                prot_pixels = dye_float[mask_prot > 0]
+                threshold_95 = np.percentile(prot_pixels, 95)
+                tip_pixels = prot_pixels[prot_pixels >= threshold_95]
+                val_tip = np.mean(tip_pixels) - bg_prot
+                std_tip = np.std(tip_pixels)
+                n_tip = len(tip_pixels)
+            else:
+                val_tip, std_tip, n_tip = 0.0, 0.0, 0
             
             # E. Store Absolute Values
             self.results['uptake_protrusion'].append(val_prot)
             self.results['uptake_cell_body'].append(val_body)
             self.results['uptake_total'].append(val_total)
+            self.results['uptake_tip'].append(val_tip)
             
             self.results['uptake_protrusion_std'].append(std_prot)
             self.results['uptake_cell_body_std'].append(std_body)
             self.results['uptake_total_std'].append(std_total)
+            self.results['uptake_tip_std'].append(std_tip)
+            
+            self.results['count_tip'].append(n_tip)
             
             # F. Calculate Normalized Values (ΔF/F₀)
             epsilon = 1e-6
-            
             self.results['uptake_protrusion_norm'].append(val_prot / bg_prot if bg_prot > epsilon else 0.0)
             self.results['uptake_cell_body_norm'].append(val_body / bg_body if bg_body > epsilon else 0.0)
             self.results['uptake_total_norm'].append(val_total / bg_total if bg_total > epsilon else 0.0)
+            self.results['uptake_tip_norm'].append(val_tip / bg_prot if bg_prot > epsilon else 0.0)
             
             self.results['uptake_protrusion_norm_std'].append(std_prot / bg_prot if bg_prot > epsilon else 0.0)
             self.results['uptake_cell_body_norm_std'].append(std_body / bg_body if bg_body > epsilon else 0.0)
             self.results['uptake_total_norm_std'].append(std_total / bg_total if bg_total > epsilon else 0.0)
+            self.results['uptake_tip_norm_std'].append(std_tip / bg_prot if bg_prot > epsilon else 0.0)
             
             # H. Spatial Profile
             dye_corrected_total = np.maximum(dye_float - bg_total, 0)
-            profile = self._calculate_spatial_profile(dye_corrected_total, mask_total)
-            self.results['spatial_profiles'].append(profile)    
+            profile = utils.calculate_spatial_profile(dye_corrected_total, mask_total)
+            self.results['spatial_profiles'].append(profile)  
+       
         # 4. Sync Time Vector
         processed_count = len(self.results['uptake_total'])
         self.results['time_s'] = time_data[self.start_idx : self.start_idx + processed_count]
@@ -260,54 +272,22 @@ class DyeUptakeAnalyzer:
         normalize_pair('uptake_total', 'uptake_total_std', 'uptake_total_minmax', 'uptake_total_minmax_std')
         normalize_pair('uptake_protrusion', 'uptake_protrusion_std', 'uptake_protrusion_minmax', 'uptake_protrusion_minmax_std')
         normalize_pair('uptake_cell_body', 'uptake_cell_body_std', 'uptake_cell_body_minmax', 'uptake_cell_body_minmax_std')
+        normalize_pair('uptake_tip', 'uptake_tip_std', 'uptake_tip_minmax', 'uptake_tip_minmax_std')
         
         return self.results
     
-    def _calculate_body_morphology(self, mask_body: np.ndarray) -> Tuple[float, float]:
-        """
-        Calculates morphological descriptors strictly for the cell body (outside pipette).
-        This eliminates geometric bias introduced by protrusion tracking dynamics.
-        
-        Returns: 
-            Tuple containing (Area [µm²], Solidity [0.0 to 1.0])
-        """
-        contours, _ = cv2.findContours(mask_body, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if not contours:
-            return 0.0, 0.0
-            
-        cnt = max(contours, key=cv2.contourArea)
-        area_px = cv2.contourArea(cnt)
-        
-        hull = cv2.convexHull(cnt)
-        hull_area = cv2.contourArea(hull)
-        
-        solidity = float(area_px) / hull_area if hull_area > 0 else 0.0
-        area_um2 = area_px * (self.scale_factor ** 2)
-        
-        return area_um2, solidity
-
-    def _calculate_spatial_profile(self, dye_img: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        col_sums = np.sum(dye_img * (mask > 0), axis=0)
-        col_counts = np.sum((mask > 0), axis=0)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            profile = col_sums / col_counts
-            profile[col_counts == 0] = 0
-        return profile
-
     def _record_empty_frame(self):
-        """Records zeros for a missing frame."""
-        for key in ['uptake_protrusion', 'uptake_cell_body', 'uptake_total',
-                    'uptake_protrusion_std', 'uptake_cell_body_std', 'uptake_total_std',
-                    'count_protrusion', 'count_cell_body', 'count_total',
-                    'uptake_protrusion_norm', 'uptake_cell_body_norm', 'uptake_total_norm',
-                    'uptake_protrusion_norm_std', 'uptake_cell_body_norm_std', 'uptake_total_norm_std',
-                    'uptake_total_minmax', 'uptake_protrusion_minmax', 'uptake_cell_body_minmax',
-                    'uptake_total_minmax_std', 'uptake_protrusion_minmax_std', 'uptake_cell_body_minmax_std',
-                    'body_area_um2', 'body_solidity']:
-            self.results[key].append(0)
+        """Appends zero values for all metrics when a frame is missing or invalid."""
+        keys_to_zero = [
+            'count_protrusion', 'count_cell_body', 'count_total', 'count_tip',
+            'uptake_protrusion', 'uptake_cell_body', 'uptake_total', 'uptake_tip',
+            'uptake_protrusion_std', 'uptake_cell_body_std', 'uptake_total_std', 'uptake_tip_std',
+            'uptake_protrusion_norm', 'uptake_cell_body_norm', 'uptake_total_norm', 'uptake_tip_norm',
+            'uptake_protrusion_norm_std', 'uptake_cell_body_norm_std', 'uptake_total_norm_std', 'uptake_tip_norm_std'
+        ]
+        for key in keys_to_zero:
+            self.results[key].append(0.0)
         self.results['spatial_profiles'].append(np.zeros(10))
-
     # =========================================================================
     # EXPORT DATA
     # =========================================================================
@@ -361,51 +341,31 @@ class DyeUptakeAnalyzer:
         logger.info(f"Saved mask debug video: {save_path.name}")
 
     def export_csv(self, trap_idx: int, output_dir: Path):
-        """Saves numerical results including baseline info and min-max normalization."""
+        """Saves the primary uptake kinetics to CSV."""
         df = pd.DataFrame({
             'Time_s': self.results['time_s'],
             
-            # Absolute Data
-            'Total_Intensity_Mean': self.results['uptake_total'],
-            'Total_Intensity_Std': self.results['uptake_total_std'],
-            'Count_Total_Px': self.results['count_total'],
-            
-            'Protrusion_Mean': self.results['uptake_protrusion'],
-            'Protrusion_Std': self.results['uptake_protrusion_std'],
-            'Count_Protrusion_Px': self.results['count_protrusion'],
-            
-            'Body_Mean': self.results['uptake_cell_body'],
-            'Body_Std': self.results['uptake_cell_body_std'],
-            'Count_Body_Px': self.results['count_cell_body'],
+            # Absolute Values (Background Subtracted)
+            'Total_Intensity': self.results['uptake_total'],
+            'Protrusion_Intensity': self.results['uptake_protrusion'],
+            'Tip_Intensity': self.results['uptake_tip'],
+            'Body_Intensity': self.results['uptake_cell_body'],
             
             # Baseline Normalized (dF/F0)
             'Total_Normalized_dF_F0': self.results['uptake_total_norm'],
             'Protrusion_Normalized_dF_F0': self.results['uptake_protrusion_norm'],
+            'Tip_Normalized_dF_F0': self.results['uptake_tip_norm'],
             'Body_Normalized_dF_F0': self.results['uptake_cell_body_norm'],
             
             # Min-Max Normalized (0-1)
             'Total_MinMax': self.results['uptake_total_minmax'],
             'Protrusion_MinMax': self.results['uptake_protrusion_minmax'],
+            'Tip_MinMax': self.results['uptake_tip_minmax'],
             'Body_MinMax': self.results['uptake_cell_body_minmax'],
-            
-            # Min-Max Scaled StdDevs
-            'Total_MinMax_Std': self.results['uptake_total_minmax_std'],
-            'Protrusion_MinMax_Std': self.results['uptake_protrusion_minmax_std'],
-            'Body_MinMax_Std': self.results['uptake_cell_body_minmax_std'],
 
-            # Body Morphology 
-            'Body_Area_um2': self.results['body_area_um2'],
-            'Body_Solidity': self.results['body_solidity']
         })
         
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         save_path = output_dir / f"Trap_{trap_idx:02d}_Uptake_Data.csv"
-        
-        # newline='' prevents double spacing on Windows
-        with open(save_path, 'w', newline='') as f:
-            f.write(f"# Baseline Intensity (Total Cell Mask): {self.results['baseline_intensity']:.2f} a.u.\n")
-            f.write(f"# Pulse Frame: {self.pulse_frame + 1}\n")
-            df.to_csv(f, index=False)
-        
-        logger.info(f"Saved uptake data: {save_path.name}")
+        df.to_csv(save_path, index=False)

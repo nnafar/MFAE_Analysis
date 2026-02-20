@@ -149,7 +149,7 @@ class FittingMFA:
                 # 1. Calculate local median (robust baseline)
                 rolling_med = median_filter(l_processed, size=window_size, mode='nearest')
                 
-                # 2. Calculate local standard deviation (Optimized with Pandas)
+                # 2. Calculate local standard deviation
                 rolling_std = pd.Series(l_processed).rolling(
                     window=window_size, center=True, min_periods=1
                 ).std().values
@@ -157,7 +157,14 @@ class FittingMFA:
                 # Pandas rolling.std() returns NaN if it encounters identical values 
                 # or a single point; convert these to 0.0 to prevent bounds from becoming NaN.
                 rolling_std = np.nan_to_num(rolling_std, nan=0.0)
-
+                
+                # Define a physical noise floor (e.g., 0.1 pixels converted to microns)
+                scale_factor = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
+                min_noise_floor = 0.1 * scale_factor
+                
+                # Prevent bounds from collapsing to zero if the cell is perfectly still
+                rolling_std = np.maximum(rolling_std, min_noise_floor)
+                
                 # 3. Define the allowable range (Threshold)
                 lower_bound = rolling_med - (std_dev_threshold * rolling_std)
                 upper_bound = rolling_med + (std_dev_threshold * rolling_std)
