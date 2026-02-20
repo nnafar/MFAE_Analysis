@@ -1,520 +1,579 @@
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 """
-Bulk Dye Uptake Analysis
-- Processes multiple experiment folders with dye uptake data
-- Generates ensemble average plots for:
-  1. Absolute intensity (Total, Protrusion, Body)
-  2. Min-Max normalized intensity (Total, Protrusion, Body)
-  3. Baseline-normalized intensity ΔF/F₀ (Total, Protrusion, Body)
-- Publication-quality visualization
+Enhanced batch circularity analysis with drug and dosage comparisons
+for CK666, SMIFH2, DMSO and CytD TIFF series.
 """
-import os
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
-from typing import List, Dict, Tuple, Optional
-from scipy.interpolate import interp1d
-import re
-import warnings
-warnings.filterwarnings('ignore')
 
-# =============================================================================
-# ENSEMBLE AVERAGING FOR DYE UPTAKE
-# =============================================================================
-def calculate_dye_ensemble_average(all_dye_data: List[pd.DataFrame], 
-                                  columns: List[str]) -> Optional[Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]]:
-    """Calculates ensemble average for specified dye uptake columns."""
-    if not all_dye_data:
-        return None
-    
-    max_time = max(df['Time_s'].max() for df in all_dye_data)
-    t_common = np.linspace(0, max_time, 500)
-    
-    results = {}
-    
-    for column in columns:
-        interpolated_values = []
-        for df in all_dye_data:
-            if column in df.columns:
-                t_data = df['Time_s'].values
-                y_data = df[column].values
-                
-                valid_mask = np.isfinite(t_data) & np.isfinite(y_data)
-                t_data, y_data = t_data[valid_mask], y_data[valid_mask]
-                
-                if len(t_data) >= 2:
-                    f_interp = interp1d(t_data, y_data, kind='linear', 
-                                      bounds_error=False, fill_value=np.nan)
-                    y_interp = f_interp(t_common)
-                    interpolated_values.append(y_interp)
+# ----------------------------------------------------------------------
+# USER SETTINGS
+# ----------------------------------------------------------------------
+TIFF_ROOT = r"F:\A_Data\A_DNATranslocation\Experiments_2025\MFAE\2.10.25 Actin Inhibitor Dosage Test\LSM710\B_ProcessedImages\TIFFs"
+OUT_ROOT = r"F:\A_Data\A_DNATranslocation\Experiments_2025\MFAE\2.10.25 Actin Inhibitor Dosage Test\LSM710\B_ProcessedImages\Circularity_Results"
 
-        if interpolated_values:
-            L_array = np.array([arr for arr in interpolated_values if np.any(np.isfinite(arr))])
-            L_mean = np.nanmean(L_array, axis=0)
-            L_sem = np.nanstd(L_array, axis=0) / np.sqrt(len(L_array))
-            
-            finite_mask = np.isfinite(L_mean)
-            if np.any(finite_mask):
-                results[column] = (t_common[finite_mask], L_mean[finite_mask], L_sem[finite_mask])
-    
-    return results if results else None
+PIXEL_SIZE_UM = 0.5          # optional, µm per pixel (not used for the dimensionless circularity)
+MIN_CELL_AREA = 100          # smallest object to keep (pixels)
+MAX_CELL_AREA = 5000         # largest object to keep (pixels)
 
-# =============================================================================
-# PUBLICATION-QUALITY DYE UPTAKE PLOTTING
-# =============================================================================
+SAVE_COMBINED_TABLE = True
+COMBINED_TABLE_NAME = "all_circularity_summary.csv"
 
-def plot_dye_ensemble_with_total(ensemble_results: Dict[str, Dict], 
-                                 output_dir: Path, analyzer, n_trajectories: int,
-                                 pulse_time: Optional[float] = None,
-                                 pixel_counts: Optional[Dict[str, np.ndarray]] = None):
-    """
-    Creates publication-quality ensemble dye uptake plots, including total dye uptake
-    (Absolute per-pixel * number of pixels in the region).
-    
-    Parameters:
-        ensemble_results: dict of ensemble averages per region
-        output_dir: Path to save plots
-        analyzer: BulkDyeAnalyzer instance
-        n_trajectories: number of trajectories averaged
-        pulse_time: optional pulse time marker
-        pixel_counts: dict with region keys and arrays of pixel counts (same length as ensemble arrays)
-    """
-    plt.rcParams.update({
-        'font.size': 11,
-        'font.family': 'sans-serif',
-        'axes.linewidth': 1.5,
-        'xtick.major.width': 1.5,
-        'ytick.major.width': 1.5,
-        'xtick.major.size': 5,
-        'ytick.major.size': 5,
-        'legend.frameon': True,
-        'legend.framealpha': 0.9,
-        'legend.edgecolor': 'black'
-    })
+# Plot‑specific settings -------------------------------------------------
+BIN_COUNT = 20                # number of circularity bins between 0 and 1
+PLOT_DPI = 300
+PLOT_FIGSIZE = (8, 5)         # inches
+LINE_WIDTH = 2.5
+SEM_SHADE_ALPHA = 0.25
 
-    colors = {
-        'Total': ('#2E86AB', '#A4C3D2'),
-        'Protrusion': ('#A23B72', '#D896B0'),
-        'Body': ('#F18F01', '#F8C794')
+# Colour palette – you can edit the hex codes if you prefer other shades
+PALETTE = {
+    "CK666":  "#1f77b4",   # classic blue
+    "SMIFH2": "#ff7f0e",   # orange
+    "DMSO":   "#2ca02c",   # green
+    "CytD":   "#d62728",   # red
+}
+
+# ----------------------------------------------------------------------
+# LIBRARY IMPORTS
+# ----------------------------------------------------------------------
+import pathlib, warnings, sys, re
+warnings.filterwarnings("ignore", category=UserWarning)
+
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+from scipy import ndimage as ndi, stats
+from skimage import io, filters, morphology, measure, exposure, segmentation, util
+
+# ----------------------------------------------------------------------
+# OPTIONAL: try to use a seaborn style if it is available
+# ----------------------------------------------------------------------
+def safe_set_style(style_name: str, fallback: str = "ggplot"):
+    """Apply *style_name* if matplotlib knows it; otherwise use *fallback*."""
+    if style_name in plt.style.available:
+        plt.style.use(style_name)
+    else:
+        print(f"️  Style '{style_name}' not found – falling back to '{fallback}'.")
+        plt.style.use(fallback)
+
+safe_set_style("seaborn-whitegrid", fallback="ggplot")
+
+# ----------------------------------------------------------------------
+# CORE FUNCTIONS (unchanged except for distance_transform_edt)
+# ----------------------------------------------------------------------
+def load_tiff(path: pathlib.Path) -> np.ndarray:
+    """Read a TIFF (single‑ or multi‑page) and return a 2‑D float image in [0,1]."""
+    img = io.imread(str(path))
+    if img.ndim > 2:                 # collapse Z‑stack (max‑projection)
+        img = np.max(img, axis=0)
+    return util.img_as_float(img)
+
+def preprocess(img: np.ndarray) -> np.ndarray:
+    """Background subtraction + contrast stretch + slight smoothing."""
+    background = filters.gaussian(img, sigma=50)
+    img_corr = img - background
+    img_corr = exposure.rescale_intensity(img_corr, out_range=(0, 1))
+    return filters.gaussian(img_corr, sigma=1)
+
+def segment_cells(img: np.ndarray) -> np.ndarray:
+    """Return a labelled mask (int) where each cell has a unique ID."""
+    # 1) Global Otsu threshold
+    thresh = filters.threshold_otsu(img)
+    binary = img > thresh
+
+    # 2) Clean small artefacts / fill holes
+    binary = morphology.remove_small_objects(binary, min_size=MIN_CELL_AREA)
+    binary = morphology.remove_small_holes(binary, area_threshold=MIN_CELL_AREA)
+
+    # 3) Distance‑map watershed (fixed import)
+    distance = ndi.distance_transform_edt(binary)
+    local_max = morphology.h_maxima(distance, h=0.1)
+    markers = measure.label(local_max)
+    labels = segmentation.watershed(-distance, markers, mask=binary)
+
+    # 4) Keep only objects within the expected area range
+    props = measure.regionprops(labels)
+    keep = [p.label for p in props if MIN_CELL_AREA <= p.area <= MAX_CELL_AREA]
+    filtered = np.isin(labels, keep) * labels
+    return filtered.astype(np.int32)
+
+def compute_circularity(labels: np.ndarray) -> pd.DataFrame:
+    """Return a DataFrame with Cell_ID, Area_px, Perimeter_px, Circularity."""
+    props = measure.regionprops(labels)
+    rows = []
+    for p in props:
+        area = p.area
+        peri = p.perimeter
+        circ = np.nan if peri == 0 else (4 * np.pi * area) / (peri ** 2)
+        rows.append({
+            "Cell_ID": p.label,
+            "Area_px": area,
+            "Perimeter_px": peri,
+            "Circularity": circ,
+        })
+    return pd.DataFrame(rows)
+
+def overlay_labels(img: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """RGB image with red cell boundaries drawn on the original grayscale."""
+    rgb = np.dstack([img, img, img])
+    return segmentation.mark_boundaries(rgb, labels, color=(1, 0, 0), mode="outer")
+
+# ----------------------------------------------------------------------
+# ENHANCED METADATA EXTRACTION
+# ----------------------------------------------------------------------
+
+# Concentration mapping for each drug based on image number
+CONCENTRATION_MAP = {
+    "CK666": {
+        1: 50.0,
+        2: 100.0,
+        3: 150.0,
+        4: 200.0
+    },
+    "SMIFH2": {
+        1: 5.0,
+        2: 25.0,
+        3: 40.0,
+        4: 80.0
+    },
+    "CYTD": {
+        1: 0.1,
+        2: 0.25,
+        3: 0.50,
+        4: 1.0
+    },
+    "DMSO": {
+        1: 0.0,
+        2: 50.0,
+        3: 100.0,
+        4: 200.0
+    },
+    "CNTRL": {
+        1: 0.0
     }
+}
 
-    # Plot the normal per-pixel mean
-    plot_configs = [
-        ('Absolute', 'Mean', 'Intensity (a.u.)', False),  # per-pixel
-        ('TotalDye', 'Mean', 'Total Dye (a.u.)', True)    # total dye = per-pixel * pixels
-    ]
-
-    for suffix, key_suffix, ylabel, use_total in plot_configs:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        legend_handles = []
-
-        for region in ['Total', 'Protrusion', 'Body']:
-            column_key = f'{region}_{key_suffix}'
-            if column_key in ensemble_results:
-                t, mean, sem = ensemble_results[column_key]
-
-                # Multiply by pixel count if requested
-                if use_total and pixel_counts is not None and region in pixel_counts:
-                    mean = mean * pixel_counts[region]
-                    sem = sem * pixel_counts[region]
-
-                line, = ax.plot(t, mean, color=colors[region][0], linewidth=2.5, 
-                                label=region, zorder=3)
-                ax.fill_between(t, mean - sem, mean + sem, 
-                                color=colors[region][1], alpha=0.3, zorder=2)
-                legend_handles.append(line)
-
-        # Pulse marker
-        if pulse_time is not None:
-            vline = ax.axvline(x=pulse_time, color='#C1292E', linestyle='--',
-                                linewidth=2.5, zorder=1)
-            legend_handles.append(plt.Line2D([0], [0], color='#C1292E',
-                                             linestyle='--', linewidth=2.5,
-                                             label='Electroporation Pulse'))
-
-        ax.set_xlabel('Time (s)', fontsize=13, fontweight='bold')
-        ax.set_ylabel(ylabel, fontsize=13, fontweight='bold')
-
-        title_map = {
-            'Absolute': 'Absolute Dye Uptake (per-pixel)',
-            'TotalDye': 'Total Dye Uptake (Absolute x Pixels)'
-        }
-        ax.set_title(f'{title_map[suffix]}: {analyzer.experiment_prefix} (n={n_trajectories})', 
-                     fontsize=14, fontweight='bold', pad=15)
-
-        ax.legend(handles=legend_handles, loc='upper left', fontsize=11, framealpha=0.95)
-        ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
-        ax.set_axisbelow(True)
-        for spine in ax.spines.values():
-            spine.set_linewidth(1.5)
-        plt.tight_layout()
-
-        save_path = output_dir / f'Ensemble_Dye_Uptake_entireregion{suffix}_{analyzer.experiment_prefix}.png'
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
-        plt.savefig(save_path.with_suffix('.pdf'), bbox_inches='tight')
-        plt.close(fig)
-
-        print(f"Saved: {save_path.name}")
-
-
-def plot_dye_ensemble(ensemble_results: Dict[str, Dict], output_dir: Path, 
-                      analyzer, n_trajectories: int, pulse_time: Optional[float] = None):
-    """Creates publication-quality ensemble dye uptake plots."""
+def extract_treatment_and_dosage(fname: str) -> tuple:
+    """
+    Extract drug name and dosage from filename based on image number.
     
-    # Set publication-quality parameters
-    plt.rcParams.update({
-        'font.size': 11,
-        'font.family': 'sans-serif',
-        'axes.linewidth': 1.5,
-        'xtick.major.width': 1.5,
-        'ytick.major.width': 1.5,
-        'xtick.major.size': 5,
-        'ytick.major.size': 5,
-        'legend.frameon': True,
-        'legend.framealpha': 0.9,
-        'legend.edgecolor': 'black'
-    })
+    Examples:
+        "CK666_Image_1_FL.tif" → ("CK666", 50.0)
+        "SMIFH2_Image_3_FL.tif" → ("SMIFH2", 40.0)
+        "CytD_Image_2_FL.tif" → ("CytD", 0.25)
+        "DMSO_Image_4_FL.tif" → ("DMSO", 200.0)
+        "CNTRL_Image_1_FL.tif" → ("CNTRL", 0.0)
+    """
+    lower = fname.lower()
+    original = fname
     
-    # Color scheme
-    colors = {
-        'Total': ('#2E86AB', '#A4C3D2'),      # Blue
-        'Protrusion': ('#A23B72', '#D896B0'),  # Purple
-        'Body': ('#F18F01', '#F8C794')         # Orange
-    }
+    # Detect drug
+    drug = "Unknown"
+    for d in ["cntrl", "ck666", "smifh2", "cytd", "dmso"]:  # Check CNTRL first
+        if d in lower:
+            drug = d.upper()
+            break
     
-    # Create three separate plots
-    plot_configs = [
-        ('Absolute', 'Mean', 'Intensity (a.u.)'),
-        ('MinMax', 'MinMax', 'Normalized Intensity (0-1)'),
-        ('Normalized_dF_F0', 'Normalized_dF_F0', 'Normalized Fluorescence (ΔF/F₀)')
-    ]
+    # Extract image number
+    # Look for patterns like "Image_1", "Image1", "image 2", etc.
+    image_num_match = re.search(r'image[_\s]*(\d+)', lower)
     
-    for suffix, key_suffix, ylabel in plot_configs:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        
-        legend_handles = []
-        
-        # Plot each region
-        for region in ['Total', 'Protrusion', 'Body']:
-            column_key = f'{region}_{key_suffix}'
-            
-            if column_key in ensemble_results:
-                t, mean, sem = ensemble_results[column_key]
-                
-                line, = ax.plot(t, mean, color=colors[region][0], linewidth=2.5, 
-                              label=region, zorder=3)
-                ax.fill_between(t, mean - sem, mean + sem, 
-                              color=colors[region][1], alpha=0.3, zorder=2)
-                legend_handles.append(line)
-        
-        # Add pulse time marker
-        if pulse_time is not None:
-            vline = ax.axvline(x=pulse_time, color='#C1292E', linestyle='--', 
-                             linewidth=2.5, zorder=1)
-            legend_handles.append(plt.Line2D([0], [0], color='#C1292E', 
-                                            linestyle='--', linewidth=2.5, 
-                                            label='Electroporation Pulse'))
-        
-        # Formatting
-        ax.set_xlabel('Time (s)', fontsize=13, fontweight='bold')
-        ax.set_ylabel(ylabel, fontsize=13, fontweight='bold')
-        
-        title_map = {
-            'Absolute': 'Absolute Dye Uptake',
-            'MinMax': 'Min-Max Normalized Dye Uptake',
-            'Normalized_dF_F0': 'Baseline-Normalized Dye Uptake (ΔF/F₀)'
-        }
-        
-        ax.set_title(f'{title_map[suffix]}: {analyzer.experiment_prefix} (n={n_trajectories})', 
-                    fontsize=14, fontweight='bold', pad=15)
-        
-        # Legend
-        ax.legend(handles=legend_handles, loc='upper left', fontsize=11, 
-                 framealpha=0.95)
-        
-        # Grid
-        ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
-        ax.set_axisbelow(True)
-        
-        # Spines
-        for spine in ax.spines.values():
-            spine.set_linewidth(1.5)
-        
-        plt.tight_layout()
-        
-        # Save
-        save_path = output_dir / f'Ensemble_Dye_Uptake_{suffix}_{analyzer.experiment_prefix}.png'
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
-        plt.savefig(save_path.with_suffix('.pdf'), bbox_inches='tight')
-        plt.close(fig)
-        
-        print(f"Saved: {save_path.name}")
+    dosage = 0.0
+    if image_num_match and drug in CONCENTRATION_MAP:
+        image_num = int(image_num_match.group(1))
+        dosage = CONCENTRATION_MAP[drug].get(image_num, 0.0)
+    elif "control" in lower or "cntrl" in lower:
+        dosage = 0.0
+        if drug == "Unknown":
+            drug = "CNTRL"
+    
+    return drug, dosage
 
-# =============================================================================
-# BULK DYE ANALYZER
-# =============================================================================
-class BulkDyeAnalyzer:
-    def __init__(self, base_folder: str, experiment_prefix: str, 
-                 selected_traps: Optional[Dict[str, List[int]]] = None, 
-                 pulse_time: Optional[float] = None,
-                 trap_remap: Optional[Dict[str, Dict[int, int]]] = None):
-        
-        self.base_folder = Path(base_folder)
-        self.experiment_prefix = experiment_prefix
-        self.selected_traps = selected_traps
-        self.pulse_time = pulse_time
-        self.dye_uptake_dir_name = "Dye Uptake"
+def bin_counts(circularities: np.ndarray, bins: np.ndarray) -> np.ndarray:
+    """Return raw histogram counts (no normalization)."""
+    counts, _ = np.histogram(circularities, bins=bins)
+    return counts
 
-        self.trap_remap = trap_remap or {}
-        self.trap_raw_dye_data: Dict[int, List[pd.DataFrame]] = {}
-        
-    def get_canonical_trap(self, exp_id: str, trap_number: int) -> int:
-        if exp_id in self.trap_remap:
-            return self.trap_remap[exp_id].get(trap_number, trap_number)
-        return trap_number
+# ----------------------------------------------------------------------
+# COMPARISON PLOTTING FUNCTIONS
+# ----------------------------------------------------------------------
+def plot_drug_comparison_boxplot(df: pd.DataFrame, out_path: pathlib.Path):
+    """Box plot comparing circularity across different drugs."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    drugs = ["CK666", "SMIFH2", "DMSO", "CytD"]
+    data_to_plot = []
+    labels = []
+    colors = []
+    
+    for drug in drugs:
+        drug_data = df[df["Drug"] == drug]["Circularity"].dropna()
+        if len(drug_data) > 0:
+            data_to_plot.append(drug_data)
+            labels.append(drug)
+            colors.append(PALETTE[drug])
+    
+    bp = ax.boxplot(data_to_plot, labels=labels, patch_artist=True, 
+                    showmeans=True, meanline=True)
+    
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+    
+    ax.set_ylabel("Circularity", fontsize=12)
+    ax.set_xlabel("Drug Treatment", fontsize=12)
+    ax.set_title("Circularity Comparison Across Drug Treatments", fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=PLOT_DPI)
+    plt.close()
 
+def plot_dosage_comparison(df: pd.DataFrame, out_path: pathlib.Path):
+    """Line plot showing mean circularity vs dosage for each drug."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    drugs = ["CK666", "SMIFH2", "CytD"]  # Exclude DMSO as it's typically control
+    
+    for drug in drugs:
+        drug_df = df[df["Drug"] == drug]
+        if len(drug_df) == 0:
+            continue
+        
+        # Group by dosage and calculate mean ± SEM
+        dosage_stats = drug_df.groupby("Dosage_uM")["Circularity"].agg(['mean', 'sem', 'count']).reset_index()
+        dosage_stats = dosage_stats.sort_values("Dosage_uM")
+        
+        if len(dosage_stats) > 0:
+            ax.plot(dosage_stats["Dosage_uM"], dosage_stats["mean"], 
+                   marker='o', linewidth=LINE_WIDTH, markersize=8,
+                   label=drug, color=PALETTE[drug])
+            ax.fill_between(dosage_stats["Dosage_uM"],
+                          dosage_stats["mean"] - dosage_stats["sem"],
+                          dosage_stats["mean"] + dosage_stats["sem"],
+                          color=PALETTE[drug], alpha=SEM_SHADE_ALPHA)
+    
+    ax.set_xlabel("Dosage (µM)", fontsize=12)
+    ax.set_ylabel("Mean Circularity", fontsize=12)
+    ax.set_title("Dose-Response: Circularity vs Drug Concentration", fontsize=14, fontweight='bold')
+    ax.legend(title="Drug", loc='best')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=PLOT_DPI)
+    plt.close()
 
+def plot_dosage_heatmap(df: pd.DataFrame, out_path: pathlib.Path):
+    """Heatmap showing mean circularity for each drug-dosage combination."""
+    # Pivot table: drugs as rows, dosages as columns
+    pivot = df.groupby(["Drug", "Dosage_uM"])["Circularity"].mean().reset_index()
+    pivot_table = pivot.pivot(index="Drug", columns="Dosage_uM", values="Circularity")
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    im = ax.imshow(pivot_table.values, aspect='auto', cmap='RdYlGn', vmin=0.7, vmax=0.9)
+    
+    # Set ticks
+    ax.set_xticks(np.arange(len(pivot_table.columns)))
+    ax.set_yticks(np.arange(len(pivot_table.index)))
+    ax.set_xticklabels([f"{d:.1f}" for d in pivot_table.columns])
+    ax.set_yticklabels(pivot_table.index)
+    
+    # Labels
+    ax.set_xlabel("Dosage (µM)", fontsize=12)
+    ax.set_ylabel("Drug Treatment", fontsize=12)
+    ax.set_title("Circularity Heatmap: Drug × Dosage", fontsize=14, fontweight='bold')
+    
+    # Colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label("Mean Circularity", fontsize=11)
+    
+    # Add text annotations
+    for i in range(len(pivot_table.index)):
+        for j in range(len(pivot_table.columns)):
+            val = pivot_table.values[i, j]
+            if not np.isnan(val):
+                text = ax.text(j, i, f"{val:.2f}", ha="center", va="center", 
+                             color="white" if val < 0.5 else "black", fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=PLOT_DPI)
+    plt.close()
 
-    def should_process_trap(self, exp_id: str, trap_number: int) -> bool:
-        if self.selected_traps is None:
-            return True
-        if exp_id in self.selected_traps:
-            return trap_number in self.selected_traps[exp_id]
-        return False
+def plot_distribution_by_dosage(df: pd.DataFrame, drug: str, out_path: pathlib.Path):
+    """Distribution curves for a specific drug across different dosages."""
+    drug_df = df[df["Drug"] == drug]
+    dosages = sorted(drug_df["Dosage_uM"].unique())
+    
+    if len(dosages) == 0:
+        return
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bin_edges = np.linspace(0, 1, BIN_COUNT + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    
+    cmap = plt.cm.viridis
+    colors = [cmap(i / len(dosages)) for i in range(len(dosages))]
+    
+    for dosage, color in zip(dosages, colors):
+        dosage_data = drug_df[drug_df["Dosage_uM"] == dosage]["Circularity"].dropna()
+        if len(dosage_data) > 0:
+            counts, _ = np.histogram(dosage_data, bins=bin_edges, density=True)
+            ax.plot(bin_centers, counts, label=f"{dosage:.1f} µM", 
+                   linewidth=LINE_WIDTH, color=color)
+    
+    ax.set_xlabel("Circularity", fontsize=12)
+    ax.set_ylabel("Density", fontsize=12)
+    ax.set_title(f"{drug}: Circularity Distribution by Dosage", fontsize=14, fontweight='bold')
+    ax.legend(title="Dosage", loc='best')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 1)
+    
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=PLOT_DPI)
+    plt.close()
 
-    def find_experiment_folders(self) -> List[Path]:
-        folders = []
-        for item in self.base_folder.iterdir():
-            if item.is_dir() and item.name.startswith(self.experiment_prefix):
-                folders.append(item)
+def generate_statistics_report(df: pd.DataFrame, out_path: pathlib.Path):
+    """Generate a comprehensive statistical summary report."""
+    with open(out_path, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write("CIRCULARITY ANALYSIS - STATISTICAL SUMMARY REPORT\n")
+        f.write("=" * 80 + "\n\n")
         
-        def sort_key(p):
-            match = re.search(r'(\d+)', p.name)
-            return int(match.group(1)) if match else 0
+        # Overall statistics
+        f.write("OVERALL STATISTICS\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"Total cells analyzed: {len(df)}\n")
+        f.write(f"Mean circularity: {df['Circularity'].mean():.4f} ± {df['Circularity'].std():.4f}\n")
+        f.write(f"Median circularity: {df['Circularity'].median():.4f}\n\n")
         
-        folders.sort(key=sort_key)
-        return folders
-
-    def load_dye_data_df(self, experiment_folder: Path, trap_number: int) -> Optional[pd.DataFrame]:
-        """Loads the full dye uptake CSV file."""
-        dye_folder = experiment_folder / self.dye_uptake_dir_name
+        # Statistics by drug
+        f.write("STATISTICS BY DRUG TREATMENT\n")
+        f.write("-" * 80 + "\n")
+        for drug in ["CK666", "SMIFH2", "DMSO", "CytD"]:
+            drug_data = df[df["Drug"] == drug]["Circularity"].dropna()
+            if len(drug_data) > 0:
+                f.write(f"\n{drug}:\n")
+                f.write(f"  N cells: {len(drug_data)}\n")
+                f.write(f"  Mean: {drug_data.mean():.4f} ± {drug_data.std():.4f}\n")
+                f.write(f"  Median: {drug_data.median():.4f}\n")
+                f.write(f"  Range: [{drug_data.min():.4f}, {drug_data.max():.4f}]\n")
         
-        if not dye_folder.exists():
-            return None
-            
-        expected_filename = f"Trap_{trap_number:02d}_Uptake_Data.csv"
-        file_path = dye_folder / expected_filename
+        # Statistics by drug and dosage
+        f.write("\n\nSTATISTICS BY DRUG AND DOSAGE\n")
+        f.write("-" * 80 + "\n")
+        grouped = df.groupby(["Drug", "Dosage_uM"])["Circularity"]
+        for (drug, dosage), group in grouped:
+            group_clean = group.dropna()
+            if len(group_clean) > 0:
+                f.write(f"\n{drug} @ {dosage:.1f} µM:\n")
+                f.write(f"  N cells: {len(group_clean)}\n")
+                f.write(f"  Mean: {group_clean.mean():.4f} ± {group_clean.std():.4f}\n")
+                f.write(f"  Median: {group_clean.median():.4f}\n")
         
-        if not file_path.exists():
-            dye_files = list(dye_folder.glob(f"Trap_{trap_number}*_Uptake_Data.*"))
-            if not dye_files:
-                return None
-            file_path = dye_files[0]
-            
-        try:
-            df = pd.read_csv(file_path, comment='#')
-            
-            # Convert columns to numeric
-            numeric_cols = ['Time_s', 'Total_Mean', 'Protrusion_Mean', 'Body_Mean',
-                          'Total_MinMax', 'Protrusion_MinMax', 'Body_MinMax',
-                          'Total_Normalized_dF_F0', 'Protrusion_Normalized_dF_F0', 
-                          'Body_Normalized_dF_F0']
-            
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            df['Trap_Number'] = trap_number
-            df['Experiment_ID'] = experiment_folder.name
-            return df
-        except Exception as e:
-            print(f"  Warning: Failed to load dye data for Trap {trap_number}: {e}")
-            return None
-
-    def run_analysis(self):
-        print("="*80)
-        print("BULK DYE UPTAKE ANALYSIS")
-        print("="*80)
+        # Pairwise comparisons (Kruskal-Wallis test)
+        f.write("\n\nSTATISTICAL TESTS (Kruskal-Wallis)\n")
+        f.write("-" * 80 + "\n")
+        drugs_with_data = []
+        drug_groups = []
+        for drug in ["CK666", "SMIFH2", "DMSO", "CytD"]:
+            drug_data = df[df["Drug"] == drug]["Circularity"].dropna()
+            if len(drug_data) > 0:
+                drugs_with_data.append(drug)
+                drug_groups.append(drug_data.values)
         
-        if self.selected_traps is not None:
-            print("\nSELECTED TRAPS:")
-            for exp_id, traps in self.selected_traps.items():
-                print(f"  {exp_id}: Traps {traps}")
-        
-        # Save results in Output folder with experiment prefix
-        output_dir = self.base_folder / f"Bulk_Dye_Uptake_Results_{self.experiment_prefix}"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        print(f"\nOutput directory: {output_dir}")
-        
-        experiment_folders = self.find_experiment_folders()
-        if not experiment_folders:
-            print("No matching experiment folders found.")
-            return
-
-        # Process all experiments and traps
-        for exp_folder in experiment_folders:
-            exp_id = exp_folder.name
-            dye_folder = exp_folder / self.dye_uptake_dir_name
-            
-            if not dye_folder.exists():
-                continue
-            
-            print(f"\n{'='*80}")
-            print(f"PROCESSING: {exp_id}")
-            print(f"{'='*80}")
-            
-            # Find all dye uptake files
-            dye_files = list(dye_folder.glob("Trap_*_Uptake_Data.*"))
-            
-            for dye_file in dye_files:
-                # Extract trap number
-                match = re.search(r'Trap_(\d+)', dye_file.name)
-                if not match:
-                    continue
-                    
-                trap_number = int(match.group(1))
-                
-                canonical_trap = self.get_canonical_trap(exp_id, trap_number)
-
-                if canonical_trap != trap_number:
-                    print(f"  ⚠ Remapping {exp_id}: Trap {trap_number} → {canonical_trap}")
-
-                
-                if not self.should_process_trap(exp_id, trap_number):
-                    continue
-                
-                print(f"  Loading Trap {trap_number}...", end=" ")
-                
-                dye_data_df = self.load_dye_data_df(exp_folder, trap_number)
-                
-                if dye_data_df is not None:
-                    dye_data_df['Canonical_Trap'] = canonical_trap
-
-                    if canonical_trap not in self.trap_raw_dye_data:
-                        self.trap_raw_dye_data[canonical_trap] = []
-                    
-                    self.trap_raw_dye_data[canonical_trap].append(dye_data_df)
-
-                    print("SUCCESS")
-                else:
-                    print("FAILED")
-
-        print(f"\n{'='*80}")
-        print("GENERATING ENSEMBLE PLOTS")
-        print(f"{'='*80}\n")
-        
-        if not self.trap_raw_dye_data:
-            print("No dye uptake data collected. Exiting.")
-            return
-        
-        for canonical_trap, dye_data_list in self.trap_raw_dye_data.items():
-            print(f"\nGenerating ensemble plots for Trap {canonical_trap} "
-                  f"(n={len(dye_data_list)})")
-        
-            trap_output_dir = output_dir / f"Trap_{canonical_trap:02d}"
-            trap_output_dir.mkdir(parents=True, exist_ok=True)
-        
-            columns_absolute = ['Total_Mean', 'Protrusion_Mean', 'Body_Mean']
-            columns_minmax = ['Total_MinMax', 'Protrusion_MinMax', 'Body_MinMax']
-            columns_normalized = [
-                'Total_Normalized_dF_F0',
-                'Protrusion_Normalized_dF_F0',
-                'Body_Normalized_dF_F0'
-            ]
-        
-            ensemble_absolute = calculate_dye_ensemble_average(dye_data_list, columns_absolute)
-            ensemble_minmax = calculate_dye_ensemble_average(dye_data_list, columns_minmax)
-            ensemble_normalized = calculate_dye_ensemble_average(dye_data_list, columns_normalized)
-        
-            all_results = {}
-            if ensemble_absolute:
-                all_results.update(ensemble_absolute)
-            if ensemble_minmax:
-                all_results.update(ensemble_minmax)
-            if ensemble_normalized:
-                all_results.update(ensemble_normalized)
-        
-            if all_results:
-                plot_dye_ensemble(
-                    all_results,
-                    trap_output_dir,
-                    self,
-                    len(dye_data_list),
-                    self.pulse_time
-                )
-        
-                final_dye_df = pd.concat(dye_data_list, ignore_index=True)
-                dye_output_path = trap_output_dir / 'Consolidated_Dye_Uptake_Data.csv'
-                final_dye_df.to_csv(dye_output_path, index=False)
-        
-                print(f"  Saved Trap {canonical_trap} results")
+        if len(drug_groups) > 1:
+            h_stat, p_value = stats.kruskal(*drug_groups)
+            f.write(f"\nComparison across all drugs:\n")
+            f.write(f"  H-statistic: {h_stat:.4f}\n")
+            f.write(f"  p-value: {p_value:.4e}\n")
+            if p_value < 0.05:
+                f.write(f"  Result: Significant difference detected (p < 0.05)\n")
             else:
-                print(f"  Warning: No ensemble data for Trap {canonical_trap}")
-
-        # Before plotting, calculate pixel counts for each region
-        pixel_counts = {
-            'Total': np.array([len(df) for df in dye_data_list[0]['Total_Pixels']]),       # or precomputed
-            'Protrusion': np.array([len(df) for df in dye_data_list[0]['Protrusion_Pixels']]),
-            'Body': np.array([len(df) for df in dye_data_list[0]['Body_Pixels']])
-        }
+                f.write(f"  Result: No significant difference (p ≥ 0.05)\n")
         
-        plot_dye_ensemble_with_total(
-            all_results,
-            trap_output_dir,
-            self,
-            len(dye_data_list),
-            self.pulse_time,
-            pixel_counts=pixel_counts
-        )
+        f.write("\n" + "=" * 80 + "\n")
+        f.write("END OF REPORT\n")
+        f.write("=" * 80 + "\n")
 
-        print(f"\n{'='*80}")
-        print("ANALYSIS COMPLETE")
-        print(f"{'='*80}")
-        print(f"Results saved to: {output_dir}")
-        print(f"{'='*80}\n")
+# ----------------------------------------------------------------------
+# MAIN BATCH ROUTINE
+# ----------------------------------------------------------------------
+def main():
+    out_root = pathlib.Path(OUT_ROOT)
+    out_root.mkdir(parents=True, exist_ok=True)
 
-# =============================================================================
-# MAIN EXECUTION
-# =============================================================================
-if __name__ == '__main__':
-    # Configuration
-    BASE_FOLDER_PATH = r"C:\GitHub\MFAE_Analysis\Output"
-    EXPERIMENT_PREFIX = "100V_100us"
-    PULSE_TIME = 10.0  # Time when electroporation pulse was applied (seconds)
+    overlay_dir = out_root / "overlays"
+    hist_dir    = out_root / "histograms"
+    csv_dir     = out_root / "csv_per_image"
+    compare_dir = out_root / "comparisons"  # NEW: comparison folder
     
-    # Select specific traps (or set to None for all traps)
-    SELECTED_TRAPS = {
-        "100V_100us_pulse_Experiment1": [4],
-        "100V_100us_pulse_Experiment2": [4],
-        "100V_100us_pulse_Experiment3": [4]
-    }
-    
-    trap_remap = {
-        "100V_100us_pulse_Experiment1": {4: 4},
-        "100V_100us_pulse_Experiment2": {4: 4},
-        "100V_100us_pulse_Experiment3": {4: 4},
-    }
+    for d in (overlay_dir, hist_dir, csv_dir, compare_dir):
+        d.mkdir(exist_ok=True)
 
+    tiff_folder = pathlib.Path(TIFF_ROOT)
+    tiff_paths = sorted([p for p in tiff_folder.iterdir()
+                         if p.suffix.lower() in {".tif", ".tiff"}])
+    if not tiff_paths:
+        print(f"No TIFF files found in {tiff_folder}")
+        sys.exit(0)
+
+    # --------------------------------------------------------------
+    # 1) Run the original pipeline for every image
+    # --------------------------------------------------------------
+    combined_rows = []
+    treatment_circ = {k: [] for k in ["CK666", "SMIFH2", "DMSO", "CytD"]}
+
+    for tiff_path in tiff_paths:
+        print(f"\nProcessing: {tiff_path.name}")
+
+        # ----- load & preprocess -----
+        img = load_tiff(tiff_path)
+        img_prep = preprocess(img)
+
+        # ----- segmentation -----
+        labels = segment_cells(img_prep)
+
+        # ----- circularity table -----
+        df = compute_circularity(labels)
+        df.insert(0, "FileName", tiff_path.name)
+        
+        # ----- extract metadata -----
+        drug, dosage = extract_treatment_and_dosage(tiff_path.name)
+        df.insert(1, "Drug", drug)
+        df.insert(2, "Dosage_uM", dosage)
+
+        # ----- save per‑image CSV -----
+        csv_path = csv_dir / f"{tiff_path.stem}_circularity.csv"
+        df.to_csv(csv_path, index=False)
+
+        # ----- save overlay -----
+        overlay = overlay_labels(img, labels)
+        overlay_path = overlay_dir / f"{tiff_path.stem}_overlay.png"
+        plt.imsave(str(overlay_path), overlay, cmap="gray")
+
+        # ----- per‑image histogram -----
+        plt.figure(figsize=(6, 4))
+        plt.hist(df["Circularity"].dropna(), bins=30, edgecolor="black")
+        plt.xlabel("Circularity")
+        plt.ylabel("Cell count")
+        plt.title(f"Circularity distribution – {tiff_path.name}")
+        plt.tight_layout()
+        hist_path = hist_dir / f"{tiff_path.stem}_hist.png"
+        plt.savefig(str(hist_path), dpi=PLOT_DPI)
+        plt.close()
+
+        # ----- collect for combined analysis -----
+        combined_rows.append(df)
+        
+        if drug in treatment_circ:
+            treatment_circ[drug].append(df["Circularity"].dropna().values)
+
+    # --------------------------------------------------------------
+    # 2) Write combined CSV
+    # --------------------------------------------------------------
+    if combined_rows:
+        combined_df = pd.concat(combined_rows, ignore_index=True)
+        combined_path = out_root / COMBINED_TABLE_NAME
+        combined_df.to_csv(combined_path, index=False)
+        print(f"\nCombined summary saved to: {combined_path}")
+    else:
+        print("\nNo data processed!")
+        sys.exit(0)
+
+    # --------------------------------------------------------------
+    # 3) Original publishable line plot
+    # --------------------------------------------------------------
+    bin_edges = np.linspace(0, 1, BIN_COUNT + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    means = {}
+    sems  = {}
+    for treat, circ_lists in treatment_circ.items():
+        if not circ_lists:
+            continue
+        counts_matrix = np.vstack([bin_counts(circ, bin_edges) for circ in circ_lists])
+        means[treat] = counts_matrix.mean(axis=0)
+        sems[treat]  = counts_matrix.std(axis=0, ddof=1) / np.sqrt(counts_matrix.shape[0])
+
+    fig, ax = plt.subplots(figsize=PLOT_FIGSIZE)
+    for treat in ["CK666", "SMIFH2", "DMSO", "CytD"]:
+        if treat not in means:
+            continue
+        ax.plot(bin_centers, means[treat],
+                label=treat,
+                color=PALETTE[treat],
+                linewidth=LINE_WIDTH)
+        ax.fill_between(bin_centers,
+                        means[treat] - sems[treat],
+                        means[treat] + sems[treat],
+                        color=PALETTE[treat],
+                        alpha=SEM_SHADE_ALPHA)
+
+    ax.set_xlabel("Circularity")
+    ax.set_ylabel("Mean cell count per bin")
+    ax.set_title("Circularity distribution across drug treatments")
+    ax.set_xlim(0, 1)
+    ax.legend(title="Treatment", loc="upper right")
+    plt.tight_layout()
+
+    fig_path_png = out_root / "circularity_distribution_lineplot.png"
+    fig_path_pdf = out_root / "circularity_distribution_lineplot.pdf"
+    fig.savefig(str(fig_path_png), dpi=PLOT_DPI)
+    fig.savefig(str(fig_path_pdf))
+    plt.close()
+
+    # --------------------------------------------------------------
+    # 4) NEW COMPARISON ANALYSES
+    # --------------------------------------------------------------
+    print("\n" + "="*60)
+    print("GENERATING COMPARISON ANALYSES")
+    print("="*60)
     
-    print("\n" + "="*80)
-    print("CONFIGURATION")
-    print("="*80)
-    print(f"Base folder: {BASE_FOLDER_PATH}")
-    print(f"Experiment prefix: {EXPERIMENT_PREFIX}")
-    print(f"Pulse time: {PULSE_TIME}s")
-    if SELECTED_TRAPS:
-        total_traps = sum(len(traps) for traps in SELECTED_TRAPS.values())
-        print(f"Selected traps: {total_traps}")
-    print("="*80)
+    # Box plot comparison across drugs
+    print("\n[1/6] Creating drug comparison box plot...")
+    plot_drug_comparison_boxplot(combined_df, compare_dir / "drug_comparison_boxplot.png")
     
-    analyzer = BulkDyeAnalyzer(
-        base_folder=BASE_FOLDER_PATH,
-        experiment_prefix=EXPERIMENT_PREFIX,
-        selected_traps=SELECTED_TRAPS,
-        pulse_time=PULSE_TIME,
-        trap_remap = trap_remap
-    )
+    # Dosage response curves
+    print("[2/6] Creating dose-response curves...")
+    plot_dosage_comparison(combined_df, compare_dir / "dosage_response_curves.png")
     
-    analyzer.run_analysis()
+    # Heatmap
+    print("[3/6] Creating drug × dosage heatmap...")
+    plot_dosage_heatmap(combined_df, compare_dir / "drug_dosage_heatmap.png")
+    
+    # Distribution by dosage for each drug
+    print("[4/6] Creating distribution plots by dosage...")
+    for drug in ["CK666", "SMIFH2", "CytD"]:
+        if drug in combined_df["Drug"].values:
+            plot_distribution_by_dosage(combined_df, drug, 
+                                       compare_dir / f"{drug}_dosage_distributions.png")
+    
+    # Statistics report
+    print("[5/6] Generating statistical summary report...")
+    generate_statistics_report(combined_df, compare_dir / "statistical_summary.txt")
+    
+    # Summary table
+    print("[6/6] Creating summary statistics table...")
+    summary = combined_df.groupby(["Drug", "Dosage_uM"])["Circularity"].agg([
+        ('N_cells', 'count'),
+        ('Mean', 'mean'),
+        ('Std', 'std'),
+        ('Median', 'median'),
+        ('Min', 'min'),
+        ('Max', 'max')
+    ]).reset_index()
+    summary.to_csv(compare_dir / "summary_statistics.csv", index=False)
+
+    print("\n" + "="*60)
+    print("ALL ANALYSES COMPLETE!")
+    print("="*60)
+    print(f"\nResults saved to: {out_root}")
+    print(f"\nComparison analyses saved to: {compare_dir}")
+    print("\nGenerated files:")
+    print("  - drug_comparison_boxplot.png")
+    print("  - dosage_response_curves.png")
+    print("  - drug_dosage_heatmap.png")
+    print("  - [Drug]_dosage_distributions.png")
+    print("  - statistical_summary.txt")
+    print("  - summary_statistics.csv")
+
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    main()

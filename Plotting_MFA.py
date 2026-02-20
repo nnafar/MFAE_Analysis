@@ -57,94 +57,65 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
             return sem
         return None
 
-    # --- A. Timecourse (Absolute with Shaded SEM) ---
-    fig_abs, ax_abs = plt.subplots(figsize=(10, 6))
-    ax_abs.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
-    
-    series_config = [
-        ('uptake_total', 'uptake_total_std', 'count_total', colors['primary'], 'Total'),
-        ('uptake_protrusion', 'uptake_protrusion_std', 'count_protrusion', colors['secondary'], 'Protrusion'),
-        ('uptake_cell_body', 'uptake_cell_body_std', 'count_cell_body', colors['tertiary'], 'Body')
-    ]
-
-    for key_mean, key_std, key_count, color, label in series_config:
-        mean_data = np.array(results[key_mean])
+    # def plot_3panel_metric(fig_name: str, title: str, ylabel: str, suffix: str):
+    #     """Helper to create a 1x3 horizontal panel plot with shared Y-axis."""
+    #     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
         
-        # 1. Plot Mean
-        ax_abs.plot(t, mean_data, marker_style, color=color, linewidth=2, markersize=ms, label=label)
+    #     for ax in [ax1, ax2, ax3]:
+    #         ax.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
+
+    #     # --- Panel 1: Protrusion (and Tip) ---
+    #     m_p = np.array(results.get(f'uptake_protrusion{suffix}', []))
+    #     s_p = get_sem(f'uptake_protrusion{suffix}_std', 'count_protrusion')
+    #     if len(m_p) > 0:
+    #         ax1.plot(t, m_p, marker_style, color=colors['secondary'], linewidth=2, markersize=ms, label='Protrusion')
+    #         if s_p is not None: 
+    #             ax1.fill_between(t, m_p - s_p, m_p + s_p, color=colors['secondary'], alpha=0.25)
+                
+    #     m_tip = np.array(results.get(f'uptake_tip{suffix}', []))
+    #     s_tip = get_sem(f'uptake_tip{suffix}_std', 'count_tip')
+    #     if len(m_tip) > 0:
+    #         ax1.plot(t, m_tip, marker_style, color=colors['quaternary'], linewidth=2, markersize=ms, label='Tip (Top 5%)')
+    #         if s_tip is not None: 
+    #             ax1.fill_between(t, m_tip - s_tip, m_tip + s_tip, color=colors['quaternary'], alpha=0.25)
+
+    #     # --- Panel 2: Cell Body ---
+    #     m_b = np.array(results.get(f'uptake_cell_body{suffix}', []))
+    #     s_b = get_sem(f'uptake_cell_body{suffix}_std', 'count_cell_body')
+    #     if len(m_b) > 0:
+    #         ax2.plot(t, m_b, marker_style, color=colors['tertiary'], linewidth=2, markersize=ms, label='Cell Body')
+    #         if s_b is not None: 
+    #             ax2.fill_between(t, m_b - s_b, m_b + s_b, color=colors['tertiary'], alpha=0.25)
+
+    #     # --- Panel 3: Total Cell ---
+    #     m_t = np.array(results.get(f'uptake_total{suffix}', []))
+    #     s_t = get_sem(f'uptake_total{suffix}_std', 'count_total')
+    #     if len(m_t) > 0:
+    #         ax3.plot(t, m_t, marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total Cell')
+    #         if s_t is not None: 
+    #             ax3.fill_between(t, m_t - s_t, m_t + s_t, color=colors['primary'], alpha=0.25)
+
+    #     # --- Formatting & Styling ---
+    #     ax1.set_title("Protrusion")
+    #     ax2.set_title("Cell Body")
+    #     ax3.set_title("Total Cell")
+    #     ax1.set_ylabel(ylabel)
         
-        # 2. Add Shaded SEM
-        sem_data = get_sem(key_std, key_count)
-        if sem_data is not None:
-            ax_abs.fill_between(t, mean_data - sem_data, mean_data + sem_data, color=color, alpha=0.25, edgecolor=None)
-    
-    ax_abs.set_ylabel("Mean Intensity (a.u.) ± SEM")
-    ax_abs.set_xlabel("Time (s)")
-    ax_abs.set_title(f"Trap {trap_idx}: Dye Uptake (Absolute)")
-    ax_abs.legend()
-    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Absolute.png")
-    plt.close(fig_abs)
+    #     for ax in [ax1, ax2, ax3]:
+    #         ax.set_xlabel("Time (s)")
+    #         ax.grid(True, alpha=0.3)
+    #         ax.legend(loc='upper left')
 
-    # --- B. Timecourse (Normalized with Shaded SEM) ---
-    fig_norm, ax_norm = plt.subplots(figsize=(10, 6))
-    ax_norm.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
-    
-    series_norm = [
-        ('uptake_total_norm', 'uptake_total_norm_std', 'count_total', colors['primary'], 'Total'),
-        ('uptake_protrusion_norm', 'uptake_protrusion_norm_std', 'count_protrusion', colors['secondary'], 'Protrusion'),
-        ('uptake_cell_body_norm', 'uptake_cell_body_norm_std', 'count_cell_body', colors['tertiary'], 'Body')
-    ]
+    #     fig.suptitle(f"Trap {trap_idx}: {title}", y=1.05, fontsize=16, weight='bold')
+    #     plt.tight_layout()
+    #     utils.save_plot_png(output_dir / fig_name)
+    #     plt.close(fig)
 
-    for key_mean, key_std, key_count, color, label in series_norm:
-        mean_data = np.array(results[key_mean])
-        
-        # 1. Plot Mean
-        ax_norm.plot(t, mean_data, marker_style, color=color, linewidth=2, markersize=ms, label=label)
-
-        # 2. Add Shaded SEM
-        sem_data = get_sem(key_std, key_count)
-        if sem_data is not None:
-             ax_norm.fill_between(t, mean_data - sem_data, mean_data + sem_data, color=color, alpha=0.25, edgecolor=None)
-    
-    ax_norm.set_ylabel("Normalized Fluorescence ($\Delta F/F_0$) ± SEM")
-    ax_norm.set_xlabel("Time (s)")
-    ax_norm.set_title(f"Trap {trap_idx}: Normalized Uptake")
-    ax_norm.legend()
-    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Normalized.png")
-    plt.close(fig_norm)
-
-    # --- C. Min-Max (Now with Shaded SEM) ---
-    if 'uptake_total_minmax' in results:
-        fig_mm, ax_mm = plt.subplots(figsize=(10, 6))
-        ax_mm.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
-        
-        # New Series config for Min-Max
-        # Note: We use the pre-calculated scaled Stds (uptake_total_minmax_std)
-        series_minmax = [
-            ('uptake_total_minmax', 'uptake_total_minmax_std', 'count_total', colors['primary'], 'Total'),
-            ('uptake_protrusion_minmax', 'uptake_protrusion_minmax_std', 'count_protrusion', colors['secondary'], 'Protrusion'),
-            ('uptake_cell_body_minmax', 'uptake_cell_body_minmax_std', 'count_cell_body', colors['tertiary'], 'Body')
-        ]
-
-        for key_mean, key_std, key_count, color, label in series_minmax:
-            if key_mean not in results: continue
-            mean_data = np.array(results[key_mean])
-            
-            # 1. Plot Mean
-            ax_mm.plot(t, mean_data, marker_style, color=color, linewidth=2, markersize=ms, label=label)
-            
-            # 2. Add Shaded SEM
-            # Important: get_sem divides the scaled std by sqrt(count)
-            sem_data = get_sem(key_std, key_count)
-            if sem_data is not None:
-                 ax_mm.fill_between(t, mean_data - sem_data, mean_data + sem_data, color=color, alpha=0.25, edgecolor=None)
-
-        ax_mm.set_ylabel("Normalized Intensity (0-1) ± SEM")
-        ax_mm.set_xlabel("Time (s)")
-        ax_mm.set_title(f"Trap {trap_idx}: Min-Max Normalized Uptake")
-        ax_mm.legend()
-        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_MinMax.png")
-        plt.close(fig_mm)
+    # # --- Generate the three 3-panel plots ---
+    # plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_Absolute.png", "Dye Uptake (Absolute)", "Mean Intensity (a.u.) ± SEM", "")
+    # plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_Normalized.png", "Normalized Uptake", "Normalized Fluorescence ($\Delta F/F_0$) ± SEM", "_norm")
+    # if 'uptake_total_minmax' in results:
+    #     plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_MinMax.png", "Min-Max Normalized Uptake", "Normalized Intensity (0-1) ± SEM", "_minmax")
 
     # --- D. Heterogeneity Analysis (StdDev & CV) ---
     if 'uptake_total_std' in results:
@@ -192,7 +163,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         for i, p in enumerate(profiles): kymo[i, :len(p)] = p
         
         fig, ax = plt.subplots(figsize=(10, 6))
-        scale = params.get('scale_factor', 0.629)
+        scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
         mfa_cmap = utils.get_mfa_continuous_cmap()
         
@@ -234,7 +205,7 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     if kymograph_matrix is None: return
     utils.set_paper_style()
     colors = utils.MFA_COLORS
-    scale = params.get('scale_factor', 0.629)
+    scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
     
     h, w = kymograph_matrix.shape
     total_time = time_data[-1] if time_data else h
@@ -259,9 +230,12 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     plt.close(fig)
 
 # --- 3. PROTRUSION TRACE PLOT (Unchanged) ---
-def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarray, protrusions: np.ndarray, 
-                          trap_index: int, save_path: Path, params: Dict[str, Any], 
-                          rupture_time: Optional[float], intensities: Optional[np.ndarray]):
+def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarray, 
+                          protrusions: np.ndarray, trap_index: int, save_path: Path, 
+                          params: Dict[str, Any], rupture_time: Optional[float], 
+                          intensities: Optional[np.ndarray], 
+                          pulse_time: Optional[float] = None):
+    """Generates the suite of protrusion dynamics plots."""
     utils.set_paper_style()
     colors = utils.MFA_COLORS
     
@@ -292,6 +266,11 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
     if rupture_time is not None:  # Explicit check allows 0.0s to be valid
         for ax in [ax1, ax2]:
             ax.axvline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2.5, label='Rupture Detected')
+            ax.legend()
+            
+    if pulse_time is not None:
+        for ax in [ax1, ax2]:
+            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2, label='Pulse Applied')
             ax.legend()
 
     utils.save_plot_png(save_path)
@@ -361,112 +340,223 @@ class MFAPlotter:
         utils.save_plot_png(save_path)
         plt.close(fig)
         
-def plot_shear_analysis_card(metrics: Dict[str, float], save_path: Path):
-    utils.set_paper_style(base_fontsize=12)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.axis('off')
-    ax.text(0.5, 0.9, "Shear Analysis", ha='center', fontsize=16, weight='bold', color=utils.MFA_COLORS['primary'])
-    
-    y = 0.7
-    for k, v in metrics.items():
-        ax.text(0.3, y, k, ha='left', color=utils.MFA_COLORS['tertiary'])
-        ax.text(0.7, y, f"{v:.4f}", ha='right')
-        y -= 0.1
-        
-    utils.save_plot_png(save_path)
-    plt.close(fig)
-    
-def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: float):
-    """
-    Generates dashboard for Actin analysis:
-    1. Intensity Traces & Ratio (Timecourse)
-    2. Kymograph (Heatmap)
-    3. Spatial Profiles (Line plots at specific times) - NEW
-    """
+# --- 4. ACTIN PLOT ---
+def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None):
+    """Generates the suite of Actin distribution plots."""
     utils.set_paper_style()
     output_dir = Path(output_dir)
-    t = np.array(results['time_s'])
+    t = np.array(results.get('time_s', []))
     if len(t) == 0: return
-    
-    colors = utils.MFA_COLORS
-    scale = params.get('scale_factor', 0.629)
-    
-    # --- 1. Intensity Traces & Ratio ---
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
-    
-    # Absolute Intensity
-    ax1.plot(t, results['actin_protrusion_mean'], color=colors['secondary'], label='Protrusion', linewidth=2)
-    ax1.plot(t, results['actin_body_mean'], color=colors['tertiary'], label='Body', linewidth=2)
-    ax1.set_ylabel("Mean Intensity (a.u.)")
-    ax1.set_title(f"Trap {trap_idx}: Actin Intensity")
-    ax1.legend()
-    
-    # Ratio
-    ax2.plot(t, results['actin_ratio_pb'], color=colors['primary'], linewidth=2)
-    ax2.axhline(1.0, linestyle='--', color='gray', alpha=0.5)
-    ax2.set_ylabel("Protrusion / Body Ratio")
-    ax2.set_xlabel("Time (s)")
-    ax2.set_title("Actin Accumulation (>1.0 = Enrichment)")
-    
-    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Traces.png")
-    plt.close(fig)
-    
-    # --- 2. Kymograph ---
-    profiles = results['spatial_profiles']
-    if not profiles: return
 
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(t, results.get('actin_ratio_pb', []), 'o-', color=utils.MFA_COLORS['secondary'], linewidth=2)
+    ax.set_ylabel("Actin Ratio (Protrusion / Body)")
+    ax.set_xlabel("Time (s)")
+    ax.set_title(f"Trap {trap_idx}: Actin Distribution")
+    
+    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Ratio.png")
+    plt.close(fig)
+
+def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: float):
+    """Generates the Space-Time Kymograph and Diffusion Profiles for Actin."""
+    utils.set_paper_style()
+    output_dir = Path(output_dir)
+    t = np.array(results.get('time_s', []))
+    profiles = results.get('spatial_profiles', [])
+    if len(t) == 0 or not profiles: return
+
+    colors = utils.MFA_COLORS
+    scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
     max_w = max(len(p) for p in profiles)
+    
+    # --- 1. Actin Kymograph ---
     kymo = np.zeros((len(profiles), max_w))
     for i, p in enumerate(profiles): kymo[i, :len(p)] = p
     
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig_kymo, ax_kymo = plt.subplots(figsize=(10, 6))
+    extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
     
-    # Extent: 0 at entrance, negative into the pipette (matches visual left-right)
-    extent = [0, -max_w * scale, t[-1], t[0]]
+    im = ax_kymo.imshow(kymo, aspect='auto', extent=extent, cmap='RdBu_r', interpolation='nearest') # Using RdBu_r to match your attached image
+    ax_kymo.axvline(0, color='white', linestyle='--', linewidth=1, label='Entrance', alpha=0.7)
     
-    # Use Viridis or Magma for clear intensity visualization
-    im = ax.imshow(kymo, aspect='auto', extent=extent, cmap='viridis', interpolation='nearest')
-    
-    ax.set_xlabel("Position relative to entrance (µm)")
-    ax.set_ylabel("Time (s)")
-    ax.set_title(f"Trap {trap_idx}: Actin Kymograph")
-    plt.colorbar(im, ax=ax, label="Intensity")
-    
+    plt.colorbar(im, ax=ax_kymo, label="Actin Intensity")
+    ax_kymo.set_xlabel("Position relative to channel entrance (µm)")
+    ax_kymo.set_ylabel("Time (s)")
+    ax_kymo.set_title(f"Trap {trap_idx}: Actin Uptake Kymograph")
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Kymograph.png")
-    plt.close(fig)
+    plt.close(fig_kymo)
 
-    # --- 3. Spatial Distribution Profiles (The "Diffusion" Plot) ---
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Select ~7 time points evenly spaced across the experiment
-    n_curves = 7
+    # --- 2. Actin Profiles over time ---
+    fig_prof, ax_prof = plt.subplots(figsize=(10, 6))
+    n_curves = 6
     indices = np.linspace(0, len(t)-1, n_curves, dtype=int)
     time_colors = utils.get_time_colormap(len(indices))
     
-    # X-axis logic (Consistent with Dye Module)
-    # Calculates distance from pipette entrance (pipette_x) in microns
     x_axis = (pipette_x - np.arange(max_w)) * scale
     
     for i, idx in enumerate(indices):
         if idx >= len(profiles): continue
         p = profiles[idx]
-        
-        # Create full-width array
-        y = np.zeros(max_w)
-        y[:len(p)] = p
-        
-        ax.plot(x_axis, y, color=time_colors[i], linewidth=2.5, label=f"{t[idx]:.1f}s")
-        
-    ax.axvline(0, color=colors['primary'], linestyle='--', alpha=0.6, label='Entrance')
-    
-    # Standard orientation: Cell body is on the right (positive), Protrusion on the left
-    # Inverting X makes 0 the entrance, with protrusion growing leftwards
-    ax.invert_xaxis() 
-    
-    ax.set_xlabel("Position relative to channel entrance (µm)")
-    ax.set_ylabel("Mean Intensity (a.u.)")
-    ax.set_title(f"Trap {trap_idx}: Actin Spatial Distribution")
-    ax.legend(title="Time")
-    
+        y = np.zeros(max_w); y[:len(p)] = p
+        ax_prof.plot(x_axis, y, color=time_colors[i], linewidth=2.5, label=f"{t[idx]:.1f}s")
+
+    ax_prof.axvline(0, color=colors['primary'], linestyle='--', alpha=0.6, label='Entrance')
+    ax_prof.invert_xaxis() 
+    ax_prof.set_xlabel("Position relative to channel entrance (µm)")
+    ax_prof.set_ylabel("Mean Actin Intensity")
+    ax_prof.legend(title="Time", bbox_to_anchor=(1.05, 1), loc='upper left')
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Profiles.png")
-    plt.close(fig)
+    plt.close(fig_prof)
+
+
+def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[float], output_dir: Path, experiment_id: str):
+    """Plots the change (Delta) in Area and Solidity for all traps as a bar chart."""
+    utils.set_paper_style()
+    output_dir = Path(output_dir)
+    
+    trap_ids = []
+    delta_areas = []
+    delta_solidities = []
+    
+    for res in sorted(all_results, key=lambda x: x['trap_index']):
+        if res.get('status') in ('success', 'detection_only', 'fit_failed') and 'data' in res:
+            data = res['data']
+            if 'area' in data and 'solidity' in data and len(data['area']) > 0:
+                area = np.array(data['area'])
+                solidity = np.array(data['solidity'])
+                
+                r_idx = data.get('rupture_idx')
+                # Determine the final valid frame (either rupture or end of experiment)
+                end_idx = r_idx if (r_idx is not None and r_idx < len(area)) else len(area) - 1
+                
+                if end_idx < 3: 
+                    continue # Not enough data to calculate a reliable change
+                
+                # Average the first 3 frames for a stable initial baseline
+                init_area = np.nanmean(area[:3])
+                init_sol = np.nanmean(solidity[:3])
+                
+                # Average the last 3 valid frames for a stable final reading
+                final_area = np.nanmean(area[max(0, end_idx-3):end_idx])
+                final_sol = np.nanmean(solidity[max(0, end_idx-3):end_idx])
+                
+                trap_ids.append(f"Trap {data['trap_index'] + 1}")
+                delta_areas.append(final_area - init_area)
+                delta_solidities.append(final_sol - init_sol)
+
+    if not trap_ids:
+        return
+
+    # --- 1. Plot Delta Area ---
+    fig_area, ax_area = plt.subplots(figsize=(12, 6))
+    bars = ax_area.bar(trap_ids, delta_areas, color=utils.MFA_COLORS['secondary'], alpha=0.8, edgecolor='black')
+    ax_area.axhline(0, color='black', linewidth=1.5)
+    ax_area.set_ylabel("Change in Total Cell Area ($\Delta$ µm²)")
+    ax_area.set_title(f"Cell Area Dynamics (Start vs. Rupture) - {experiment_id}")
+    plt.xticks(rotation=45, ha='right')
+    
+    # Add value labels on top of bars
+    for bar in bars:
+        yval = bar.get_height()
+        offset = 5 if yval >= 0 else -15
+        ax_area.text(bar.get_x() + bar.get_width()/2, yval + offset, f"{yval:.1f}", ha='center', va='bottom' if yval >=0 else 'top', fontsize=9)
+        
+    plt.tight_layout()
+    utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Area.png")
+    plt.close(fig_area)
+    
+    # --- 2. Plot Delta Solidity ---
+    fig_sol, ax_sol = plt.subplots(figsize=(12, 6))
+    bars_sol = ax_sol.bar(trap_ids, delta_solidities, color=utils.MFA_COLORS['tertiary'], alpha=0.8, edgecolor='black')
+    ax_sol.axhline(0, color='black', linewidth=1.5)
+    ax_sol.set_ylabel("Change in Cell Body Solidity ($\Delta$)")
+    ax_sol.set_title(f"Cell Solidity Dynamics (Start vs. Rupture) - {experiment_id}")
+    plt.xticks(rotation=45, ha='right')
+    
+    for bar in bars_sol:
+        yval = bar.get_height()
+        offset = 0.01 if yval >= 0 else -0.02
+        ax_sol.text(bar.get_x() + bar.get_width()/2, yval + offset, f"{yval:.3f}", ha='center', va='bottom' if yval >=0 else 'top', fontsize=9)
+
+    plt.tight_layout()
+    utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Solidity.png")
+    plt.close(fig_sol)
+    
+
+def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Path, experiment_id: str, params: Dict[str, Any]):
+    """Plots Dye Uptake (Absolute, Normalized, MinMax) for all traps on single 3-panel figures."""
+    utils.set_paper_style()
+    output_dir = Path(output_dir)
+    
+    # Filter for traps that successfully ran dye analysis
+    valid_results = [res for res in all_results if res.get('status') in ('success', 'detection_only', 'fit_failed') and res.get('dye_data') is not None]
+    if not valid_results:
+        return
+        
+    valid_results.sort(key=lambda x: x['trap_index'])
+    colors = utils.get_time_colormap(max(len(valid_results), 1))
+    
+    # Extract pulse timing
+    pulse_time = None
+    dye_params = params.get('dye_uptake_parameters', {})
+    if dye_params.get('enable', False):
+        p_idx = dye_params.get('pulse_frame', 10) - 1
+        t_first = valid_results[0]['data']['time']
+        if 0 <= p_idx < len(t_first):
+            pulse_time = t_first[p_idx]
+    
+    def _plot_aggregated_3panel(metric_suffix: str, title: str, ylabel: str, filename_suffix: str):
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+        
+        if pulse_time is not None:
+            for ax in [ax1, ax2, ax3]:
+                ax.axvline(pulse_time, color=utils.MFA_COLORS['pulse'], linestyle='--', linewidth=2.5, label='Pulse', alpha=0.7)
+                
+        plotted_any = False
+        for i, res in enumerate(valid_results):
+            dye_data = res['dye_data']
+            t = np.array(dye_data.get('time_s', []))
+            if len(t) == 0: continue
+            
+            trap_id = res['trap_index'] + 1
+            
+            m_p = np.array(dye_data.get(f'uptake_protrusion{metric_suffix}', []))
+            m_b = np.array(dye_data.get(f'uptake_cell_body{metric_suffix}', []))
+            m_t = np.array(dye_data.get(f'uptake_total{metric_suffix}', []))
+            
+            # Truncate plotting cleanly if the cell ruptured
+            r_idx = res['data'].get('rupture_idx')
+            if r_idx is not None and r_idx < len(t):
+                t, m_p, m_b, m_t = t[:r_idx], m_p[:r_idx], m_b[:r_idx], m_t[:r_idx]
+            
+            if len(m_p) > 0:
+                ax1.plot(t, m_p, color=colors[i], linewidth=2, alpha=0.7, label=f"Trap {trap_id}")
+                ax2.plot(t, m_b, color=colors[i], linewidth=2, alpha=0.7, label=f"Trap {trap_id}")
+                ax3.plot(t, m_t, color=colors[i], linewidth=2, alpha=0.7, label=f"Trap {trap_id}")
+                plotted_any = True
+                
+        if plotted_any:
+            ax1.set_title("Protrusion")
+            ax2.set_title("Cell Body")
+            ax3.set_title("Total Cell")
+            ax1.set_ylabel(ylabel)
+            
+            for ax in [ax1, ax2, ax3]:
+                ax.set_xlabel("Time (s)")
+                ax.grid(True, alpha=0.3)
+            
+            # Place legend cleanly outside the last plot
+            ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=max(1, len(valid_results)//15 + 1))
+            
+            fig.suptitle(f"{experiment_id} - {title}", y=1.05, fontsize=16, weight='bold')
+            plt.tight_layout()
+            utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Uptake{filename_suffix}.png")
+        plt.close(fig)
+
+    # Trigger the 3 versions
+    _plot_aggregated_3panel("", "Dye Uptake (Absolute)", "Mean Intensity (a.u.)", "_Absolute")
+    _plot_aggregated_3panel("_norm", "Normalized Uptake", "Normalized Fluorescence ($\Delta$F/F0)", "_Normalized")
+    
+    # Safe check for MinMax incase it gets disabled in config
+    if f'uptake_total_minmax' in valid_results[0]['dye_data']:
+        _plot_aggregated_3panel("_minmax", "Min-Max Normalized Uptake", "Normalized Intensity (0-1)", "_MinMax")

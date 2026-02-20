@@ -46,7 +46,7 @@ class DyeUptakeAnalyzer:
         dye_params = params.get('dye_uptake_parameters', {})
         self.pulse_frame = max(0, dye_params.get('pulse_frame', 10) - 1)
         self.baseline_len = dye_params.get('baseline_frames', 5)
-        self.scale_factor = params.get('scale_factor', 0.629)
+        self.scale_factor = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         
         # --- INITIALIZE PROCESSING PARAMS (Required for Mask Gen) ---
         image_params = params.get('image_processing', {})
@@ -64,87 +64,96 @@ class DyeUptakeAnalyzer:
             'uptake_protrusion': [],
             'uptake_cell_body': [],
             'uptake_total': [],
+            'uptake_tip': [],
             
             # Standard Deviations (Spatial Heterogeneity)
             'uptake_protrusion_std': [],
             'uptake_cell_body_std': [],
             'uptake_total_std': [],
+            'uptake_tip_std': [],
             
             # Pixel Counts (For SEM calculation)
             'count_protrusion': [],
             'count_cell_body': [],
             'count_total': [],
+            'count_tip': [],
             
             # Baseline Normalized (dF/F0)
             'uptake_protrusion_norm': [],  
             'uptake_cell_body_norm': [],
             'uptake_total_norm': [],
+            'uptake_tip_norm': [],
             
             # Normalized StdDevs
             'uptake_protrusion_norm_std': [],
             'uptake_cell_body_norm_std': [],
             'uptake_total_norm_std': [],
+            'uptake_tip_norm_std': [],
             
             # Min-Max Normalized (0 to 1)
             'uptake_protrusion_minmax': [],
             'uptake_cell_body_minmax': [],
             'uptake_total_minmax': [],
+            'uptake_tip_minmax': [],
 
-             # Min-Max Scaled StdDevs (NEW)
+            # Min-Max Scaled StdDevs
             'uptake_protrusion_minmax_std': [],
             'uptake_cell_body_minmax_std': [],
             'uptake_total_minmax_std': [],
+            'uptake_tip_minmax_std': [],
             
             'spatial_profiles': [],
-            'baseline_intensity': None,  # Store for export
+            'baseline_intensity': None,  
             'pipette_x_px': pipette_x,
         }
         
     def run(self, time_data: List[float]) -> Dict[str, Any]:
         """
-        Main execution loop with baseline correction and StdDev calculation.
+        Main execution loop with region-specific baseline correction and normalization.
         """
-        
-        # 1. Calculate Baseline (Cell-Specific F0)
+        # 1. Calculate Baseline (Cell-Specific F0 for each region)
         baseline_start = max(0, self.pulse_frame - self.baseline_len)
         baseline_end = self.pulse_frame
         
-        baseline_vals = []
+        base_vals_prot = []
+        base_vals_body = []
+        base_vals_total = []
         
-        # Iterate through specific baseline indices
         for k in range(baseline_start, baseline_end):
-            # Check bounds
-            if k >= len(self.mem_imgs) or k >= len(self.dye_imgs): continue
-            
-            mem_ref = self.mem_imgs[k]
-            dye_ref = self.dye_imgs[k]
-            
-            if mem_ref is not None and dye_ref is not None:
-                # Generate mask for this specific baseline frame
-                mask_prot_ref, mask_body_ref = self._generate_dual_masks(mem_ref)
-                mask_total_ref = cv2.bitwise_or(mask_prot_ref, mask_body_ref)
-                
-                # Measure dye intensity ONLY inside the cell mask
-                mean_val = cv2.mean(dye_ref, mask=mask_total_ref)[0]
-                
-                # Only add valid measurements
-                if mean_val > 0:
-                    baseline_vals.append(mean_val)
-        
-        # Compute F0 (Average initial brightness of the cell)
-        if baseline_vals:
-            bg_level = np.mean(baseline_vals)
-        else:
-            # Fallback to global mean if detection failed entirely in baseline
-            logger.warning("Could not detect cell in baseline frames. Fallback to Global Mean.")
-            valid_baseline_imgs = [img for img in self.dye_imgs[baseline_start:baseline_end] if img is not None]
-            if valid_baseline_imgs:
-                bg_level = np.mean([np.mean(img) for img in valid_baseline_imgs])
-            else:
-                bg_level = 0.0
+            mem_ref_img = self.mem_imgs[k]
+            dye_ref_img = self.dye_imgs[k]
 
+            # Safety check: skip missing frames in baseline
+            if mem_ref_img is None or dye_ref_img is None:
+                logger.warning(f"Baseline frame {k} is missing. Skipping.")
+                continue
+            
+            # Define the masks for baseline
+            mask_prot_ref, mask_body_ref = utils.generate_dual_masks(
+                mem_ref_img, self.pipette_x, self.threshold_prot, 
+                self.threshold_body, self.params
+            )
+            
+            # Define mask_total for the baseline period
+            mask_total_ref = cv2.bitwise_or(mask_prot_ref, mask_body_ref)
+            
+            # Collect mean intensities for region-specific F0
+            base_vals_prot.append(cv2.mean(dye_ref_img, mask=mask_prot_ref)[0])
+            base_vals_body.append(cv2.mean(dye_ref_img, mask=mask_body_ref)[0])
+            base_vals_total.append(cv2.mean(dye_ref_img, mask=mask_total_ref)[0])
+            
+        # --- Compute the F0 values ---
+        bg_total = np.mean(base_vals_total) if base_vals_total else 0.0
+        bg_body = np.mean(base_vals_body) if base_vals_body else bg_total
+        bg_prot = np.mean(base_vals_prot) if base_vals_prot else bg_total
+
+        if bg_total == 0.0:
+            logger.warning("Complete baseline failure. Fallback to global mean.")
+            valid_imgs = [img for img in self.dye_imgs[baseline_start:baseline_end] if img is not None]
+            bg_total = bg_body = bg_prot = np.mean([np.mean(img) for img in valid_imgs]) if valid_imgs else 0.0
+        
         # Store for export
-        self.results['baseline_intensity'] = bg_level
+        self.results['baseline_intensity'] = bg_total
         
         # Calculate timing for logging
         pulse_time = time_data[min(self.pulse_frame, len(time_data)-1)] if time_data else 0
@@ -153,102 +162,99 @@ class DyeUptakeAnalyzer:
             f"Dye Uptake Analysis:\n"
             f"   Start Frame: {self.start_idx+1} (Cell Entry)\n"
             f"   Pulse Frame: {self.pulse_frame+1} (t={pulse_time:.1f}s)\n"
-            f"   Baseline Intensity (F0): {bg_level:.2f} a.u."
+            f"   Baseline Intensity (Total F0): {bg_total:.2f} a.u."
         )
 
-       # 2. Determine Processing Range
+        # 2. Determine Processing Range
         valid_frames = min(len(self.mem_imgs), len(self.dye_imgs))
         if self.rupture_idx is not None:
              valid_frames = min(valid_frames, self.rupture_idx + 1)
         
         # 3. Process Frames (Loop starts from start_idx)
         for i in range(self.start_idx, valid_frames):
-            mem_img = self.mem_imgs[i]
-            dye_img = self.dye_imgs[i]
+            current_mem = self.mem_imgs[i]
+            current_dye = self.dye_imgs[i]
             
-            if mem_img is None or dye_img is None:
+            # Safety check to prevent NoneType propagation
+            if current_mem is None or current_dye is None:
                 self._record_empty_frame()
                 continue
             
-            # Stop if image is effectively black/empty
-            if np.mean(mem_img) < 1.0 or np.mean(dye_img) < 1.0:
-                break
-            
-            # A. Create Dual Masks
-            mask_prot, mask_body = self._generate_dual_masks(mem_img)
+            # Call centralized utility
+            mask_prot, mask_body = utils.generate_dual_masks(
+                current_mem, self.pipette_x, self.threshold_prot, 
+                self.threshold_body, self.params
+            )
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
-            
+                        
             # B. Quantify Pixel Counts (N) - Required for SEM calculation
             n_prot = cv2.countNonZero(mask_prot)
             n_body = cv2.countNonZero(mask_body)
             n_total = cv2.countNonZero(mask_total)
             
-            # C. Quantify Dye Signal (Baseline Subtracted)
-            dye_float = dye_img.astype(float)
-            dye_corrected = dye_float - bg_level
-            dye_corrected[dye_corrected < 0] = 0
+            self.results['count_protrusion'].append(n_prot)
+            self.results['count_cell_body'].append(n_body)
+            self.results['count_total'].append(n_total)
             
-            # D. Quantify Mean AND Standard Deviation
-            m_prot, s_prot = cv2.meanStdDev(dye_corrected, mask=mask_prot)
-            m_body, s_body = cv2.meanStdDev(dye_corrected, mask=mask_body)
-            m_total, s_total = cv2.meanStdDev(dye_corrected, mask=mask_total)
+            # C. Quantify Dye Signal with Region-Specific Background Subtraction
+            dye_float = current_dye.astype(float)
             
-            # Extract scalar values
-            val_prot = m_prot[0][0]; std_prot = s_prot[0][0]
-            val_body = m_body[0][0]; std_body = s_body[0][0]
-            val_total = m_total[0][0]; std_total = s_total[0][0]
+            # D. Calculate Means and Standard Deviations Inline
+            val_prot = (np.mean(dye_float[mask_prot > 0]) - bg_prot) if n_prot > 0 else 0.0
+            val_body = (np.mean(dye_float[mask_body > 0]) - bg_body) if n_body > 0 else 0.0
+            val_total = (np.mean(dye_float[mask_total > 0]) - bg_total) if n_total > 0 else 0.0
+            
+            std_prot = np.std(dye_float[mask_prot > 0]) if n_prot > 0 else 0.0
+            std_body = np.std(dye_float[mask_body > 0]) if n_body > 0 else 0.0
+            std_total = np.std(dye_float[mask_total > 0]) if n_total > 0 else 0.0
+            
+            # Isolate the leading edge (Top 5% brightest pixels in the protrusion)
+            if n_prot > 10:
+                prot_pixels = dye_float[mask_prot > 0]
+                threshold_95 = np.percentile(prot_pixels, 95)
+                tip_pixels = prot_pixels[prot_pixels >= threshold_95]
+                val_tip = np.mean(tip_pixels) - bg_prot
+                std_tip = np.std(tip_pixels)
+                n_tip = len(tip_pixels)
+            else:
+                val_tip, std_tip, n_tip = 0.0, 0.0, 0
             
             # E. Store Absolute Values
             self.results['uptake_protrusion'].append(val_prot)
             self.results['uptake_cell_body'].append(val_body)
             self.results['uptake_total'].append(val_total)
+            self.results['uptake_tip'].append(val_tip)
             
             self.results['uptake_protrusion_std'].append(std_prot)
             self.results['uptake_cell_body_std'].append(std_body)
             self.results['uptake_total_std'].append(std_total)
+            self.results['uptake_tip_std'].append(std_tip)
             
-            self.results['count_protrusion'].append(n_prot)
-            self.results['count_cell_body'].append(n_body)
-            self.results['count_total'].append(n_total)
+            self.results['count_tip'].append(n_tip)
             
             # F. Calculate Normalized Values (ΔF/F₀)
             epsilon = 1e-6
-            if bg_level > epsilon:
-                norm_prot = val_prot / bg_level
-                norm_body = val_body / bg_level
-                norm_total = val_total / bg_level
-                
-                # Standard deviation scales linearly
-                norm_std_prot = std_prot / bg_level
-                norm_std_body = std_body / bg_level
-                norm_std_total = std_total / bg_level
-            else:
-                if i == 0:
-                    logger.warning("Baseline intensity is near zero. Normalization (dF/F0) disabled.")
-                norm_prot = 0.0; norm_body = 0.0; norm_total = 0.0
-                norm_std_prot = 0.0; norm_std_body = 0.0; norm_std_total = 0.0
+            self.results['uptake_protrusion_norm'].append(val_prot / bg_prot if bg_prot > epsilon else 0.0)
+            self.results['uptake_cell_body_norm'].append(val_body / bg_body if bg_body > epsilon else 0.0)
+            self.results['uptake_total_norm'].append(val_total / bg_total if bg_total > epsilon else 0.0)
+            self.results['uptake_tip_norm'].append(val_tip / bg_prot if bg_prot > epsilon else 0.0)
             
-            self.results['uptake_protrusion_norm'].append(norm_prot)
-            self.results['uptake_cell_body_norm'].append(norm_body)
-            self.results['uptake_total_norm'].append(norm_total)
+            self.results['uptake_protrusion_norm_std'].append(std_prot / bg_prot if bg_prot > epsilon else 0.0)
+            self.results['uptake_cell_body_norm_std'].append(std_body / bg_body if bg_body > epsilon else 0.0)
+            self.results['uptake_total_norm_std'].append(std_total / bg_total if bg_total > epsilon else 0.0)
+            self.results['uptake_tip_norm_std'].append(std_tip / bg_prot if bg_prot > epsilon else 0.0)
             
-            self.results['uptake_protrusion_norm_std'].append(norm_std_prot)
-            self.results['uptake_cell_body_norm_std'].append(norm_std_body)
-            self.results['uptake_total_norm_std'].append(norm_std_total)
-            
-            # G. Spatial Profile
-            profile = self._calculate_spatial_profile(dye_corrected, mask_total)
-            self.results['spatial_profiles'].append(profile)
-
-        self.results['time_s'] = time_data[:len(self.results['uptake_total'])]
-        
+            # H. Spatial Profile
+            dye_corrected_total = np.maximum(dye_float - bg_total, 0)
+            profile = utils.calculate_spatial_profile(dye_corrected_total, mask_total)
+            self.results['spatial_profiles'].append(profile)  
+       
         # 4. Sync Time Vector
         processed_count = len(self.results['uptake_total'])
         self.results['time_s'] = time_data[self.start_idx : self.start_idx + processed_count]
         
         # 5. Min-Max Normalization (Means AND Stds)
-        # Function to normalize both Mean and scale the Std by the same range
-        def normalize_pair(mean_key, std_key, out_mean, out_std):
+        def normalize_pair(mean_key: str, std_key: str, out_mean: str, out_std: str):
             raw_mean = np.array(self.results[mean_key])
             raw_std = np.array(self.results[std_key])
             if len(raw_mean) == 0: return
@@ -260,86 +266,28 @@ class DyeUptakeAnalyzer:
                 self.results[out_mean] = np.zeros_like(raw_mean).tolist()
                 self.results[out_std] = np.zeros_like(raw_std).tolist()
             else:
-                # Mean is shifted and scaled
                 self.results[out_mean] = ((raw_mean - d_min) / rng).tolist()
-                # Std is ONLY scaled (not shifted)
                 self.results[out_std] = (raw_std / rng).tolist()
 
         normalize_pair('uptake_total', 'uptake_total_std', 'uptake_total_minmax', 'uptake_total_minmax_std')
         normalize_pair('uptake_protrusion', 'uptake_protrusion_std', 'uptake_protrusion_minmax', 'uptake_protrusion_minmax_std')
         normalize_pair('uptake_cell_body', 'uptake_cell_body_std', 'uptake_cell_body_minmax', 'uptake_cell_body_minmax_std')
+        normalize_pair('uptake_tip', 'uptake_tip_std', 'uptake_tip_minmax', 'uptake_tip_minmax_std')
         
         return self.results
     
-    def _generate_dual_masks(self, mem_img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Creates separate masks for Protrusion and Cell Body."""
-        img_8u = utils.normalize_to_8bit(mem_img)
-        gray = img_8u if len(img_8u.shape) == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
-        
-        # 1. Preprocessing
-        clahe = cv2.createCLAHE(clipLimit=self.clahe_limit, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray)
-        blurred = cv2.GaussianBlur(enhanced, self.blur_kernel, 0)
-        
-        h, w = gray.shape
-        margin = int(h * self.clip_margin)
-        pip_x = max(0, min(w, int(self.pipette_x)))
-        
-        # 2. Protrusion Mask (Left)
-        _, bin_prot = cv2.threshold(blurred, self.threshold_prot, 255, cv2.THRESH_BINARY)
-        mask_prot = self._clean_mask(bin_prot)
-        
-        if margin > 0:
-            mask_prot[:margin, :] = 0
-            mask_prot[h-margin:, :] = 0
-        mask_prot[:, pip_x:] = 0
-        
-        # --- Debris Removal ---
-        mask_prot = self._keep_connected_to_pipette(mask_prot, pip_x)
-
-        # 3. Body Mask (Right)
-        _, bin_body = cv2.threshold(blurred, self.threshold_body, 255, cv2.THRESH_BINARY)
-        mask_body = self._clean_mask(bin_body)
-        mask_body[:, :pip_x] = 0
-
-        return mask_prot, mask_body
-    
-    def _keep_connected_to_pipette(self, mask: np.ndarray, pip_x: int, tolerance: int = 5) -> np.ndarray:
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        if num_labels <= 1: return mask
-        new_mask = np.zeros_like(mask)
-        for i in range(1, num_labels):
-            x, y, w, h_rect, area = stats[i]
-            if (x + w) >= (pip_x - tolerance):
-                new_mask[labels == i] = 255
-        return new_mask
-    
-    def _clean_mask(self, binary: np.ndarray) -> np.ndarray:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
-        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)))
-        return cleaned
-
-    def _calculate_spatial_profile(self, dye_img: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        col_sums = np.sum(dye_img * (mask > 0), axis=0)
-        col_counts = np.sum((mask > 0), axis=0)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            profile = col_sums / col_counts
-            profile[col_counts == 0] = 0
-        return profile
-
     def _record_empty_frame(self):
-        """Records zeros for a missing frame."""
-        for key in ['uptake_protrusion', 'uptake_cell_body', 'uptake_total',
-                    'uptake_protrusion_std', 'uptake_cell_body_std', 'uptake_total_std',
-                    'count_protrusion', 'count_cell_body', 'count_total',
-                    'uptake_protrusion_norm', 'uptake_cell_body_norm', 'uptake_total_norm',
-                    'uptake_protrusion_norm_std', 'uptake_cell_body_norm_std', 'uptake_total_norm_std',
-                    'uptake_total_minmax', 'uptake_protrusion_minmax', 'uptake_cell_body_minmax',
-                    'uptake_total_minmax_std', 'uptake_protrusion_minmax_std', 'uptake_cell_body_minmax_std']:
-            self.results[key].append(0)
+        """Appends zero values for all metrics when a frame is missing or invalid."""
+        keys_to_zero = [
+            'count_protrusion', 'count_cell_body', 'count_total', 'count_tip',
+            'uptake_protrusion', 'uptake_cell_body', 'uptake_total', 'uptake_tip',
+            'uptake_protrusion_std', 'uptake_cell_body_std', 'uptake_total_std', 'uptake_tip_std',
+            'uptake_protrusion_norm', 'uptake_cell_body_norm', 'uptake_total_norm', 'uptake_tip_norm',
+            'uptake_protrusion_norm_std', 'uptake_cell_body_norm_std', 'uptake_total_norm_std', 'uptake_tip_norm_std'
+        ]
+        for key in keys_to_zero:
+            self.results[key].append(0.0)
         self.results['spatial_profiles'].append(np.zeros(10))
-
     # =========================================================================
     # EXPORT DATA
     # =========================================================================
@@ -368,7 +316,10 @@ class DyeUptakeAnalyzer:
             dye_img = self.dye_imgs[actual_idx]
             if mem_img is None or dye_img is None: continue
 
-            mask_prot, mask_body = self._generate_dual_masks(mem_img)
+            mask_prot, mask_body = utils.generate_dual_masks(
+                mem_img, self.pipette_x, self.threshold_prot, 
+                self.threshold_body, self.params
+            )
             
             norm_dye = cv2.normalize(dye_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             display = cv2.cvtColor(norm_dye, cv2.COLOR_GRAY2BGR)
@@ -390,48 +341,31 @@ class DyeUptakeAnalyzer:
         logger.info(f"Saved mask debug video: {save_path.name}")
 
     def export_csv(self, trap_idx: int, output_dir: Path):
-        """Saves numerical results including baseline info and min-max normalization."""
+        """Saves the primary uptake kinetics to CSV."""
         df = pd.DataFrame({
             'Time_s': self.results['time_s'],
             
-            # Absolute Data
-            'Total_Intensity_Mean': self.results['uptake_total'],
-            'Total_Intensity_Std': self.results['uptake_total_std'],
-            'Count_Total_Px': self.results['count_total'],
-            
-            'Protrusion_Mean': self.results['uptake_protrusion'],
-            'Protrusion_Std': self.results['uptake_protrusion_std'],
-            'Count_Protrusion_Px': self.results['count_protrusion'],
-            
-            'Body_Mean': self.results['uptake_cell_body'],
-            'Body_Std': self.results['uptake_cell_body_std'],
-            'Count_Body_Px': self.results['count_cell_body'],
+            # Absolute Values (Background Subtracted)
+            'Total_Intensity': self.results['uptake_total'],
+            'Protrusion_Intensity': self.results['uptake_protrusion'],
+            'Tip_Intensity': self.results['uptake_tip'],
+            'Body_Intensity': self.results['uptake_cell_body'],
             
             # Baseline Normalized (dF/F0)
             'Total_Normalized_dF_F0': self.results['uptake_total_norm'],
             'Protrusion_Normalized_dF_F0': self.results['uptake_protrusion_norm'],
+            'Tip_Normalized_dF_F0': self.results['uptake_tip_norm'],
             'Body_Normalized_dF_F0': self.results['uptake_cell_body_norm'],
             
             # Min-Max Normalized (0-1)
             'Total_MinMax': self.results['uptake_total_minmax'],
             'Protrusion_MinMax': self.results['uptake_protrusion_minmax'],
+            'Tip_MinMax': self.results['uptake_tip_minmax'],
             'Body_MinMax': self.results['uptake_cell_body_minmax'],
-            
-            # Min-Max Scaled StdDevs
-            'Total_MinMax_Std': self.results['uptake_total_minmax_std'],
-            'Protrusion_MinMax_Std': self.results['uptake_protrusion_minmax_std'],
-            'Body_MinMax_Std': self.results['uptake_cell_body_minmax_std']
+
         })
         
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         save_path = output_dir / f"Trap_{trap_idx:02d}_Uptake_Data.csv"
-        
-        # Add baseline as header comment
-        # newline='' prevents double spacing on Windows
-        with open(save_path, 'w', newline='') as f:
-            f.write(f"# Baseline Intensity (Cell Mask): {self.results['baseline_intensity']:.2f} a.u.\n")
-            f.write(f"# Pulse Frame: {self.pulse_frame + 1}\n")
-            df.to_csv(f, index=False)
-        
-        logger.info(f"Saved uptake data: {save_path.name}")
+        df.to_csv(save_path, index=False)

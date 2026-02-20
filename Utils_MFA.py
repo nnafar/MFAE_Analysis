@@ -248,6 +248,63 @@ def prepare_display_image(image: np.ndarray, window_width: int, window_height: i
     canvas[y_offset:y_offset + new_h, x_offset:x_offset + new_w] = resized
     return canvas
 
+def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int, 
+                        threshold_body: int, params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Centrally managed mask generation for Protrusion and Cell Body.
+    Prevents circular imports between quantification modules.
+    """
+    img_8u = normalize_to_8bit(image)
+    gray = img_8u if len(img_8u.shape) == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
+    
+    img_params = params.get('image_processing', {})
+    clahe = cv2.createCLAHE(clipLimit=img_params.get('clahe_clip_limit', 2.0), tileGridSize=(8,8))
+    enhanced = clahe.apply(gray)
+    blurred = cv2.GaussianBlur(enhanced, tuple(img_params.get('gaussian_kernel_size', (3,3))), 0)
+    
+    h, w = gray.shape
+    margin = int(h * img_params.get('wall_clip_margin', 0.30))
+    pip_x = max(0, min(w, int(pipette_x)))
+    
+    # 1. Protrusion Mask (Left of pipette)
+    _, bin_prot = cv2.threshold(blurred, threshold_prot, 255, cv2.THRESH_BINARY)
+    mask_prot = _clean_mask_internal(bin_prot)
+    if margin > 0:
+        mask_prot[:margin, :] = 0
+        mask_prot[h-margin:, :] = 0
+    mask_prot[:, pip_x:] = 0
+    
+    # 2. Body Mask (Right of pipette)
+    _, bin_body = cv2.threshold(blurred, threshold_body, 255, cv2.THRESH_BINARY)
+    mask_body = _clean_mask_internal(bin_body)
+    mask_body[:, :pip_x] = 0
+
+    return mask_prot, mask_body
+
+def _clean_mask_internal(binary: np.ndarray) -> np.ndarray:
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    return cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)))
+
+def calculate_spatial_profile(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Calculates mean intensity per column within the mask."""
+    col_sums = np.sum(image * (mask > 0), axis=0)
+    col_counts = np.sum((mask > 0), axis=0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        profile = col_sums / col_counts
+        profile[col_counts == 0] = 0
+    return profile
+
+def _keep_connected_to_pipette_internal(mask: np.ndarray, pip_x: int, tolerance: int = 5) -> np.ndarray:
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if num_labels <= 1: return mask
+    new_mask = np.zeros_like(mask)
+    for i in range(1, num_labels):
+        x, y, w, h_rect, area = stats[i]
+        if (x + w) >= (pip_x - tolerance):
+            new_mask[labels == i] = 255
+    return new_mask
+
 # =============================================================================
 # 4. INTERACTIVE WINDOW UTILITIES
 # =============================================================================
@@ -442,37 +499,23 @@ class MemoryEfficientFrameLoader:
 # 7. IMAGE MANIPULATION UTILITIES (WORKER SAFE)
 # =============================================================================
 
-def crop_single_trap(frame: np.ndarray, roi: List[int], rotation_angle: float) -> Optional[np.ndarray]:
+def crop_single_trap(frame: np.ndarray, roi: List[int], rotation_angle: float = 0.0) -> Optional[np.ndarray]:
     """
-    Worker-safe cropping function. avoids instantiating GUI classes.
-    
-    Args:
-        frame: The full raw image.
-        roi: [y_min, y_max, x_min, x_max] coordinates.
-        rotation_angle: Angle to rotate before cropping.
-        
-    Returns:
-        The cropped trap image or None if invalid.
+    Worker-safe cropping. If rotation_angle is 0, it uses high-speed slicing.
+    This prevents redundant rotation of pre-processed frames in shared memory.
     """
     if frame is None or roi is None:
         return None
         
-    # Rotate
-    rotated = rotate_image(frame, rotation_angle)
+    # Only rotate if the angle is not zero (handles raw frame processing)
+    if rotation_angle != 0:
+        frame = rotate_image(frame, rotation_angle)
     
-    # Crop
     y_min, y_max, x_min, x_max = roi
+    h, w = frame.shape[:2]
     
-    # Boundary checks
-    h, w = rotated.shape[:2]
-    if y_min < 0 or x_min < 0 or y_max > h or x_max > w:
-        # Optional: Handle out-of-bounds gracefully or clip
-        y_min, x_min = max(0, y_min), max(0, x_min)
-        y_max, x_max = min(h, y_max), min(w, x_max)
-        
-    cropped = rotated[y_min:y_max, x_min:x_max]
+    # Safety clipping
+    y_min, x_min = max(0, y_min), max(0, x_min)
+    y_max, x_max = min(h, y_max), min(w, x_max)
     
-    if cropped.size == 0:
-        return None
-        
-    return cropped
+    return frame[y_min:y_max, x_min:x_max].copy()

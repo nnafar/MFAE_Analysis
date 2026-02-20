@@ -22,6 +22,7 @@ import logging
 import cv2
 import tempfile
 import shutil
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List, Union
 
@@ -51,59 +52,58 @@ logger = logging.getLogger(__name__)
 
 def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Processes a single trap in an independent process.
+    Processes a single trap in an independent process with guaranteed cleanup.
     """
+    # Prevent OpenCV from spawning internal threads inside the worker
+    cv2.setNumThreads(0)
+    
     trap_index = config_dict['trap_index']
     params = config_dict['params']
     
-    # --- Shared Memory Access ---
-    # Reconstruct the numpy array from the memory map file on disk.
-    mmap_path = config_dict['mmap_path']
-    dtype = config_dict['dtype']
-    shape = config_dict['shape']
-
+    # Initialize handles to None for safe reference in the finally block
+    all_frames = None
+    all_dye_frames = None
+    all_actin_frames = None
+    
     # Unpack Output Directories
     dirs = config_dict['output_dirs']
-    
     worker_logger = logging.getLogger(f"Worker-{trap_index+1:02d}")
     
     try:
         worker_logger.info(f"Starting analysis for Trap {trap_index+1}...")
         
-        # 1. Access Shared Image Data (Memmap)
-        # 'r' mode ensures we don't accidentally modify the source images
-        all_frames = np.memmap(mmap_path, dtype=dtype, mode='r', shape=shape)
+        # 1. Access Shared Image Data (Membrane Membrane)
+        all_frames = np.memmap(config_dict['mmap_path'], 
+                               dtype=config_dict['dtype'], 
+                               mode='r', 
+                               shape=config_dict['shape'])
 
-        # 2. Re-create minimal Cropper
-        # Worker receives full params, so we must flatten for CropImage here too if needed,
-        # but workers usually don't use the GUI parts of CropImage.
-        # However, to be safe and consistent:
+        # 2. Re-create minimal Cropper for this worker
         crop_params = {
             **params.get('experiment_parameters', {}),
             **params.get('workflow_settings', {}),
             **params.get('image_processing', {})
         }
         cropper = CropImage(crop_params)
-        
         cropper.rotation_angle = config_dict['rotation_angle']
-        # Populate only the specific trap ROI this worker needs
-        cropper.all_trap_rois = [None] * (trap_index + 1) 
+        cropper.all_trap_rois = [None] * (trap_index + 1)
         cropper.all_trap_rois[trap_index] = config_dict['roi_coords']
         
-        # 3. Process ROIs (Direct slice from mmap array)
-        num_frames = shape[0]
+        # 3. Extract Trap-Specific ROIs (Direct slice from shared memory)
+        num_frames = config_dict['shape'][0]
         rois = []
         for j in range(num_frames):
-            rois.append(cropper.process_frame(all_frames[j], trap_index))
+            # Slicing from mmap; rotation is already handled in the shared memory stack
+            rois.append(utils.crop_single_trap(all_frames[j], config_dict['roi_coords'], 0.0))
 
-        # 4. Run Detection (Using Per-Trap Tuned Parameters)
+        # 4. Run Length Detection
         pip_x = config_dict['tuned_pipette_x']
         thr_prot = config_dict['tuned_threshold_prot']
         
         det_full = LineDetectionMFA(rois, [pip_x, 0], params)
         det_res = det_full.run_detection_with_parameters(pip_x, thr_prot)
 
-        # --- Extract Rupture Time & Index ---
+        # --- Extract Key Timing Data ---
         rupture_time = None
         rupture_idx = None
         time_data = config_dict['time_data']
@@ -113,211 +113,216 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             if rupture_idx is not None and rupture_idx < len(time_data):
                 rupture_time = time_data[rupture_idx]
         
-        # Safety Check: If no protrusion was detected at all
+        pulse_time = None
+        dye_params = params.get('dye_uptake_parameters', {})
+        if dye_params.get('enable', False):
+            p_idx = dye_params.get('pulse_frame', 10) - 1
+            if 0 <= p_idx < len(time_data):
+                pulse_time = time_data[p_idx]
+        
+        # 5. Data Safety Check
         if not (det_res and det_res['protrusion_lengths_um'] and any(p > 0 for p in det_res['protrusion_lengths_um'])):
             return {'trap_index': trap_index, 'status': 'no_detection'}
 
-        # 5. Generate Basic Outputs
         trap_data = {
             'trap_index': trap_index,
             'time': time_data,
             'protrusions': det_res['protrusion_lengths_um'],
             'pip': pip_x,
             'thr': thr_prot,
-            'rupture_idx': rupture_idx
+            'rupture_idx': rupture_idx,
+            'area': det_full.results.get('total_area_um2', []),    
+            'solidity': det_full.results.get('body_solidity', [])
         }
 
-        # Export Raw CSV (per trap)
-        det_full.export_results_to_csv(
-            output_dir=dirs['root'], 
-            experiment_id=f"trap_{trap_index+1:02d}",
-            dir_full=dirs['full_csv'],
-            dir_filtered=dirs['filtered_csv']
-        )
+        # Export Raw CSV and Plot Trace.
+        try:
+            det_full.export_results_to_csv(dirs['root'], f"trap_{trap_index+1:02d}", dirs['full_csv'], dirs['filtered_csv'])
+        except Exception:
+            worker_logger.warning(f"Trap {trap_index+1}: CSV export failed.", exc_info=True)
 
-        # Plot the Detection Trace (Always created)
-        Plotting_MFA.plot_protrusion_trace(
-            debug_images=det_full.results['debug_images'],
-            time_points=np.array(time_data),
-            protrusions=np.array(det_res['protrusion_lengths_um']),
-            trap_index=trap_index + 1,
-            save_path=dirs['traces'] / f"trap_{trap_index+1:02d}_detection_trace.png",
-            params=params,
-            rupture_time=rupture_time,
-            intensities=det_res.get('downstream_intensities')
-        )
-
-        # 6. Optional: Kymograph
-        if params.get('workflow_settings', {}).get('create_kymographs', True):
-            dirs['kymographs'].mkdir(parents=True, exist_ok=True)
-        
-            kymo_params = {**params, **params.get('kymograph_parameters', {})}
-            
-            det_res['pipette_start_x_used'] = config_dict['tuned_pipette_x']
-
-            create_kymograph_for_trap(
-                roi_images=rois,
-                detection_results=det_res,
-                params=kymo_params,
-                output_dir=str(dirs['kymographs']), # <--- FIX: Convert to string
+        try:
+            Plotting_MFA.plot_protrusion_trace(
+                debug_images=det_full.results['debug_images'],
+                time_points=np.array(time_data),
+                protrusions=np.array(det_res['protrusion_lengths_um']),
                 trap_index=trap_index + 1,
-                time_data=time_data  
+                save_path=dirs['tracking_visuals'] / f"trap_{trap_index+1:02d}_detection_trace.png",
+                params=params,
+                rupture_time=rupture_time,
+                intensities=det_res.get('downstream_intensities'),
+                pulse_time=pulse_time
             )
-        
-        # 7. Optional: Viscoelastic Fitting
+        except Exception:
+            worker_logger.warning(f"Trap {trap_index+1}: Trace plot failed.", exc_info=True)
+
+        # 6. Kymograph Generation
+        if params.get('workflow_settings', {}).get('create_kymographs', True):
+            try:
+                # Pass dirs['tracking_visuals'] to the Kymograph generator
+                create_kymograph_for_trap(rois, det_res, params, dirs['tracking_visuals'], trap_index + 1, time_data) # <-- UPDATED
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Kymograph generation failed.", exc_info=True)
+
+        # 7. Viscoelastic Fitting
         trap_fit_rows = []
         if params.get('model_parameters', {}).get('perform_fitting', True):
-            dirs['fitting'].mkdir(parents=True, exist_ok=True)
-            
-            # Geometry & Pressure
-            model_params = params.get('model_parameters', {})
-            exp_params = params.get('experiment_parameters', {})
-            
-            channel_width = model_params['channel_width_um']
-            channel_height = model_params['channel_height_um']
-            f_star = model_params['fstar']
-            delta_p = exp_params['constant_pressure']
-            r_eff = compute_reff(channel_width, channel_height, f_star)
-            
-            # Prepare data
-            t_pts = np.array(trap_data['time'], dtype=float)
-            l_pts = np.array(trap_data['protrusions'], dtype=float)
-            if rupture_idx is not None:
-                 t_pts = t_pts[:rupture_idx+1]
-                 l_pts = l_pts[:rupture_idx+1]
-            
-            # Run Fitter
-            fit_config = {**params, **params.get('fitting_parameters', {}), **params.get('rupture_detection', {})}
-            
-            fitter = FittingMFA(t_data=t_pts, l_data=l_pts, r_eff=r_eff, delta_p=delta_p)
-            fitter.run(params=fit_config)
-            
-            # Save Results
-            if fitter.best_fit_model_name:
-                plotter = Plotting_MFA.MFAPlotter(fitter, params=params)
-                
-                # A. Create Summary Card
-                plotter.create_analysis_plot(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_analysis_plot.png")
-                
-                # B. Create Model Comparison
-                plotter.plot_all_models_comparison(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_model_comparison.png")
-                
-                for model_name, results in fitter.fit_results.items():
-                    model_row = {
-                        'Trap_Number': trap_index + 1,
-                        'Model_Name': model_name,
-                        'Is_Best_Fit': model_name == fitter.best_fit_model_name,
-                        'R_Squared': results.get('r_squared'),
-                        'Rupture_Detected': fitter.rupture_detected,
-                        'Effective_Radius_um': r_eff, 
-                        'F_Star': f_star              
-                    }
-                    if results.get('params') is not None:
-                        params_dict = dict(zip(results['param_names'], results['params']))
-                        model_row.update(params_dict)
-                    trap_fit_rows.append(model_row)
+            try:
+                dirs['fitting'].mkdir(parents=True, exist_ok=True)
 
-        # 8. Optional: Dye Uptake Analysis
-        dye_files = config_dict.get('dye_files_path')
-        if params.get('dye_uptake_parameters', {}).get('enable', False) and dye_files:
-            dirs['dye'].mkdir(parents=True, exist_ok=True)
-            worker_logger.info("Running Dye Uptake Analysis...")
-            
-            # Read Dye Frames specific to this trap
-            dye_rois = []
-            for f_path in dye_files:
-                img = cv2.imread(str(f_path), cv2.IMREAD_UNCHANGED)
-                if img is not None:
-                    # Crop using the same geometry
-                    dye_rois.append(cropper.process_frame(img, trap_index))
-                else:
-                    dye_rois.append(None)
-            
-            # Run Analyzer
-            thr_prot = config_dict.get('tuned_threshold_prot', 30)
-            thr_body = config_dict.get('tuned_threshold_body', thr_prot)
-            
-            uptake_analyzer = DyeUptakeAnalyzer(
-                membrane_rois=rois,
-                dye_rois=dye_rois,
-                pipette_x=det_res.get('pipette_start_x_used'),
-                threshold_prot=thr_prot,
-                threshold_body=thr_body,
-                rupture_idx=rupture_idx,
-                params=params,
-                start_idx=det_res.get('entry_frame_index', 0)
-            )
-            
-            dye_results = uptake_analyzer.run(time_data)
-            uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
-            
-            uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])
-            
-            Plotting_MFA.plot_dye_uptake_dashboard(
-                dye_results, trap_index + 1, dirs['dye'], params, pipette_x=det_res.get('pipette_start_x_used')
-            )
-        
-        # 9. Optional: Actin Analysis
-        actin_files = config_dict.get('actin_files_path')
-        # Check if enabled in config AND if files exist
-        if params.get('actin_parameters', {}).get('enable', False) and actin_files:
-            dirs['actin'] = dirs['root'] / "Actin Analysis"
-            dirs['actin'].mkdir(parents=True, exist_ok=True)
-            worker_logger.info("Running Actin Analysis...")
-            
-            # Load Actin Frames specific to this trap
-            actin_rois = []
-            for f_path in actin_files:
-                img = cv2.imread(str(f_path), cv2.IMREAD_UNCHANGED)
-                if img is not None:
-                    actin_rois.append(cropper.process_frame(img, trap_index))
-                else:
-                    actin_rois.append(None)
-            
-            # Reuse thresholds from detection
-            thr_prot = config_dict.get('tuned_threshold_prot', 30)
-            thr_body = config_dict.get('tuned_threshold_body', thr_prot)
-            
-            # Run Analyzer
-            # Note: We pass 'rois' (Membrane BF) for masking, and 'actin_rois' for signal
-            actin_analyzer = ActinAnalyzer(
-                membrane_rois=rois,
-                actin_rois=actin_rois,
-                pipette_x=det_res.get('pipette_start_x_used'),
-                threshold_prot=thr_prot,
-                threshold_body=thr_body,
-                params=params
-            )
-            
-            actin_results = actin_analyzer.run(time_data)
-            
-            # Export Results
-            actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
-            
-            Plotting_MFA.plot_actin_dashboard(
-                actin_results, 
-                trap_index + 1, 
-                dirs['actin'], 
-                params, 
-                pipette_x=det_res.get('pipette_start_x_used')
-            )
-        
-        # Cleanup memory
-        del all_frames
-        del rois
-        gc.collect()
-        
-        return {'trap_index': trap_index, 'status': 'success', 'data': trap_data, 'fit_rows': trap_fit_rows}
+                r_eff = compute_reff(params['model_parameters']['channel_width_um'],
+                                     params['model_parameters']['channel_height_um'],
+                                     params['model_parameters']['fstar'])
+                t_pts = np.array(time_data[:rupture_idx+1]) if rupture_idx is not None else np.array(time_data)
+                l_pts = np.array(det_res['protrusion_lengths_um'][:rupture_idx+1]) if rupture_idx is not None else np.array(det_res['protrusion_lengths_um'])
+                delta_p = params['experiment_parameters']['constant_pressure']
+                fit_run_params = {**params, **params.get('fitting_parameters', {})}
 
+                # --- Determine pulse index (1-indexed frame number → 0-indexed array position) ---
+                pulse_idx = None
+                if pulse_time is not None:
+                    p_frame = params.get('dye_uptake_parameters', {}).get('pulse_frame', 10)
+                    # Clamp to the available range after any rupture truncation
+                    pulse_idx = min(p_frame - 1, len(t_pts) - 1)
+                    if pulse_idx <= 0:
+                        pulse_idx = None  # Pulse at or before frame 1: no usable pre-pulse window
+
+                def _run_fitter(t, l, phase, rupture_det, rupt_time):
+                    """Instantiate, run, and return a FittingMFA for one time window."""
+                    fitter = FittingMFA(t, l, r_eff, delta_p,
+                                        rupture_detected=rupture_det,
+                                        rupture_time=rupt_time,
+                                        phase=phase)
+                    fitter.run(params=fit_run_params)
+                    return fitter
+
+                def _collect_rows(fitter, phase_label):
+                    """Convert a fitted FittingMFA into summary rows for the CSV."""
+                    rows = []
+                    if fitter.best_fit_model_name:
+                        for model_name, res_fit in fitter.fit_results.items():
+                            rows.append({
+                                'Trap_Number': trap_index + 1,
+                                'Phase': phase_label,
+                                'Model_Name': model_name,
+                                'R_Squared': res_fit['r_squared'],
+                                'AIC': res_fit['aic'],
+                                'N_Params': res_fit['n_params'],
+                                'Is_Best_Fit': model_name == fitter.best_fit_model_name
+                            })
+                    return rows
+
+                # --- Phase A: Full trace (always run, preserves backward compatibility) ---
+                fitter_full = _run_fitter(t_pts, l_pts, 'full',
+                                          rupture_det=(rupture_idx is not None),
+                                          rupt_time=rupture_time)
+                trap_fit_rows.extend(_collect_rows(fitter_full, 'full'))
+
+                # Use the full-trace fitter for the analysis plot (most complete view)
+                if fitter_full.best_fit_model_name:
+                    try:
+                        plotter = Plotting_MFA.MFAPlotter(fitter_full, params=params)
+                        plotter.create_analysis_plot(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_analysis_plot.png")
+                    except Exception:
+                        worker_logger.warning(f"Trap {trap_index+1}: Fit plot failed.", exc_info=True)
+
+                # --- Phases B & C: Pre- and post-pulse (only when a pulse was applied) ---
+                if pulse_idx is not None:
+                    # Pre-pulse: frames 0 → pulse_idx (exclusive).
+                    # Standard time and lengths — this is normal baseline aspiration.
+                    try:
+                        t_pre = t_pts[:pulse_idx]
+                        l_pre = l_pts[:pulse_idx]
+                        fitter_pre = _run_fitter(t_pre, l_pre, 'pre_pulse',
+                                                  rupture_det=False, rupt_time=None)
+                        trap_fit_rows.extend(_collect_rows(fitter_pre, 'pre_pulse'))
+                    except Exception:
+                        worker_logger.warning(f"Trap {trap_index+1}: Pre-pulse fitting failed.", exc_info=True)
+
+                    # Post-pulse: frames pulse_idx → end.
+                    # Time is re-zeroed to the pulse moment so the model sees t=0 at the pulse.
+                    # Length is offset by L at the pulse so the model starts from ~0 deformation,
+                    # satisfying the physical assumption of deforming from rest under constant pressure.
+                    # The extracted E and η are therefore "post-pulse apparent parameters" and can be
+                    # directly compared to the pre-pulse values.
+                    try:
+                        t_post = t_pts[pulse_idx:] - t_pts[pulse_idx]
+                        l_post = l_pts[pulse_idx:] - l_pts[pulse_idx]
+                        fitter_post = _run_fitter(t_post, l_post, 'post_pulse',
+                                                   rupture_det=(rupture_idx is not None),
+                                                   rupt_time=(rupture_time - t_pts[pulse_idx]) if rupture_time is not None else None)
+                        trap_fit_rows.extend(_collect_rows(fitter_post, 'post_pulse'))
+                    except Exception:
+                        worker_logger.warning(f"Trap {trap_index+1}: Post-pulse fitting failed.", exc_info=True)
+
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Fitting failed.", exc_info=True)
+
+        # 8. Dye Uptake Analysis
+        dye_results = None
+        dye_config = config_dict.get('dye_mmap')
+        if params.get('dye_uptake_parameters', {}).get('enable', False) and dye_config and dye_config['path']:
+            try:
+                dirs['dye'].mkdir(parents=True, exist_ok=True)
+                all_dye_frames = np.memmap(dye_config['path'], dtype=dye_config['dtype'], mode='r', shape=dye_config['shape'])
+                dye_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_dye_frames]
+
+                uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params)
+                dye_results = uptake_analyzer.run(time_data)
+                uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
+                Plotting_MFA.plot_dye_uptake_dashboard(dye_results, trap_index + 1, dirs['dye'], params, det_res['pipette_start_x_used'])
+                
+                # Add the missing debug video call here
+                uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])
+                
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Dye uptake analysis failed.", exc_info=True)
+
+        # 9. Actin Quantification
+        actin_config = config_dict.get('actin_mmap')
+        if params.get('actin_parameters', {}).get('enable', False) and actin_config and actin_config['path']:
+            try:
+                dirs['actin'].mkdir(parents=True, exist_ok=True)
+                all_actin_frames = np.memmap(actin_config['path'], dtype=actin_config['dtype'], mode='r', shape=actin_config['shape'])
+                actin_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_actin_frames]
+                
+                actin_analyzer = ActinAnalyzer(rois, actin_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], params)
+                actin_results = actin_analyzer.run(time_data)
+                actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
+                Plotting_MFA.plot_actin_dashboard(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'])
+                Plotting_MFA.plot_actin_kymograph_and_profiles(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'])
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Actin analysis failed.", exc_info=True)
+                
+        return {
+            'trap_index': trap_index,
+            'status': 'success',
+            'data': trap_data,
+            'fit_rows': trap_fit_rows,
+            'dye_data': dye_results
+        }
+            
     except Exception:
         worker_logger.error("A fatal error occurred in worker", exc_info=True)
         return {'trap_index': trap_index, 'status': 'error', 'error': traceback.format_exc()}
 
+    finally:
+        # --- Cleanup: Explicitly release all Shared Memory handles ---
+        for mmap_obj in [all_frames, all_dye_frames, all_actin_frames]:
+            if mmap_obj is not None:
+                try:
+                    mmap_obj.flush()
+                    # Force OS-level lock release for Windows
+                    if hasattr(mmap_obj, '_mmap') and mmap_obj._mmap is not None:
+                        mmap_obj._mmap.close()
+                    del mmap_obj
+                except Exception: 
+                    pass
+        gc.collect()
 
 class MFAAnalysis:
     """
     Manages the end-to-end analysis workflow for an MFA experiment.
-    Instantiated once per experiment folder.
     """
 
     def __init__(self, path: Path, experiment_id: str, params: Optional[Dict[str, Any]] = None) -> None:
@@ -326,6 +331,9 @@ class MFAAnalysis:
         self.path = path
         self.experiment_id = experiment_id
         self.params = params or {}
+        
+        # Cleanup orphaned temp folders from previous aborted or crashed runs to prevent disk bloat
+        self.cleanup_orphaned_temp_dirs()
         
         # Helper classes for File I/O
         self.file_reader = FileRead(self.path, self.params)
@@ -345,6 +353,32 @@ class MFAAnalysis:
         # Register cleanup to run at exit
         atexit.register(self.cleanup)
 
+    @staticmethod
+    def cleanup_orphaned_temp_dirs(max_age_hours: int = 24) -> None:
+        """
+        Scans the system temporary directory for any 'MFA_temp_*' folders older 
+        than max_age_hours and deletes them. Resolves issues with disk space 
+        accumulation resulting from hard-aborted pipeline runs.
+        """
+        temp_base = Path(tempfile.gettempdir())
+        now = time.time()
+        
+        logger.info("Checking for orphaned temporary folders...")
+        
+        for p in temp_base.glob("MFA_temp_*"):
+            if not p.is_dir(): continue
+            
+            try:
+                # Check folder modification time
+                stat = p.stat()
+                age_hours = (now - stat.st_mtime) / 3600
+                
+                if age_hours > max_age_hours:
+                    logger.warning(f"Removing orphaned temp dir: {p.name} (Age: {age_hours:.1f}h)")
+                    shutil.rmtree(p)
+            except Exception as e:
+                logger.debug(f"Could not check/remove {p.name}: {e}")
+
     def _setup_output_directory(self) -> Tuple[Path, Dict[str, Path]]:
         """Creates the structured folder hierarchy for results."""
         try:
@@ -356,21 +390,23 @@ class MFAAnalysis:
         results_dir = output_base / self.experiment_id
         results_dir.mkdir(parents=True, exist_ok=True)
         
-        # Define subfolders (creation is deferred to worker/usage)
+        # Define subfolders
         subdirs = {
             'root': results_dir,
             'filtered_csv': results_dir / "Filtered protrusion detection",
             'full_csv': results_dir / "Full protrusion detection",
-            'traces': results_dir / "Protrusion traces",
+            'tracking_visuals': results_dir / "Tracking visuals", 
+            'morphology': results_dir / "Cell Morphology",
             'fitting': results_dir / "Fitting results",
-            'kymographs': results_dir / "Kymographs",
-            'dye': results_dir / "Dye Uptake"
+            'dye': results_dir / "Dye Uptake",
+            'actin': results_dir / "Actin Quantification" 
         }
         
         # Create core CSV folders immediately
         subdirs['filtered_csv'].mkdir(parents=True, exist_ok=True)
         subdirs['full_csv'].mkdir(parents=True, exist_ok=True)
-        subdirs['traces'].mkdir(parents=True, exist_ok=True)
+        subdirs['tracking_visuals'].mkdir(parents=True, exist_ok=True)
+        subdirs['morphology'].mkdir(parents=True, exist_ok=True)
             
         return results_dir, subdirs
     
@@ -382,6 +418,7 @@ class MFAAnalysis:
                 logger.info(f"Cleaned up temporary directory: {self.temp_dir}")
             except Exception as e:
                 logger.warning(f"Could not cleanup temp dir: {e}")
+                    
 
     def run_analysis(self) -> bool:
         """
@@ -390,12 +427,12 @@ class MFAAnalysis:
         try:
             logger.info("== MFA ANALYSIS START ==")
             
-            # --- Phase 0: Load Metadata ---
+            # --- Phase 0: Load Metadata ---'
+            # 1. Load file list
             self.file_reader.run()
-            # The loader handles caching for the interactive phase
-            max_cache = self.params.get('workflow_settings', {}).get('max_cache_size', 50)
-            self.loader = utils.MemoryEfficientFrameLoader(self.file_reader, max_cache)
-            
+            self.loader = utils.MemoryEfficientFrameLoader(self.file_reader, 
+                self.params.get('workflow_settings', {}).get('max_cache_size', 50))
+         
             trap_configs = []
             
             # --- Phase 1: Interactive Setup (Geometry) ---
@@ -432,8 +469,18 @@ class MFAAnalysis:
             # --- Phase 2: Parallel Processing ---
             logger.info("\n== PHASE 2: PARALLEL PROCESSING ==")
             
-            # Create the memory map file (Shared Memory)
-            mmap_path, shape, dtype = self._prepare_shared_memory_stack()
+            # 1. Cache Membrane (Standard)
+            mem_mmap_path, mem_shape, mem_dtype = self._prepare_shared_memory_stack(self.file_reader.tif_files, "Membrane")
+            
+            # 2. Cache Dye (Optional)
+            dye_mmap_path, dye_shape, dye_dtype = None, None, None
+            if self.params.get('dye_uptake_parameters', {}).get('enable', False) and self.file_reader.dye_files:
+                dye_mmap_path, dye_shape, dye_dtype = self._prepare_shared_memory_stack(self.file_reader.dye_files, "Dye")
+
+            # 3. Cache Actin (Optional)
+            actin_mmap_path, actin_shape, actin_dtype = None, None, None
+            if self.params.get('actin_parameters', {}).get('enable', False) and self.file_reader.actin_files:
+                actin_mmap_path, actin_shape, actin_dtype = self._prepare_shared_memory_stack(self.file_reader.actin_files, "Actin")
             
             # Prepare arguments for each worker process
             worker_args = []
@@ -451,12 +498,16 @@ class MFAAnalysis:
                     'tuned_threshold_body': config['thr_body'],
                     
                     'results_dir': self.results_dir,
-                    'mmap_path': mmap_path,
-                    'shape': shape,
-                    'dtype': dtype,
                     'output_dirs': self.subdirs,
-                    'dye_files_path': self.file_reader.dye_files, 
-                    'actin_files_path': self.file_reader.actin_files
+                    
+                    # MEMBRANE CACHE
+                    'mmap_path': mem_mmap_path,
+                    'shape': mem_shape,
+                    'dtype': mem_dtype,
+                    
+                    # EXTRA CHANNELS CACHE (Pass dictionaries)
+                    'dye_mmap': {'path': dye_mmap_path, 'shape': dye_shape, 'dtype': dye_dtype},
+                    'actin_mmap': {'path': actin_mmap_path, 'shape': actin_shape, 'dtype': actin_dtype},
                 })
                 worker_args.append(full_config)
 
@@ -482,33 +533,45 @@ class MFAAnalysis:
         finally:
             self.cleanup()
             
-    def _prepare_shared_memory_stack(self) -> Tuple[str, Tuple, np.dtype]:
+    def _prepare_shared_memory_stack(self, file_list: List[Path], tag: str) -> Tuple[Optional[str], Optional[Tuple], Optional[np.dtype]]:
         """
-        Writes all image frames into a single binary file on disk (memmap).
+        Writes image frames into a binary file on disk (memmap).
+        Generic version for any channel.
         """
-        logger.info("Caching all images to shared memory...")
-        # Read first file to get dimensions/dtype
-        first_img = self.file_reader.read_img(self.file_reader.tif_files[0])
+        if not file_list:
+            return None, None, None
+
+        logger.info(f"Caching {tag} images to shared memory...")
+        
+        # Determine rotation and final dimensions
+        rotation_angle = self.cropper.rotation_angle if self.cropper else 0.0
+        first_img = self.file_reader.read_img(file_list[0])
+        if rotation_angle != 0:
+            first_img = utils.rotate_image(first_img, rotation_angle)
+             
         h, w = first_img.shape[:2]
         is_color = len(first_img.shape) == 3
-        n_frames = len(self.file_reader.tif_files)
-        
-        shape = (n_frames, h, w, 3) if is_color else (n_frames, h, w)
+        shape = (len(file_list), h, w, 3) if is_color else (len(file_list), h, w)
         dtype = first_img.dtype
-        mmap_path = self.temp_dir / "image_stack.dat"
+        mmap_path = self.temp_dir / f"image_stack_{tag}.dat"
         
-        # 'w+' creates or overwrites the file
         fp = np.memmap(mmap_path, dtype=dtype, mode='w+', shape=shape)
         
-        # Only map the BF files. Dye files are handled separately.
-        for i, f in enumerate(tqdm(self.file_reader.tif_files, desc="Loading Cache")):
+        for i, f in enumerate(tqdm(file_list, desc=f"Caching {tag} (Rotated)")):
             img = self.file_reader.read_img(f)
-            if img is not None: fp[i] = img
-            else: fp[i] = np.zeros_like(first_img)
+            if rotation_angle != 0:
+                img = utils.rotate_image(img, rotation_angle)
+            fp[i] = img if img is not None else np.zeros_like(first_img)
         
         fp.flush()
+        
+        # Explicitly release the OS file lock in the main process
+        if hasattr(fp, '_mmap') and fp._mmap is not None:
+            fp._mmap.close()
+        del fp
+        
         return str(mmap_path), shape, dtype
-
+    
     def _collect_interactive_parameters(self) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Loops through EACH selected trap to let user tune Pipette & Thresholds.
@@ -516,7 +579,6 @@ class MFAAnalysis:
         configs = []
         if not self.loader or not self.cropper: return 'stop', []
         
-        # Use traps already selected in Phase 1
         selected_indices = self.cropper.selected_traps
         if not selected_indices:
             logger.warning("No traps were selected in the setup phase.")
@@ -525,7 +587,6 @@ class MFAAnalysis:
         logger.info(f"\nConfiguring {len(selected_indices)} selected traps (Pipette & Thresholds)...")
         num_frames = len(self.file_reader.tif_files)
         
-        # Pick a representative frame
         frame_frac = self.params.get('workflow_settings', {}).get('selection_frame_fraction', 0.5)
         test_idx = int(num_frames * frame_frac)
         test_idx = max(0, min(test_idx, num_frames - 1))
@@ -534,25 +595,17 @@ class MFAAnalysis:
         
         setup_progress = utils.ProgressTracker(len(selected_indices))
         
-        # 2. Loop through traps
         for i, trap_index in enumerate(selected_indices):
             setup_progress.start_trap(i)
             try:
-                # Crop representative frame
                 roi_img = self.cropper.process_frame(img, trap_index)
                 if roi_img is None:
                     self.skipped.append(trap_index)
                     setup_progress.finish_trap(i, True)
                     continue
         
-                # Check config to see if we need Dye thresholding too
-                dye_enabled = self.params.get('dye_uptake_parameters', {}).get('enable', False)
-                
-                # Run the interactive UI
-                # Note: We pass [roi_img] as a list because LineDetectionMFA expects a list
                 det_interactive = LineDetectionMFA([roi_img], self.cropper.pipette_coords, self.params)
                 
-                # This call triggers the sequence: Pipette -> Thresh Prot -> Thresh Body (if dye enabled)
                 interactive_res = det_interactive.run_detection() 
                 signal = interactive_res.get('signal')
                 
@@ -565,7 +618,6 @@ class MFAAnalysis:
                     setup_progress.finish_trap(i, True)
                     continue
                 
-                # Store the CONFIRMED parameters for this specific trap
                 configs.append({
                     'trap_index': trap_index, 
                     'pip': interactive_res['pipette_start_x_used'], 
@@ -585,7 +637,6 @@ class MFAAnalysis:
 
     def _aggregate_and_export_results(self, all_results: List[Dict[str, Any]]) -> None:
         """Combines results from all workers into Summary CSVs."""
-        self._save_consolidated_protrusions_wide(all_results)
         self._save_consolidated_protrusions_long(all_results)
         
         all_fits_data = []
@@ -594,15 +645,28 @@ class MFAAnalysis:
                  all_fits_data.extend(res['fit_rows'])
         
         if all_fits_data:
-            # Ensure directory exists before saving summary
             self.subdirs['fitting'].mkdir(parents=True, exist_ok=True)
-            
             df = pd.DataFrame(all_fits_data)
             df['Experiment_ID'] = self.experiment_id
             df.to_csv(self.subdirs['fitting'] / f"{self.experiment_id}_summary_fits.csv", index=False)
 
-        # --- Shear analysis ---
         self._perform_shear_analysis()
+        
+        # Call the morphology aggregate plotter (Using the corrected 'self.subdirs')
+        Plotting_MFA.plot_aggregate_metrics(
+            all_results, 
+            self.file_reader.time_data, 
+            self.subdirs['morphology'],
+            self.experiment_id
+        )
+        
+        if self.params.get('dye_uptake_parameters', {}).get('enable', False):
+            Plotting_MFA.plot_aggregate_dye_metrics(
+                all_results,
+                self.subdirs['dye'],
+                self.experiment_id,
+                self.params
+            )
 
     def _perform_shear_analysis(self):
         """Calculates Son (2007) shear metrics."""
@@ -620,12 +684,9 @@ class MFAAnalysis:
         shear_df = pd.DataFrame([metrics])
         shear_df['Experiment_ID'] = self.experiment_id
         
-        # Ensure directory exists before saving
         self.subdirs['fitting'].mkdir(parents=True, exist_ok=True)
-        
         save_path = self.subdirs['fitting'] / f"{self.experiment_id}_shear_analysis.csv"
         shear_df.to_csv(save_path, index=False)
-        
         Plotting_MFA.plot_shear_analysis_card(
             metrics, 
             self.subdirs['fitting'] / f"{self.experiment_id}_shear_analysis_card.png"
@@ -689,19 +750,16 @@ def main() -> bool:
     args = parser.parse_args()
     config_path = Path(args.config_path)
 
-    # Load and Validate Configuration
     try:
         with open(config_path, 'r') as f: raw_config = yaml.safe_load(f)
     except Exception as e:
         logger.error(f"Error parsing config: {e}"); return False
 
     try: 
-        # Validate using Pydantic (returns dict)
         params = validate_config(raw_config)
     except ValidationError as e:
         logger.error(f"Invalid configuration: {e}"); return False
     
-    # Launch Analysis
     analysis = None
     try:
         analysis = MFAAnalysis(Path(params['paths']['data_folder']), params['paths']['experiment_id'], params)

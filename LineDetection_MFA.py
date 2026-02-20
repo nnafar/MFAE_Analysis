@@ -43,20 +43,20 @@ class LineDetectionMFA:
         self.pipette_coords = pipette_coords
         self.params = params or {}
 
-        # --- EXTRACT RUPTURE SUB-DICTIONARY ---
-        # This was the missing link. We must pull from the sub-dict, not the root.
-        r_params = self.params.get('rupture_detection', {}) 
+        # --- EXTRACT SUB-DICTIONARIES ---
+        r_params = self.params.get('rupture_detection', {})
+        wf_settings = self.params.get('workflow_settings', {})
+        img_params = self.params.get('image_processing', {})
 
-        # Interactive Window parameters
-        self.window_scale = self.params.get('window_scale_factor', 1.0)
-        base_w = self.params.get('interactive_window_width', 1200)
-        base_h = self.params.get('interactive_window_height', 800)
+        # Interactive Window parameters (Updated to use workflow_settings)
+        self.window_scale = wf_settings.get('window_scale_factor', 1.0)
+        base_w = wf_settings.get('interactive_window_width', 1000)
+        base_h = wf_settings.get('interactive_window_height', 800)
         self.window_width = int(base_w * self.window_scale)
         self.window_height = int(base_h * self.window_scale)
         
         # --- Rupture Parameters (Read from r_params) ---
         self.entry_velocity_threshold = r_params.get('entry_velocity_threshold_px', 2.0)
-        
         self.rupture_offset = r_params.get('rupture_offset_from_tip_px', 5)
         self.rupture_width = r_params.get('rupture_window_width_px', 5)       
         
@@ -70,7 +70,6 @@ class LineDetectionMFA:
 
         # 3. CUSUM (Slow Drift)
         self.min_cusum_baseline = r_params.get('min_cusum_baseline_frames', 5)
-        # This defaults to 1.0 if not found, making detection hyper-sensitive
         self.min_intensity_noise_floor = r_params.get('min_intensity_noise_floor', 1.0)
         
         self.cusum_drift_tol = r_params.get('cusum_drift_tolerance_factor', 0.5)
@@ -78,23 +77,27 @@ class LineDetectionMFA:
         self.min_drift = r_params.get('min_drift_tolerance', 0.2)
         self.min_cusum_thresh = r_params.get('min_cusum_threshold', 2.0)
         
-        # Processing Parameters
-        self.min_area_threshold = self.params.get('min_area_threshold', 100)         
-        self.small_object_threshold = self.params.get('small_object_threshold', 50)  
-        self.wall_clip_margin = self.params.get('wall_clip_margin', 0.40)         
+        # Processing Parameters (Updated to use image_processing)
+        self.min_area_threshold = img_params.get('min_area_threshold', 100)         
+        self.small_object_threshold = img_params.get('small_object_threshold', 50)  
+        self.wall_clip_margin = img_params.get('wall_clip_margin', 0.40)         
 
         # --- Results Container ---
         self.results: Dict[str, Any] = {
             # Pre-processing
             'signal': 'stop',               # Flow control signal (confirm/restart/stop)
             'protrusion_lengths_px': [],    # Raw length data in pixels
-            'protrusion_lengths_um': [],    # Converted length in microns 
+            'protrusion_lengths_um': [],    # Converted length in microns
+            'total_area_um2': [],           # Total cell area
+            'body_solidity': [],            # Cell body solidity
+            'entry_frame_index': None,
             # Rupture Detection
             'downstream_intensities': [],   # Brightness values inside the pipette (for rupture)'
             'rupture_detected': False,      # Boolean flag for rupture event
             'rupture_frame_index': None,    # Frame index where rupture occurred
             'rupture_time': None,           # Time in seconds
             'debug_images': [],             # Visualizations with overlays
+            'rupture_reason': None,
             # Protrusion Detection
             'pipette_start_x_used': None,   # The X-coordinate used as "Zero"
             'threshold_prot': None,         # Primary threshold (clipped)
@@ -520,10 +523,18 @@ class LineDetectionMFA:
         image_8bit = utils.normalize_to_8bit(image)
         gray = image_8bit if len(image_8bit.shape) == 2 else cv2.cvtColor(image_8bit, cv2.COLOR_BGR2GRAY)
         
-        # 1. Enhance & Blur
-        clahe = cv2.createCLAHE(clipLimit=self.params.get('clahe_clip_limit', 2.0), tileGridSize=tuple(self.params.get('clahe_tile_grid_size', (8, 8))))
+        # 1. Enhance & Blur (Updated to use image_processing parameters)
+        image_params = self.params.get('image_processing', {})
+        clahe = cv2.createCLAHE(
+            clipLimit=image_params.get('clahe_clip_limit', 2.0), 
+            tileGridSize=tuple(image_params.get('clahe_tile_grid_size', (8, 8)))
+        )
         enhanced = clahe.apply(gray)
-        blurred = cv2.GaussianBlur(enhanced, tuple(self.params.get('gaussian_kernel_size', (5, 5))), 0)
+        blurred = cv2.GaussianBlur(
+            enhanced, 
+            tuple(image_params.get('gaussian_kernel_size', (5, 5))), 
+            0
+        )
         
         # 2. Threshold
         _, binary_mask = cv2.threshold(blurred, threshold, 255, cv2.THRESH_BINARY)
@@ -569,12 +580,25 @@ class LineDetectionMFA:
         return opened
 
     def _remove_left_border_objects(self, binary_image: np.ndarray) -> np.ndarray:
-        """Helper: Removes blobs that are touching the left edge of the image (artifacts)."""
+        """
+        Removes blobs touching the left edge of the image (wall/border artifacts).
+
+        The trick: OpenCV's floodFill needs a seed pixel that is already foreground (255)
+        to spread and paint things background (0). Rather than iterating the actual
+        image border (which might be background), we *pad* a 1-pixel-wide foreground
+        column onto the left edge. This guarantees every left-border pixel is 255,
+        so floodFill can reach and erase any blob that touches the true edge.
+        The padding column is then stripped before returning.
+
+        Why not just zero-out the left column directly? That would only delete the
+        border pixel itself, not the entire connected blob attached to it.
+        """
         padded = np.pad(binary_image, ((0, 0), (1, 0)), mode='constant', constant_values=255)
         h, w = padded.shape
         mask = np.zeros((h + 2, w + 2), np.uint8)
         for y in range(h):
-            if padded[y, 0] == 255: cv2.floodFill(padded, mask, (0, y), 0)
+            if padded[y, 0] == 255:
+                cv2.floodFill(padded, mask, (0, y), 0)
         return padded[:, 1:]
 
     def _refine_edge_subpixel(self, image: np.ndarray, int_edge_x: int, stat_entry: np.ndarray, search_window: int = 10) -> float:
@@ -619,22 +643,18 @@ class LineDetectionMFA:
         # Determine 50% threshold for the edge
         threshold = bg_floor + (0.5 * dynamic_range)
         
-        # Scan RIGHT-TO-LEFT to find the exact drop-off point
-        found_edge = False
-        edge_idx = 0
-        for i in range(len(profile) - 1, -1, -1):
-            if profile[i] < threshold:
-                edge_idx = i
-                found_edge = True
-                break
+        # Vectorized Search
+        edge_indices = np.where(profile < threshold)[0]
+        if edge_indices.size == 0:
+            return float(int_edge_x)
+            
+        # The rightmost index where signal drops below threshold
+        edge_idx = edge_indices[-1]
         
-        if not found_edge: return float(x_start)
-        
-        # Linear interpolation between pixels
+        # Linear interpolation for sub-pixel cross point
         if edge_idx < len(profile) - 1:
-            val_low = profile[edge_idx]
-            val_high = profile[edge_idx + 1]
-            fraction = (threshold - val_low) / (val_high - val_low) if val_high != val_low else 0.5
+            v_low, v_high = profile[edge_idx], profile[edge_idx + 1]
+            fraction = (threshold - v_low) / (v_high - v_low) if v_high != v_low else 0.5
             offset = edge_idx + fraction
         else:
             offset = float(edge_idx)
@@ -646,43 +666,63 @@ class LineDetectionMFA:
         Loops through frames to calculate Protrusion Length (Membrane Channel).
         Does NOT handle dye uptake.
         """
-        scale_factor = self.params.get('scale_factor', 0.63)
+        # Updated to extract scale factor using proper nesting
+        scale_factor = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         protrusion_px_list = []
         downstream_int_list = []
         
         for i, image in enumerate(self.roi_images):
             if image is None:
                 protrusion_px_list.append(0); downstream_int_list.append(0)
-                self.results['debug_images'].append(None); self.results['detection_confidence'].append(0.0)
+                self.results['total_area_um2'].append(0.0)    
+                self.results['body_solidity'].append(0.0)     
+                self.results['debug_images'].append(None)
+                self.results['detection_confidence'].append(0.0)
                 continue
 
             image_8bit = utils.normalize_to_8bit(image)
             gray_image = image_8bit if len(image_8bit.shape) == 2 else cv2.cvtColor(image_8bit, cv2.COLOR_BGR2GRAY)
             
-            # 1. PROTRUSION DETECTION (Membrane Channel)
-            # Use original logic: clip walls, clip to the right of pipette start
-            mask_prot_clipped = self._segment_mask(
+            # 1. GENERATE MASKS & PROTRUSION DETECTION
+            thr_prot = self.results.get('threshold_prot', threshold)
+            thr_body = self.results.get('threshold_body', threshold)
+            
+            # A) Generate standard masks (This correctly captures the body without deleting it)
+            _, mask_body_standard = utils.generate_dual_masks(
+                image, pipette_start_x, thr_prot, thr_body, self.params
+            )
+            
+            # B) Generate the highly-tuned protrusion mask using your internal segmenter
+            mask_prot= self._segment_mask(
                 image, 
                 threshold, 
                 clip_walls=True, 
                 limit_x_max=pipette_start_x
             )
             
-            # Measure length
-            protrusion_len_px = self._measure_protrusion_from_mask(mask_prot_clipped, pipette_start_x, gray_image)
+            # C) Combine for true total cell calculations
+            mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
+            
+            # Measure length and area
+            protrusion_len_px, cell_area = self._measure_protrusion_from_mask(mask_prot, pipette_start_x, gray_image)
             protrusion_px_list.append(protrusion_len_px)
+            
+            # Measure Morphology (Total Area & Body Solidity) using the un-erased body mask
+            total_area, body_solidity = self._calculate_morphology(mask_total, mask_body_standard)
+            self.results['total_area_um2'].append(total_area)
+            self.results['body_solidity'].append(body_solidity)
             
             # Measure Rupture Intensity
             tip_x = pipette_start_x - protrusion_len_px
             downstream_int_list.append(self._measure_downstream_intensity(gray_image, tip_x, pipette_start_x))
-
-            # 2. DEBUG VISUALIZATION
-            debug_image = self._create_debug_visualization(image, mask_prot_clipped, pipette_start_x, protrusion_len_px)
+            
+            # 3. DEBUG VISUALIZATION
+            debug_image = self._create_debug_visualization(image, mask_prot, pipette_start_x, protrusion_len_px)
             self.results['debug_images'].append(debug_image)
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
 
-        # Post-Processing: Smoothing
-        if self.params.get('enable_smoothing', True):
+        # Post-Processing: Smoothing (Updated to use rupture_detection parameters)
+        if self.params.get('rupture_detection', {}).get('enable_smoothing', True):
             self.results['protrusion_lengths_px'] = self._simple_smoothing_filter(protrusion_px_list)
         else:
             self.results['protrusion_lengths_px'] = protrusion_px_list
@@ -695,21 +735,20 @@ class LineDetectionMFA:
         if len(values) < window_size: return values
         return pd.Series(values).rolling(window=window_size, center=True, min_periods=1).median().tolist()
 
-    def _measure_protrusion_from_mask(self, binary_mask: np.ndarray, pipette_start_x: int, gray_image: Optional[np.ndarray] = None) -> float:
+    def _measure_protrusion_from_mask(self, binary_mask: np.ndarray, pipette_start_x: int, gray_image: Optional[np.ndarray] = None) -> Tuple[float, float]:
         """Finds the left-most edge of the largest object in the mask and calculates distance from pipette entrance."""
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
-        if num_labels <= 1: return 0.0
+        if num_labels <= 1: return 0.0, 0.0
         
         # Assumes largest blob is the cell
         largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
         edge_x = stats[largest_label, cv2.CC_STAT_LEFT]
+        area = float(stats[largest_label, cv2.CC_STAT_AREA])
         
         # Use sub-pixel refinement if original image is provided
         if gray_image is not None:
-             return float(pipette_start_x - self._refine_edge_subpixel(gray_image, edge_x, stats[largest_label]))
-        return float(pipette_start_x - edge_x)
-
-    # [In LineDetection_MFA.py] REPLACE the _create_debug_visualization method
+             return float(pipette_start_x - self._refine_edge_subpixel(gray_image, edge_x, stats[largest_label])), area
+        return float(pipette_start_x - edge_x), area
 
     def _create_debug_visualization(self, image: np.ndarray, binary_mask: np.ndarray, pipette_x: int, protrusion_len: float) -> np.ndarray:
         """
@@ -764,6 +803,39 @@ class LineDetectionMFA:
             cv2.rectangle(debug_img, (x_start, y_start), (x_end, y_end), c_rupture, 1)
         
         return debug_img
+    
+    
+    def _calculate_morphology(self, mask_total: np.ndarray, mask_body: np.ndarray) -> Tuple[float, float]:
+        """Calculates total cell area and body-only solidity with robust fallbacks."""
+        scale_factor = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
+        
+        # 1. Total Area
+        total_area_px = cv2.countNonZero(mask_total)
+        total_area_um2 = total_area_px * (scale_factor ** 2)
+        
+        # 2. Body Solidity
+        mask_body_u8 = mask_body.astype(np.uint8)
+        contours, _ = cv2.findContours(mask_body_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return total_area_um2, 0.0
+            
+        cnt = max(contours, key=cv2.contourArea)
+        area_px = cv2.contourArea(cnt)
+        
+        # Fallback to pixel count if geometric area is 0
+        if area_px == 0:
+            area_px = cv2.countNonZero(mask_body_u8)
+            
+        if len(cnt) >= 3: # Convex hull requires at least 3 points
+            hull = cv2.convexHull(cnt)
+            hull_area = cv2.contourArea(hull)
+            
+            if hull_area > 0:
+                solidity = float(area_px) / hull_area
+                return total_area_um2, solidity
+                
+        return total_area_um2, 0.0
 
     # =========================================================================
     #                       RUPTURE DETECTION LOGIC
@@ -773,41 +845,47 @@ class LineDetectionMFA:
         """
         Runs multiple detectors to find the FIRST failure point.
         Includes logic to handle 'Already Inside' cases (Trap 2, 14).
+        Note: protrusion_lengths_um is already set by _process_all_frames; no recalculation needed.
         """
-        scale = self.params.get('scale_factor', 0.63)
-        self.results['protrusion_lengths_um'] = [p * scale for p in self.results['protrusion_lengths_px']]
-        
         protrusions_um = self.results['protrusion_lengths_um']
         intensities = self.results['downstream_intensities']
         
         # --- 1. Determine Entry Point & Candidates ---
         candidates = []
         
-        # A. IMMEDIATE LEVEL CHECK (The Fix: Check this BEFORE calculating entry_idx)
-        # We check the first few frames regardless of length. 
-        # If intensity is high immediately, it's either "Already Inside" or a "Ghost".
         if intensities:
-            baseline_mean = np.median(intensities[:5])
-            # You might want to tune this '20.0' threshold in config if 90 is too high/low
-            if baseline_mean > 50.0: 
-                 candidates.append((0, 'Immediate High Haze'))
+            baseline_steady = np.median(intensities[:5])
+            abs_threshold = self.params.get('rupture_detection', {}).get('absolute_intensity_threshold', 6.5)
+            
+            if baseline_steady >= abs_threshold: 
+                # 1. Fetch physical movement
+                protrusions = self.results.get('protrusion_lengths_um', [])
+                
+                # 2. Fetch optical stability
+                haze_variance = np.std(intensities[:5]) if len(intensities) >= 5 else 0
+                
+                is_stagnant = False
+                if len(protrusions) >= 5:
+                    # If it grew less than 0.5um, it is mechanically dead
+                    growth = protrusions[4] - protrusions[0]
+                    is_stagnant = growth < 0.5
+                
+                # If it's physically stagnant OR the light is actively violently fluctuating (leaking)
+                if is_stagnant or haze_variance > 1.0:
+                    candidates.append((0, 'Immediate High Haze (DOA)'))
+                else:
+                    logger.info(f"Ignored high initial haze ({baseline_steady:.1f}); cell is actively creeping. Assuming debris.")
 
-        # Standard Entry Logic (for Length calculations)
         start_len = protrusions_um[0] if protrusions_um else 0
         
         if start_len > 20.0:
-            # Case: Physically tracking as inside
             entry_idx = 0
         else:
-            # Case: Wait for movement
             velocity = np.diff(self.results['protrusion_lengths_px'], prepend=0)
             entry_idx = next((i for i, v in enumerate(velocity) if v > self.entry_velocity_threshold), 0)
             if entry_idx >= len(protrusions_um): entry_idx = 0
             
         self.results['entry_frame_index'] = entry_idx
-        
-        # Only search for NEW events after the entry point
-        # (Unless we already found an immediate candidate at 0)
         valid_intensities = intensities[entry_idx:]
 
         # B. Spike (Transient Burst)
@@ -854,36 +932,29 @@ class LineDetectionMFA:
         baseline_len = r_params.get('cusum_baseline_len', 5)
         lag = r_params.get('cusum_baseline_lag', 0)
         
-        # We need enough data for: Settling + Baseline + Lag + Current Frame
         min_len = settling + baseline_len + lag + 1
         if len(trace) < min_len: return False, None
         
-        # Get threshold parameters
         threshold_sigma = self.spike_sigma if mode == 'spike' else self.step_sigma
         
-        # Start scanning AFTER the initial baseline + lag period
         for i in range(settling + baseline_len + lag, len(trace)):
-            
-            # DYNAMIC BASELINE: 
-            # Look back 'lag' frames from the current test window.
-            # Window: [i - lag - baseline_len : i - lag]
-            # Example: If i=20, lag=3, len=5 -> Baseline is frames 12-17.
-            
             b_end = i - lag
             b_start = b_end - baseline_len
             
             baseline = trace[b_start : b_end]
             median = np.median(baseline)
             
-            # Robust Noise Estimation (IQR)
             q75, q25 = np.percentile(baseline, [75, 25])
             iqr = q75 - q25
-            sigma = max(iqr * 0.7413, self.min_intensity_noise_floor)
+            
+            raw_sigma = iqr * 0.7413
+            max_sigma = r_params.get('max_baseline_sigma', 1.0)
+            capped_sigma = min(raw_sigma, max_sigma)
+            sigma = max(capped_sigma, self.min_intensity_noise_floor)
             
             current_val = trace[i]
             deviation = current_val - median
             
-            # Only trigger on positive deviations (getting brighter)
             if deviation > (threshold_sigma * sigma):
                 return True, i
                 
@@ -891,36 +962,52 @@ class LineDetectionMFA:
 
     def _detect_cusum_drift(self, trace: List[float]) -> Tuple[bool, Optional[int]]:
         """
-        Standard CUSUM (Cumulative Sum) Control Chart.
-        Detects small shifts in the mean that persist over time.
+        Dynamic CUSUM Control Chart.
+        Uses a rolling baseline to prevent initial entry vibration from permanently inflating 
+        the detection threshold.
         """
-        settling = self.params.get('cusum_settling_buffer', 3)
-        baseline_len = self.params.get('cusum_baseline_len', 5)
-        if len(trace) < settling + baseline_len: return False, None
+        r_params = self.params.get('rupture_detection', {})
+        settling = r_params.get('cusum_settling_buffer', 3)
+        baseline_len = r_params.get('cusum_baseline_len', 5)
+        lag = r_params.get('cusum_baseline_lag', 0)
         
-        # Baseline
-        baseline = trace[settling : settling + baseline_len]
-        mu = np.median(baseline)
-        q75, q25 = np.percentile(baseline, [75 ,25])
-        iqr = q75 - q25
-        
-        # Use the higher noise floor (3.0) to ignore background static
-        sigma = max(iqr * 0.7413, self.min_intensity_noise_floor)
-        
-        # CUSUM Parameters
-        k = max(self.min_drift, self.cusum_drift_tol * sigma)
-        h = max(self.min_cusum_thresh, self.cusum_thresh_fac * sigma)
+        min_len = settling + baseline_len + lag + 1
+        if len(trace) < min_len: 
+            return False, None
         
         S_pos = 0.0
-        for i, x in enumerate(trace[settling:]):
-            deviation = x - mu - k
+        
+        for i in range(settling + baseline_len + lag, len(trace)):
+            # 1. Establish Rolling Baseline
+            b_end = i - lag
+            b_start = b_end - baseline_len
+            baseline = trace[b_start : b_end]
+            
+            # 2. Calculate Local Statistics
+            mu = np.median(baseline)
+            q75, q25 = np.percentile(baseline, [75, 25])
+            iqr = q75 - q25
+            
+            # Prevent Sigma Inflation
+            raw_sigma = iqr * 0.7413
+            max_sigma = r_params.get('max_baseline_sigma', 1.0)
+            capped_sigma = min(raw_sigma, max_sigma)
+            sigma = max(capped_sigma, self.min_intensity_noise_floor)
+            
+            # 3. Dynamic Thresholds
+            k = max(self.min_drift, self.cusum_drift_tol * sigma)
+            h = max(self.min_cusum_thresh, self.cusum_thresh_fac * sigma)
+            
+            # 4. Accumulate Deviation
+            deviation = trace[i] - mu - k
             if deviation > 0:
                 S_pos += deviation
             else:
-                S_pos = max(0, S_pos + deviation) # Reset accumulation if signal drops
+                S_pos = 0.0 # Reset accumulation if signal drops back to noise floor
             
             if S_pos > h:
-                return True, i + settling
+                return True, i
+                
         return False, None
 
     def _measure_downstream_intensity(self, image: np.ndarray, tip_x: float, pipette_x: int) -> float:
@@ -935,10 +1022,9 @@ class LineDetectionMFA:
         
         h, w = image.shape[:2]
         margin = int(h * self.wall_clip_margin)
-        # Extract ROI
         roi = image[max(0, margin):min(h, h-margin), max(0, x_start):min(w, x_end)]
         return np.mean(roi) if roi.size > 0 else 0.0
-
+    
     def export_results_to_csv(self, output_dir: Union[str, Path], experiment_id: str = "experiment", 
                               dir_full: Optional[Path] = None, dir_filtered: Optional[Path] = None) -> List[Path]:
         """
@@ -946,7 +1032,7 @@ class LineDetectionMFA:
         1. `..._full.csv`: Contains every frame of data.
         2. `..._filtered.csv`: Cuts off data after a rupture is detected (cleaner for plotting).
         """
-        frame_interval = self.params.get('frame_interval', 0.2)
+        frame_interval = self.params.get('experiment_parameters', {}).get('frame_interval', 0.2)
         num_frames = len(self.results['protrusion_lengths_px'])
         time_points = [i * frame_interval for i in range(num_frames)]
 
@@ -955,6 +1041,8 @@ class LineDetectionMFA:
             'Time_s': time_points,
             'Protrusion_Length_px': self.results['protrusion_lengths_px'],
             'Protrusion_Length_um': self.results['protrusion_lengths_um'],
+            'Total_Area_um2': self.results['total_area_um2'],    
+            'Body_Solidity': self.results['body_solidity'],      
             'Downstream_Intensity': self.results['downstream_intensities'],
             'Detection_Confidence': self.results['detection_confidence']
         })
@@ -962,7 +1050,6 @@ class LineDetectionMFA:
         created_files = []
         
         # --- 1. Export Full Data ---
-        # Use specific directory if provided, else fallback to main output_dir
         path_full = dir_full if dir_full else Path(output_dir)
         path_full.mkdir(parents=True, exist_ok=True)  
         
@@ -975,7 +1062,7 @@ class LineDetectionMFA:
         path_filtered = dir_filtered if dir_filtered else Path(output_dir)
         path_filtered.mkdir(parents=True, exist_ok=True) 
         
-        filename_filtered = f"{experiment_id}_detection_filtered.csv" # No timestamp
+        filename_filtered = f"{experiment_id}_detection_filtered.csv" 
         filtered_path = path_filtered / filename_filtered
         
         if self.results.get('rupture_detected') and self.results.get('rupture_frame_index') is not None:

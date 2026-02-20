@@ -13,7 +13,7 @@ and stacks them vertically.
 This allows researchers to see the cell's trajectory at a glance.
 """
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
 
 import cv2
@@ -42,7 +42,7 @@ class KymographAnalysis:
         self.pipette_start_x = self.results.get('pipette_start_x_used')
         self.protrusions_px = self.results.get('protrusion_lengths_px', [])
 
-    def run_analysis(self, output_dir: Path, trap_index: int) -> 'KymographAnalysis':
+    def run_analysis(self, output_dir: Union[str, Path], trap_index: int) -> 'KymographAnalysis':
         """Executes the kymograph generation and saving workflow."""
         if not self.roi_images or not self.pipette_start_x:
             logger.warning(f"Skipping kymograph for Trap {trap_index}: Missing images or pipette info.")
@@ -75,7 +75,7 @@ class KymographAnalysis:
         center_y = h // 2
         
         # Define the slice thickness (averaging over a few lines reduces noise)
-        thickness = self.params.get('kymograph_line_thickness', 3)
+        thickness = self.params.get('kymograph_parameters', {}).get('default_line_width_px', 10)
         y_start = max(0, center_y - thickness // 2)
         y_end = min(h, center_y + thickness // 2 + 1)
         
@@ -98,7 +98,7 @@ class KymographAnalysis:
         return np.vstack(lines)
 
 def create_kymograph_for_trap(roi_images: List[np.ndarray], detection_results: Dict[str, Any], 
-                              params: Dict[str, Any], output_dir: Path, trap_index: int, 
+                              params: Dict[str, Any], output_dir: Union[str, Path], trap_index: int, 
                               time_data: Optional[List[float]] = None) -> KymographAnalysis:
     """Helper function to instantiate and run the analysis."""
     analyzer = KymographAnalysis(roi_images, detection_results, params, time_data)

@@ -83,10 +83,14 @@ class FileRead():
             logger.info(f"No files matched pattern '{mem_pattern}'. Loading all found .tif files as Membrane channel.")
             self.tif_files = self.sort_by_time_index(all_files)
 
+        # Reject black frames (e.g., shutter artifacts at the end of the acquisition sequence)
+        self.tif_files = self._reject_black_frames(self.tif_files)
+
         # --- 2. FILTER DYE FILES (OPTIONAL) ---
         if enable_dye:
             self.dye_files = [f for f in all_files if dye_pattern in f.name]
             self.dye_files = self.sort_by_time_index(self.dye_files)
+            self.dye_files = self._reject_black_frames(self.dye_files)
             
             if not self.dye_files:
                 logger.warning(f"Dye analysis enabled but no files found matching '{dye_pattern}'. Check config.")
@@ -101,12 +105,8 @@ class FileRead():
         if enable_actin:
             self.actin_files = [f for f in all_files if actin_pattern in f.name]
             self.actin_files = self.sort_by_time_index(self.actin_files)
+            self.actin_files = self._reject_black_frames(self.actin_files)
             
-            if not self.actin_files:
-                logger.warning(f"Actin analysis enabled but no files found matching '{actin_pattern}'.")
-            else:
-                logger.info(f"Actin Channel: Found {len(self.actin_files)} files matching '{actin_pattern}'.")
-
         # --- SYNCHRONIZATION ---
         # Find minimum length across all active channels
         lengths = [len(self.tif_files)]
@@ -146,7 +146,29 @@ class FileRead():
         self.results['time_data'] = self.time_data
         
         logger.info(f"Successfully loaded {self.num_files} frames for analysis.")
-    
+
+    def _reject_black_frames(self, file_list: List[Path], threshold: float = 1.0) -> List[Path]:
+        """
+        Checks the sequence (specifically the last frame) for 'black' (empty) images 
+        and removes them to avoid analysis errors. This handles hardware timing discrepancies 
+        resulting in blank acquisitions.
+        """
+        if not file_list: return file_list
+        
+        # Check the last frame specifically (common artifact)
+        last_file = file_list[-1]
+        try:
+            img = self.read_img(last_file)
+            if img is not None:
+                mean_val = np.mean(img)
+                if mean_val < threshold:
+                    logger.warning(f"Rejected black frame (End of Stack): {last_file.name} (Mean: {mean_val:.2f})")
+                    return file_list[:-1] # Drop last
+        except Exception as e:
+            logger.warning(f"Could not check last frame: {e}")
+            
+        return file_list
+
     def extract_timestamps_from_metadata(self) -> Optional[List[float]]:
         """
         Cascading Strategy:
@@ -173,35 +195,35 @@ class FileRead():
         return None
 
     def _extract_from_imagej_metadata(self) -> Optional[List[float]]:
-        """Extracts timestamps from ImageJ metadata tags."""
+        """
+        Extracts timestamps from ImageJ metadata tags.
+        
+        The frame interval is a single value stored in the first file's header —
+        there is no reason to open all 76 files. We read only file[0] to find
+        frame_interval, then compute timestamps arithmetically.
+        """
         logger.debug("Trying ImageJ metadata extraction...")
-        timestamps = []
+        if not self.tif_files:
+            return None
+
         frame_interval = None
+        try:
+            with tifffile.TiffFile(self.tif_files[0]) as tif:
+                if tif.is_imagej and tif.imagej_metadata:
+                    metadata = tif.imagej_metadata
+                    for key in ['finterval', 'frame_interval', 'spacing']:
+                        if key in metadata:
+                            frame_interval = float(metadata[key])
+                            logger.debug(f"      Found frame interval: {frame_interval} seconds")
+                            break
+        except Exception:
+            return None
 
-        for i, filepath in enumerate(self.tif_files):
-            try:
-                with tifffile.TiffFile(filepath) as tif:
-                    if tif.is_imagej and tif.imagej_metadata:
-                        metadata = tif.imagej_metadata
-                        if frame_interval is None:
-                            for key in ['finterval', 'frame_interval', 'spacing']:
-                                if key in metadata:
-                                    frame_interval = float(metadata[key])
-                                    logger.debug(f"      Found frame interval: {frame_interval} seconds")
-                                    break
-                        if frame_interval is not None:
-                            timestamps.append(i * frame_interval)
-                        else:
-                            return None
-                    else:
-                        return None
-            except Exception:
-                return None
+        if frame_interval is None:
+            return None
 
-        if timestamps:
-            self.metadata_method_used = "ImageJ metadata"
-            return timestamps
-        return None
+        self.metadata_method_used = "ImageJ metadata"
+        return [i * frame_interval for i in range(len(self.tif_files))]
 
     def _extract_from_exif_data(self) -> Optional[List[float]]:
         """Extracts timestamps from standard EXIF data tags."""
@@ -242,37 +264,39 @@ class FileRead():
         return None
 
     def _extract_from_tiff_tags(self) -> Optional[List[float]]:
-        """Extracts timing information from generic TIFF tags."""
+        """
+        Extracts timing information from generic TIFF tags.
+        
+        Same principle as _extract_from_imagej_metadata: the interval is
+        a single constant, so only the first file needs to be opened.
+        """
         logger.debug("Trying TIFF tag extraction...")
-        timestamps = []
+        if not self.tif_files:
+            return None
+
         frame_interval = None
+        try:
+            with tifffile.TiffFile(self.tif_files[0]) as tif:
+                page = tif.pages[0]
+                for tag in page.tags:
+                    tag_name = tag.name.lower()
+                    if 'interval' in tag_name or 'time' in tag_name:
+                        try:
+                            interval = float(tag.value)
+                            if interval > 0:
+                                frame_interval = interval
+                                logger.debug(f"      Found timing in tag {tag.name}: {frame_interval}")
+                                break
+                        except (ValueError, TypeError):
+                            continue
+        except Exception:
+            return None
 
-        for i, filepath in enumerate(self.tif_files):
-            try:
-                with tifffile.TiffFile(filepath) as tif:
-                    page = tif.pages[0]
-                    for tag in page.tags:
-                        tag_name = tag.name.lower()
-                        if 'interval' in tag_name or 'time' in tag_name:
-                            try:
-                                interval = float(tag.value)
-                                if interval > 0:
-                                    frame_interval = interval
-                                    logger.debug(f"      Found timing in tag {tag.name}: {frame_interval}")
-                                    break
-                            except (ValueError, TypeError):
-                                continue
-                    if frame_interval is not None:
-                        timestamps.append(i * frame_interval)
-                    else:
-                        return None
-            except Exception:
-                return None
+        if frame_interval is None:
+            return None
 
-        if timestamps:
-            self.metadata_method_used = "TIFF tags"
-            return timestamps
-        return None
+        self.metadata_method_used = "TIFF tags"
+        return [i * frame_interval for i in range(len(self.tif_files))]
 
     def _extract_from_filename_timestamps(self) -> Optional[List[float]]:
         """Extracts timestamps by parsing filename patterns."""
@@ -348,8 +372,6 @@ class FileRead():
     def read_img(self, filename: Path) -> np.ndarray:
         """Reads an image file using OpenCV."""
         return cv2.imread(str(filename), cv2.IMREAD_UNCHANGED)
-
-
 
 class FileSave():
     """Handles saving of analysis results."""

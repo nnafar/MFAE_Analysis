@@ -188,11 +188,14 @@ class RuptureDetectionConfig(BaseModel):
     rupture_offset_from_tip_px: int = 10
     rupture_window_width_px: int = 15
     entry_velocity_threshold_px: float = Field(default=2.0, ge=0.0, description="Min velocity to distinguish cell entry from noise")
+    
+    absolute_intensity_threshold: float = Field(default=6.5, gt=0.0, description="Absolute intensity signifying instant rupture")
+    max_baseline_sigma: float = Field(default=1.0, gt=0.0, description="Cap on baseline variance to prevent blinding")
     min_cusum_baseline_frames: int = Field(default=5, ge=3, description="Min frames required to calculate CUSUM baseline")
     min_intensity_noise_floor: float = Field(default=0.2, gt=0.0, description="Minimum sigma to prevent CUSUM division by zero")
     min_drift_tolerance: float = Field(default=0.2, gt=0.0, description="Minimum drift K (intensity units)")
     min_cusum_threshold: float = Field(default=2.0, gt=0.0, description="Minimum threshold H (intensity units)")
-    
+
     exclude_early_fraction: float = Field(ge=0.0, lt=0.2)
     drop_threshold: float = Field(gt=0.0, le=1.0)
     absolute_threshold: float = Field(gt=0.0)
@@ -320,13 +323,10 @@ class DyeUptakeConfig(BaseModel):
     pulse_frame: int = Field(default=10, ge=1, description="Frame number where pulse is applied (1-based index)")
     baseline_frames: int = Field(default=5, ge=1, description="Number of pre-pulse frames to average for baseline")
 
-class ActinParameters(BaseModel):
-    """Configuration for Actin (cytoskeleton) distribution analysis."""
+class ActinConfig(BaseModel):
+    """Configuration for actin distribution analysis."""
     enable: bool = False
     channel_pattern: str = Field(default="C3", description="Substring to identify actin images")
-    
-    # Normalization
-    normalize_to_body: bool = Field(default=True, description="Calculate Protrusion/Body intensity ratio")
 
 class MFAConfig(BaseModel):
     """The master schema that combines all sub-configurations."""
@@ -337,15 +337,13 @@ class MFAConfig(BaseModel):
     rupture_detection: RuptureDetectionConfig
     workflow_settings: WorkflowConfig
     dye_uptake_parameters: DyeUptakeConfig = Field(default_factory=DyeUptakeConfig)
-    dye_uptake_parameters: DyeUptakeConfig = Field(default_factory=DyeUptakeConfig)
-    actin_parameters: ActinParameters = Field(default_factory=ActinParameters) # <--- ADD THIS
-        
+    actin_parameters: ActinConfig = Field(default_factory=ActinConfig)
+    
     image_processing: ImageProcessingConstants = Field(default_factory=ImageProcessingConstants)
     kymograph_parameters: KymographConstants = Field(default_factory=KymographConstants)
     plotting_parameters: PlottingConstants = Field(default_factory=PlottingConstants)
     fitting_parameters: FittingParameters = Field(default_factory=FittingParameters)
     validation_parameters: ValidationParameters = Field(default_factory=ValidationParameters)
-    
 
     class Config:
         extra = 'forbid'

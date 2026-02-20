@@ -12,10 +12,13 @@
 # Tell the code where to find your data and where to save results.
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
-  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260130_Experiment463-100V-100us-frame10"
+
+  data_folder: "W:\\staff-groups\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment5-100V-5ms-frame10"
+
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "260130_Experiment463-100V-100us-frame10"
+  experiment_id: "260128_Experiment5-100V-5ms-frame10-actin"
+
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -89,12 +92,18 @@ rupture_detection:
   enable_step_check: True
   step_sigma_threshold: 4.0         # Sensitivity: Needs a distinct jump to trigger.
 
+  # --- DATA CLEANING & SAFETY NETS ---
+  absolute_intensity_threshold: 8   # Catch cells already ruptured at entry
+  max_baseline_sigma: 1.0           # Prevent entry noise from blinding the detector
+  
+  exclude_early_fraction: 0.03
+
   # 3. DRIFT DETECTION (CUSUM - Slow Leaks)
   min_intensity_noise_floor: 1.0    # Minimum assumed noise (prevents div/0 errors on clean images)
   min_drift_tolerance: 3.0          # Minimum change to register as drift (0.1 = very sensitive)
   min_cusum_threshold: 5.0          # Accumulation threshold to trigger alarm
   
-  cusum_drift_tolerance_factor: 0.5 # (k) Multiplier for noise sigma
+  cusum_drift_tolerance_factor: 0.3 # (k) Multiplier for noise sigma; lowered from 0.5
   cusum_threshold_factor: 8.0       # (h) Multiplier for noise sigma to trigger
 
   # --- DATA CLEANING ---
@@ -157,11 +166,18 @@ dye_uptake_parameters:
   
   # File Naming: Strings used to identify which image is which channel.
   membrane_channel_pattern: "C1"    # e.g., Membrane label
-  dye_channel_pattern: "C2"         # e.g., Fluorescence / TRITC
+  dye_channel_pattern: "C2"         # e.g., Fluorescence / TRITC/ PI dye
   
   # Timing: When did you shock the cell?
   pulse_frame: 10                   # The exact frame number of the electric pulse.
   baseline_frames: 5                # How many frames before the pulse to check for background signal.
+
+# ===================================================================
+# --- 7. ACTIN QUANTIFICATION ---
+# ===================================================================
+actin_parameters:
+  enable: True                      # Set to True to enable, False to skip
+  channel_pattern: "C3"             # Substring to identify actin images
 
 # ===================================================================
 # ADVANCED / DEVELOPER PARAMETERS
@@ -169,7 +185,7 @@ dye_uptake_parameters:
 # Modify these only if the image processing or fitting is failing.
 
 image_processing:
-  wall_clip_margin: 0.20           # Ignore top/bottom 20% of image (hides pipette walls).
+  wall_clip_margin: 0.25           # Ignore top/bottom 20% of image (hides pipette walls).
   clahe_clip_limit: 2.0            # Contrast enhancement strength.
   clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
   canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).
