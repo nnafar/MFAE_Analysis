@@ -13,7 +13,7 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "W:\\staff-groups\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment5-100V-5ms-frame10"
+  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment5-100V-5ms-frame10"
 
 
   # Name for this analysis run. New output folders will be created with this name.
@@ -136,7 +136,7 @@ workflow_settings:
 
   # Speed: Number of CPU cores to use.
   # Recommendation: Set to (Total Cores - 1) or (Total Cores / 2) to prevent system lag.
-  n_workers: 5    
+  n_workers: n-1    
   
   # Memory: How many frames to keep in RAM (lowering this saves memory but slows processing).               
   max_cache_size: 50
