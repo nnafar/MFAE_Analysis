@@ -555,80 +555,85 @@ def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[fl
     any_pulse = any(e['has_pulse'] for e in collected)
 
     # ======================================================================
-    # PLOT 1: Cell Area Dynamics
+    # PLOT 1: Cell Area Dynamics — three horizontal panels, one per region.
     # ======================================================================
+    # Splitting into panels lets each region use its own y-axis scale, so the
+    # small cell body / total changes are not crushed by the large protrusion signal.
+    #
     # Color coding: Protrusion = medium red, Cell Body = light blue, Total = black.
-    # Phase coding: pre-pulse (or full) uses solid fill; post-pulse uses hatched fill.
+    # Phase coding: solid fill = pre-pulse (or full trace); hatched = post-pulse.
+
+    from matplotlib.patches import Patch  # proxy artists for the legend
+
     c_prot = utils.MFA_COLORS['secondary']   # medium red
     c_body = utils.MFA_COLORS['tertiary']    # light blue
-    c_tot  = utils.MFA_COLORS['primary']     # black
+    c_tot  = utils.MFA_COLORS['primary']     # black (use dark_blue so hatching is visible)
 
     n = len(collected)
     labels = [e['label'] for e in collected]
+    x = np.arange(n)
 
-    fig_area, ax_area = plt.subplots(figsize=(max(12, n * 1.2), 6))
+    # Each panel: (region label, pre-key, post-key, bar colour)
+    panels = [
+        ('Protrusion',  'pre_prot', 'post_prot', c_prot),
+        ('Cell Body',   'pre_body', 'post_body', c_body),
+        ('Total',       'pre_tot',  'post_tot',  c_tot),
+    ]
 
+    fig_area, axes = plt.subplots(
+        nrows=1, ncols=3,
+        figsize=(max(18, n * 2.0), 6),
+        sharey=False          # independent y-axes so each panel uses its own scale
+    )
+
+    # Bar geometry — two bars per trap when pulse exists, one otherwise.
     if any_pulse:
-        # 6 bars per trap: [pre_prot, post_prot, pre_body, post_body, pre_tot, post_tot]
-        # grouped as: (pre_prot | post_prot) · gap · (pre_body | post_body) · gap · (pre_tot | post_tot)
-        group_width = 0.65       # total width allocated to each trap's 6 bars
-        bar_w = group_width / 7  # 6 bars + 1 unit of spacing between region pairs
-
-        x = np.arange(n)
-
-        # Offsets within each trap group (centred around 0)
-        off_pre_p  = -3 * bar_w
-        off_post_p = -2 * bar_w
-        # small gap here
-        off_pre_b  = -0.5 * bar_w
-        off_post_b =  0.5 * bar_w
-        # small gap here
-        off_pre_t  =  2 * bar_w
-        off_post_t =  3 * bar_w
-
-        for i, e in enumerate(collected):
-            xi = x[i]
-            kw_solid  = dict(width=bar_w, edgecolor='black', linewidth=0.8)
-            kw_hatch  = dict(width=bar_w, edgecolor='black', linewidth=0.8, hatch='//', alpha=0.75)
-
-            ax_area.bar(xi + off_pre_p,  e['pre_prot'],  color=c_prot, **kw_solid)
-            ax_area.bar(xi + off_post_p, e.get('post_prot', 0), color=c_prot, **kw_hatch)
-            ax_area.bar(xi + off_pre_b,  e['pre_body'],  color=c_body, **kw_solid)
-            ax_area.bar(xi + off_post_b, e.get('post_body', 0), color=c_body, **kw_hatch)
-            ax_area.bar(xi + off_pre_t,  e['pre_tot'],   color=c_tot,  **kw_solid)
-            ax_area.bar(xi + off_post_t, e.get('post_tot', 0),  color=c_tot,  **kw_hatch)
-
-        # Build a clean legend with proxy artists
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor=c_prot, edgecolor='black', label='Protrusion (pre-pulse)'),
-            Patch(facecolor=c_prot, edgecolor='black', hatch='//', alpha=0.75, label='Protrusion (post-pulse)'),
-            Patch(facecolor=c_body, edgecolor='black', label='Cell Body (pre-pulse)'),
-            Patch(facecolor=c_body, edgecolor='black', hatch='//', alpha=0.75, label='Cell Body (post-pulse)'),
-            Patch(facecolor=c_tot,  edgecolor='black', label='Total (pre-pulse)'),
-            Patch(facecolor=c_tot,  edgecolor='black', hatch='//', alpha=0.75, label='Total (post-pulse)'),
-        ]
-        ax_area.legend(handles=legend_elements, fontsize=9, ncol=2)
-        ax_area.set_title(f"Cell Area Dynamics (Pre- vs. Post-Pulse) — {experiment_id}")
-
+        bar_w   = 0.35        # width of each individual bar
+        off_pre  = -bar_w / 2
+        off_post =  bar_w / 2
     else:
-        # No pulse: simple grouped bar (3 bars per trap, same as before).
-        width = 0.25
-        x = np.arange(n)
-        ax_area.bar(x - width, [e['pre_prot'] for e in collected], width,
-                    label='Protrusion', color=c_prot, edgecolor='black')
-        ax_area.bar(x,          [e['pre_body'] for e in collected], width,
-                    label='Cell Body', color=c_body, edgecolor='black')
-        ax_area.bar(x + width,  [e['pre_tot']  for e in collected], width,
-                    label='Total', color=c_tot, edgecolor='black')
-        ax_area.legend()
-        ax_area.set_title(f"Cell Area Dynamics (Start vs. Rupture) — {experiment_id}")
+        bar_w   = 0.55
+        off_pre  = 0.0        # single centred bar
 
-    ax_area.axhline(0, color='black', linewidth=1.5)
-    ax_area.set_ylabel("Normalized Area Change (%)\n(positive = expansion, negative = shrinkage)")
-    ax_area.set_xticks(np.arange(n))
-    ax_area.set_xticklabels(labels, rotation=45, ha='right')
+    for ax, (region_name, pre_key, post_key, colour) in zip(axes, panels):
 
+        pre_vals  = [e[pre_key]               for e in collected]
+        post_vals = [e.get(post_key, 0.0)     for e in collected]
+
+        kw_solid = dict(width=bar_w, edgecolor='black', linewidth=0.8)
+        kw_hatch = dict(width=bar_w, edgecolor='black', linewidth=0.8,
+                        hatch='//', alpha=0.80)
+
+        ax.bar(x + off_pre, pre_vals, color=colour, **kw_solid)
+
+        if any_pulse:
+            ax.bar(x + off_post, post_vals, color=colour, **kw_hatch)
+
+        ax.axhline(0, color='black', linewidth=1.2)
+        ax.set_title(region_name, fontsize=13, fontweight='bold')
+        ax.set_ylabel("Normalized Area Change (%)")
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=45, ha='right')
+
+        # Add a subtle grid on y only to ease reading
+        ax.yaxis.grid(True, linestyle='--', linewidth=0.6, alpha=0.5)
+        ax.set_axisbelow(True)
+
+    # Shared legend on the top-right panel
+    if any_pulse:
+        legend_handles = [
+            Patch(facecolor=utils.MFA_COLORS['light_grey'], edgecolor='black',
+                  label='Pre-pulse  (norm. to frame 0)'),
+            Patch(facecolor=utils.MFA_COLORS['light_grey'], edgecolor='black',
+                  hatch='//', alpha=0.80,
+                  label='Post-pulse  (norm. to pulse frame)'),
+        ]
+        axes[-1].legend(handles=legend_handles, fontsize=9, loc='upper right')
+        suptitle = f"Cell Area Dynamics (Pre- vs. Post-Pulse) — {experiment_id}"
+    else:
+        suptitle = f"Cell Area Dynamics (Start vs. Rupture) — {experiment_id}"
+
+    fig_area.suptitle(suptitle, fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
     utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Area.png")
     plt.close(fig_area)

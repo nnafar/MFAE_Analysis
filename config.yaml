@@ -17,7 +17,7 @@ paths:
 
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "Trial_5"
+  experiment_id: "Trial_6"
 
 
 # ===================================================================

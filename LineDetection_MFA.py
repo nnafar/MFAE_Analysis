@@ -675,7 +675,11 @@ class LineDetectionMFA:
             
             # 1. GENERATE MASKS & PROTRUSION DETECTION
             thr_prot = self.results.get('threshold_prot', threshold)
-            thr_body = self.results.get('threshold_body', threshold)
+            # 'threshold_body' is initialised to None and only gets a real
+            # value during interactive runs.  dict.get(key, default) does NOT
+            # fire the default when the key exists but holds None — so we use
+            # 'or' to fall back to thr_prot in non-interactive batch mode.
+            thr_body = self.results.get('threshold_body') or threshold
             
             # A) Generate masks for cell body, protrusion, and total cell
             _, mask_body_standard = utils.generate_dual_masks(image, pipette_start_x, thr_prot, thr_body, self.params)
