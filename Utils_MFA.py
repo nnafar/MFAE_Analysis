@@ -294,6 +294,39 @@ def _clean_mask_internal(binary: np.ndarray) -> np.ndarray:
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
     return cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)))
 
+def generate_cortex_masks(mask_total: np.ndarray, cortex_thickness_px: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Splits a binary cell mask into a cortex shell and an interior (lumen).
+
+    Steps:
+        1. Erode the full cell mask inward by cortex_thickness_px pixels → lumen.
+        2. Subtract lumen from original → cortex shell (the ring that eroded away).
+
+    Parameters
+    ----------
+    mask_total : np.ndarray
+        Binary mask of the whole cell region (255 = cell, 0 = background).
+    cortex_thickness_px : int
+        Shell thickness in pixels. At 0.629 µm/px, 3 px ≈ 1.9 µm.
+        Configurable in config.yaml under actin_parameters → cortex_thickness_px.
+
+    Returns
+    -------
+    mask_cortex : np.ndarray
+        Binary mask of just the outer shell.
+    mask_lumen : np.ndarray
+        Binary mask of just the interior.
+    """
+    # Elliptical kernel erodes evenly in all directions (avoids over-eroding corners).
+    kernel_size = 2 * cortex_thickness_px + 1   # must be odd, e.g. 3 px → 7×7
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+
+    mask_lumen  = cv2.erode(mask_total, kernel, iterations=1)
+    mask_cortex = cv2.subtract(mask_total, mask_lumen)   # clamps at 0, no negatives
+
+    return mask_cortex, mask_lumen
+
+
 def calculate_spatial_profile(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Calculates mean intensity per column within the mask."""
     col_sums = np.sum(image * (mask > 0), axis=0)

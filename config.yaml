@@ -17,7 +17,7 @@ paths:
 
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "Trial_7"
+  experiment_id: "Trial_8"
 
 
 # ===================================================================
@@ -194,6 +194,10 @@ dye_uptake_parameters:
 actin_parameters:
   enable: True                      # Set to True to enable, False to skip
   channel_pattern: "C3"             # Substring to identify actin images
+  cortex_thickness_px: 3            # shell depth; 3 px ≈ 1.9 µm
+  cortex_cv_threshold: 0.4          # low = cortex, high = patches
+  pre_pulse_window_frames: 5        # frames before pulse for remodelling score
+  post_pulse_window_frames: 10      # frames after pulse for remodelling score
 
 # ===================================================================
 # ADVANCED / DEVELOPER PARAMETERS
