@@ -429,90 +429,275 @@ def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, ou
 
 
 def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[float], output_dir: Path, experiment_id: str):
-    """Plots the Normalized Change in Area metrics and Solidity as bar charts."""
+    """
+    Produces two aggregate plots from all successfully processed traps:
+
+    1. Cell Area Dynamics — grouped bar chart showing normalized area change (%) for the
+       Protrusion, Cell Body, and Total regions.  Positive bars = expansion; negative = shrinkage.
+       When a pulse was applied, each region gets TWO adjacent bars: pre-pulse change and
+       post-pulse change, each normalized to the area at that phase's own start point.
+
+    2. Cell Body Solidity — scatter plot (mean ± std across frames) per trap.
+       When a pulse was applied, two points are plotted side-by-side per trap: one for the
+       pre-pulse window and one for the post-pulse window.
+    """
     utils.set_paper_style()
     output_dir = Path(output_dir)
-    
-    trap_ids = []
-    delta_areas_prot = []
-    delta_areas_body = []
-    delta_areas_tot = []
-    delta_solidities = []
-    
+
+    # -----------------------------------------------------------------------
+    # Helper: compute normalized area change for one array window.
+    #   norm_delta = (mean(arr[end-3:end]) - mean(arr[start:start+3]))
+    #                / mean(arr[start:start+3])  × 100
+    # Returns 0.0 when not enough data or baseline is zero.
+    # -----------------------------------------------------------------------
+    def _norm_delta(arr, start, end):
+        """
+        arr   — 1-D numpy array of area values (may contain NaN).
+        start — first frame index of the window (inclusive).
+        end   — last frame index of the window (exclusive).
+        """
+        if len(arr) == 0 or end <= start:
+            return 0.0
+        baseline = np.nanmean(arr[start:start + 3])
+        final    = np.nanmean(arr[max(start, end - 3):end])
+        if baseline > 0:
+            return (final - baseline) / baseline * 100.0
+        return 0.0
+
+    # -----------------------------------------------------------------------
+    # Collect per-trap metrics from the results list.
+    # -----------------------------------------------------------------------
+
+    # Each entry is a dict describing one trap.  Keys populated below:
+    #   'label'              — e.g. "Trap 5"
+    #   'has_pulse'          — bool
+    #   'pre_*' / 'post_*'  — normalized area change per region (one or two phases)
+    #   'sol_pre_mean/std'   — mean ± std of solidity in the pre-pulse (or full) window
+    #   'sol_post_mean/std'  — mean ± std of solidity in the post-pulse window (NaN if no pulse)
+    collected = []
+
     for res in sorted(all_results, key=lambda x: x['trap_index']):
-        if res.get('status') in ('success', 'detection_only', 'fit_failed') and 'data' in res:
-            data = res['data']
-            if 'solidity' in data and len(data['solidity']) > 0:
-                solidity = np.array(data['solidity'])
-                a_prot = np.array(data.get('area_prot', []))
-                a_body = np.array(data.get('area_body', []))
-                a_tot = np.array(data.get('area', []))
-                
-                # Fetch valid indices accounting for the NaN padding
-                valid_indices = np.where(~np.isnan(solidity))[0]
-                if len(valid_indices) < 3:
-                    continue
-                
-                start_idx = valid_indices[0]
-                
-                # --- True end index calculation ---
-                r_idx = data.get('rupture_idx')
-                if r_idx is not None and r_idx < len(solidity):
-                    end_idx = r_idx
-                else:
-                    # If the cell exits without rupturing, use the last physical frame
-                    end_idx = valid_indices[-1] + 1 
-                
-                init_sol = np.nanmean(solidity[start_idx:start_idx+3])
-                final_sol = np.nanmean(solidity[max(start_idx, end_idx-3):end_idx])
-                
-                def calc_norm_delta(arr):
-                    if len(arr) == 0: return 0.0
-                    i_val = np.nanmean(arr[start_idx:start_idx+3])
-                    f_val = np.nanmean(arr[max(start_idx, end_idx-3):end_idx])
-                    return ((f_val - i_val) / i_val * 100) if i_val > 0 else 0.0
+        if res.get('status') not in ('success', 'detection_only', 'fit_failed'):
+            continue
+        data = res.get('data', {})
 
-                trap_ids.append(f"Trap {data['trap_index'] + 1}")
-                delta_areas_prot.append(calc_norm_delta(a_prot))
-                delta_areas_body.append(calc_norm_delta(a_body))
-                delta_areas_tot.append(calc_norm_delta(a_tot))
-                delta_solidities.append(final_sol - init_sol)
+        sol   = np.array(data.get('solidity', []), dtype=float)
+        a_p   = np.array(data.get('area_prot', []), dtype=float)
+        a_b   = np.array(data.get('area_body', []), dtype=float)
+        a_t   = np.array(data.get('area', []),      dtype=float)
 
-    if not trap_ids:
+        # Need at least some valid solidity frames to proceed.
+        valid = np.where(~np.isnan(sol))[0]
+        if len(valid) < 3:
+            continue
+
+        start_idx = int(valid[0])
+
+        # End index: rupture frame (exclusive) or last valid frame.
+        r_idx = data.get('rupture_idx')
+        if r_idx is not None and 0 < r_idx < len(sol):
+            end_idx = int(r_idx)
+        else:
+            end_idx = int(valid[-1]) + 1
+
+        # Pulse index: where the electroporation pulse was applied (0-based).
+        p_idx = data.get('pulse_idx')    # None when no pulse
+        has_pulse = (
+            p_idx is not None
+            and start_idx < p_idx < end_idx   # must fall inside the valid aspiration window
+        )
+
+        entry = {
+            'label':     f"Trap {data['trap_index'] + 1}",
+            'has_pulse': has_pulse,
+        }
+
+        if has_pulse:
+            # --- Pre-pulse window: start → pulse ---
+            entry['pre_prot']  = _norm_delta(a_p, start_idx, p_idx)
+            entry['pre_body']  = _norm_delta(a_b, start_idx, p_idx)
+            entry['pre_tot']   = _norm_delta(a_t, start_idx, p_idx)
+
+            # --- Post-pulse window: pulse → end, normalized to area AT the pulse ---
+            # We shift the baseline to the pulse frame so the post-pulse change is
+            # measured relative to the cell's state immediately after the pulse.
+            entry['post_prot'] = _norm_delta(a_p, p_idx, end_idx)
+            entry['post_body'] = _norm_delta(a_b, p_idx, end_idx)
+            entry['post_tot']  = _norm_delta(a_t, p_idx, end_idx)
+
+            # Solidity statistics per phase
+            sol_pre  = sol[start_idx:p_idx]
+            sol_post = sol[p_idx:end_idx]
+            entry['sol_pre_mean']  = float(np.nanmean(sol_pre))  if len(sol_pre)  > 0 else np.nan
+            entry['sol_pre_std']   = float(np.nanstd(sol_pre))   if len(sol_pre)  > 1 else 0.0
+            entry['sol_post_mean'] = float(np.nanmean(sol_post)) if len(sol_post) > 0 else np.nan
+            entry['sol_post_std']  = float(np.nanstd(sol_post))  if len(sol_post) > 1 else 0.0
+        else:
+            # --- Full window: start → end ---
+            entry['pre_prot'] = _norm_delta(a_p, start_idx, end_idx)
+            entry['pre_body'] = _norm_delta(a_b, start_idx, end_idx)
+            entry['pre_tot']  = _norm_delta(a_t, start_idx, end_idx)
+
+            sol_full = sol[start_idx:end_idx]
+            entry['sol_pre_mean'] = float(np.nanmean(sol_full)) if len(sol_full) > 0 else np.nan
+            entry['sol_pre_std']  = float(np.nanstd(sol_full))  if len(sol_full) > 1 else 0.0
+            # No post-pulse data
+            entry['sol_post_mean'] = np.nan
+            entry['sol_post_std']  = np.nan
+
+        collected.append(entry)
+
+    if not collected:
+        logger.warning("plot_aggregate_metrics: no valid traps found, skipping plots.")
         return
 
-    # --- 1. Plot Normalized Delta Area (Grouped Bar) ---
-    fig_area, ax_area = plt.subplots(figsize=(14, 6))
-    x = np.arange(len(trap_ids))
-    width = 0.25
-    
-    ax_area.bar(x - width, delta_areas_prot, width, label='Protrusion', color=utils.MFA_COLORS['secondary'], edgecolor='black')
-    ax_area.bar(x, delta_areas_body, width, label='Cell Body', color=utils.MFA_COLORS['tertiary'], edgecolor='black')
-    ax_area.bar(x + width, delta_areas_tot, width, label='Total', color=utils.MFA_COLORS['primary'], edgecolor='black')
-    
+    # Detect whether ANY trap has a pulse (controls how bars/points are laid out).
+    any_pulse = any(e['has_pulse'] for e in collected)
+
+    # ======================================================================
+    # PLOT 1: Cell Area Dynamics
+    # ======================================================================
+    # Color coding: Protrusion = medium red, Cell Body = light blue, Total = black.
+    # Phase coding: pre-pulse (or full) uses solid fill; post-pulse uses hatched fill.
+    c_prot = utils.MFA_COLORS['secondary']   # medium red
+    c_body = utils.MFA_COLORS['tertiary']    # light blue
+    c_tot  = utils.MFA_COLORS['primary']     # black
+
+    n = len(collected)
+    labels = [e['label'] for e in collected]
+
+    fig_area, ax_area = plt.subplots(figsize=(max(12, n * 1.2), 6))
+
+    if any_pulse:
+        # 6 bars per trap: [pre_prot, post_prot, pre_body, post_body, pre_tot, post_tot]
+        # grouped as: (pre_prot | post_prot) · gap · (pre_body | post_body) · gap · (pre_tot | post_tot)
+        group_width = 0.65       # total width allocated to each trap's 6 bars
+        bar_w = group_width / 7  # 6 bars + 1 unit of spacing between region pairs
+
+        x = np.arange(n)
+
+        # Offsets within each trap group (centred around 0)
+        off_pre_p  = -3 * bar_w
+        off_post_p = -2 * bar_w
+        # small gap here
+        off_pre_b  = -0.5 * bar_w
+        off_post_b =  0.5 * bar_w
+        # small gap here
+        off_pre_t  =  2 * bar_w
+        off_post_t =  3 * bar_w
+
+        for i, e in enumerate(collected):
+            xi = x[i]
+            kw_solid  = dict(width=bar_w, edgecolor='black', linewidth=0.8)
+            kw_hatch  = dict(width=bar_w, edgecolor='black', linewidth=0.8, hatch='//', alpha=0.75)
+
+            ax_area.bar(xi + off_pre_p,  e['pre_prot'],  color=c_prot, **kw_solid)
+            ax_area.bar(xi + off_post_p, e.get('post_prot', 0), color=c_prot, **kw_hatch)
+            ax_area.bar(xi + off_pre_b,  e['pre_body'],  color=c_body, **kw_solid)
+            ax_area.bar(xi + off_post_b, e.get('post_body', 0), color=c_body, **kw_hatch)
+            ax_area.bar(xi + off_pre_t,  e['pre_tot'],   color=c_tot,  **kw_solid)
+            ax_area.bar(xi + off_post_t, e.get('post_tot', 0),  color=c_tot,  **kw_hatch)
+
+        # Build a clean legend with proxy artists
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor=c_prot, edgecolor='black', label='Protrusion (pre-pulse)'),
+            Patch(facecolor=c_prot, edgecolor='black', hatch='//', alpha=0.75, label='Protrusion (post-pulse)'),
+            Patch(facecolor=c_body, edgecolor='black', label='Cell Body (pre-pulse)'),
+            Patch(facecolor=c_body, edgecolor='black', hatch='//', alpha=0.75, label='Cell Body (post-pulse)'),
+            Patch(facecolor=c_tot,  edgecolor='black', label='Total (pre-pulse)'),
+            Patch(facecolor=c_tot,  edgecolor='black', hatch='//', alpha=0.75, label='Total (post-pulse)'),
+        ]
+        ax_area.legend(handles=legend_elements, fontsize=9, ncol=2)
+        ax_area.set_title(f"Cell Area Dynamics (Pre- vs. Post-Pulse) — {experiment_id}")
+
+    else:
+        # No pulse: simple grouped bar (3 bars per trap, same as before).
+        width = 0.25
+        x = np.arange(n)
+        ax_area.bar(x - width, [e['pre_prot'] for e in collected], width,
+                    label='Protrusion', color=c_prot, edgecolor='black')
+        ax_area.bar(x,          [e['pre_body'] for e in collected], width,
+                    label='Cell Body', color=c_body, edgecolor='black')
+        ax_area.bar(x + width,  [e['pre_tot']  for e in collected], width,
+                    label='Total', color=c_tot, edgecolor='black')
+        ax_area.legend()
+        ax_area.set_title(f"Cell Area Dynamics (Start vs. Rupture) — {experiment_id}")
+
     ax_area.axhline(0, color='black', linewidth=1.5)
-    ax_area.set_ylabel("Normalized Area Change (%)")
-    ax_area.set_title(f"Cell Area Dynamics (Start vs. Rupture) - {experiment_id}")
-    ax_area.set_xticks(x)
-    ax_area.set_xticklabels(trap_ids, rotation=45, ha='right')
-    ax_area.legend()
-    
+    ax_area.set_ylabel("Normalized Area Change (%)\n(positive = expansion, negative = shrinkage)")
+    ax_area.set_xticks(np.arange(n))
+    ax_area.set_xticklabels(labels, rotation=45, ha='right')
+
     plt.tight_layout()
     utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Area.png")
     plt.close(fig_area)
-    
-    # --- 2. Plot Delta Solidity ---
-    fig_sol, ax_sol = plt.subplots(figsize=(12, 6))
-    bars_sol = ax_sol.bar(trap_ids, delta_solidities, color=utils.MFA_COLORS['tertiary'], alpha=0.8, edgecolor='black')
-    ax_sol.axhline(0, color='black', linewidth=1.5)
-    ax_sol.set_ylabel("Change in Cell Body Solidity ($\Delta$)")
-    ax_sol.set_title(f"Cell Solidity Dynamics (Start vs. Rupture) - {experiment_id}")
-    plt.xticks(rotation=45, ha='right')
-    
-    for bar in bars_sol:
-        yval = bar.get_height()
-        offset = 0.01 if yval >= 0 else -0.02
-        ax_sol.text(bar.get_x() + bar.get_width()/2, yval + offset, f"{yval:.3f}", ha='center', va='bottom' if yval >=0 else 'top', fontsize=9)
+
+    # ======================================================================
+    # PLOT 2: Cell Body Solidity — scatter (mean ± std per trap)
+    # ======================================================================
+    # Each trap gets one point (no pulse) or two adjacent points (pre/post pulse).
+    # X positions are spaced so the two phases are clearly distinct but still
+    # visually grouped per trap.
+
+    fig_sol, ax_sol = plt.subplots(figsize=(max(10, n * 1.1), 5))
+
+    COLOR_PRE  = utils.MFA_COLORS['dark_blue']   # pre-pulse (or full trace)
+    COLOR_POST = utils.MFA_COLORS['medium_red']  # post-pulse
+    JITTER_HALF = 0.15   # half-separation between pre/post points within a trap group
+
+    x_ticks = []       # one tick per trap (centred between pre/post if pulse)
+    x_labels = []
+
+    for i, e in enumerate(collected):
+        base_x = float(i)
+
+        if any_pulse:
+            x_pre  = base_x - JITTER_HALF
+            x_post = base_x + JITTER_HALF
+        else:
+            x_pre = base_x
+
+        # Pre-pulse (or full) point
+        m_pre = e['sol_pre_mean']
+        s_pre = e['sol_pre_std']
+        if not np.isnan(m_pre):
+            ax_sol.errorbar(x_pre, m_pre, yerr=s_pre,
+                            fmt='o', color=COLOR_PRE,
+                            markersize=7, capsize=4, linewidth=1.5,
+                            zorder=3)
+
+        # Post-pulse point (only when pulse exists for this trap)
+        if any_pulse and e['has_pulse']:
+            m_post = e['sol_post_mean']
+            s_post = e['sol_post_std']
+            if not np.isnan(m_post):
+                ax_sol.errorbar(x_post, m_post, yerr=s_post,
+                                fmt='s', color=COLOR_POST,
+                                markersize=7, capsize=4, linewidth=1.5,
+                                zorder=3)
+
+        x_ticks.append(base_x)
+        x_labels.append(e['label'])
+
+    # Legend
+    if any_pulse:
+        from matplotlib.lines import Line2D
+        legend_handles = [
+            Line2D([0], [0], marker='o', color='w', markerfacecolor=COLOR_PRE,
+                   markersize=9, label='Pre-pulse'),
+            Line2D([0], [0], marker='s', color='w', markerfacecolor=COLOR_POST,
+                   markersize=9, label='Post-pulse'),
+        ]
+        ax_sol.legend(handles=legend_handles)
+
+    ax_sol.set_xticks(x_ticks)
+    ax_sol.set_xticklabels(x_labels, rotation=45, ha='right')
+    ax_sol.set_ylabel("Cell Body Solidity (mean ± std)")
+    ax_sol.set_ylim(bottom=0)
+
+    title_suffix = "Pre- vs. Post-Pulse" if any_pulse else "Full Aspiration Trace"
+    ax_sol.set_title(f"Cell Body Solidity — {title_suffix} — {experiment_id}")
 
     plt.tight_layout()
     utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Solidity.png")

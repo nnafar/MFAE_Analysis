@@ -131,6 +131,16 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         if not (det_res and det_res['protrusion_lengths_um'] and any(p > 0 for p in det_res['protrusion_lengths_um'])):
             return {'trap_index': trap_index, 'status': 'no_detection'}
 
+        # Compute pulse_idx (0-based array position of the electroporation pulse frame),
+        # or None if no pulse was applied.  We store this in trap_data so aggregate
+        # plots can split metrics into pre- and post-pulse windows.
+        pulse_idx_for_data = None
+        if pulse_time is not None:
+            p_frame = dye_params.get('pulse_frame', 10)
+            _candidate = p_frame - 1          # Convert 1-based frame number → 0-based index
+            if 0 < _candidate < len(time_data):
+                pulse_idx_for_data = _candidate
+
         trap_data = {
             'trap_index': trap_index,
             'time': time_data,
@@ -138,6 +148,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             'pip': pip_x,
             'thr': thr_prot,
             'rupture_idx': rupture_idx,
+            'pulse_idx': pulse_idx_for_data,   # None when no pulse was applied
             'area': det_full.results.get('total_area_um2', []),    
             'area_prot': det_full.results.get('protrusion_area_um2', []),
             'area_body': det_full.results.get('body_area_um2', []),       
