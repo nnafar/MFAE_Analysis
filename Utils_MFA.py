@@ -250,6 +250,7 @@ def prepare_display_image(image: np.ndarray, window_width: int, window_height: i
 
 def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int, 
                         threshold_body: int, params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+
     """
     Centrally managed mask generation for Protrusion and Cell Body.
     Prevents circular imports between quantification modules.
@@ -258,15 +259,16 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     gray = img_8u if len(img_8u.shape) == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
     
     img_params = params.get('image_processing', {})
+    margin_fraction = img_params.get('wall_clip_margin', 0.25)
     clahe = cv2.createCLAHE(clipLimit=img_params.get('clahe_clip_limit', 2.0), tileGridSize=(8,8))
     enhanced = clahe.apply(gray)
     blurred = cv2.GaussianBlur(enhanced, tuple(img_params.get('gaussian_kernel_size', (3,3))), 0)
     
     h, w = gray.shape
-    margin = int(h * img_params.get('wall_clip_margin', 0.30))
+    margin = int(h * margin_fraction)
     pip_x = max(0, min(w, int(pipette_x)))
     
-    # 1. Protrusion Mask (Left of pipette)
+    # 1. Protrusion Mask (Left of pipette, walls clipped)
     _, bin_prot = cv2.threshold(blurred, threshold_prot, 255, cv2.THRESH_BINARY)
     mask_prot = _clean_mask_internal(bin_prot)
     if margin > 0:

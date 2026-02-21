@@ -99,7 +99,18 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         # 4. Run Length Detection
         pip_x = config_dict['tuned_pipette_x']
         thr_prot = config_dict['tuned_threshold_prot']
-        
+
+        # --- Inject pulse frame index so the rupture detector can use it ---
+        # The pulse_frame setting in config.yaml is 1-based (frame 1 = first frame),
+        # but everything inside the pipeline uses 0-based indexing. We subtract 1 here.
+        # We only do this when dye_uptake is enabled, because that is when a pulse exists.
+        # The key 'pulse_frame_idx' is read inside LineDetectionMFA._generate_comprehensive_results.
+        dye_params_pre = params.get('dye_uptake_parameters', {})
+        if dye_params_pre.get('enable', False):
+            pulse_frame_0based = dye_params_pre.get('pulse_frame', 10) - 1
+            # setdefault creates the 'rupture_detection' dict if it doesn't already exist
+            params.setdefault('rupture_detection', {})['pulse_frame_idx'] = pulse_frame_0based
+
         det_full = LineDetectionMFA(rois, [pip_x, 0], params)
         det_res = det_full.run_detection_with_parameters(pip_x, thr_prot)
 
@@ -132,6 +143,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             'thr': thr_prot,
             'rupture_idx': rupture_idx,
             'area': det_full.results.get('total_area_um2', []),    
+            'area_prot': det_full.results.get('protrusion_area_um2', []),
+            'area_body': det_full.results.get('body_area_um2', []),       
             'solidity': det_full.results.get('body_solidity', [])
         }
 
@@ -289,8 +302,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 actin_analyzer = ActinAnalyzer(rois, actin_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], params)
                 actin_results = actin_analyzer.run(time_data)
                 actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
-                Plotting_MFA.plot_actin_dashboard(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'])
-                Plotting_MFA.plot_actin_kymograph_and_profiles(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'])
+                Plotting_MFA.plot_actin_dashboard(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
+                Plotting_MFA.plot_actin_kymograph_and_profiles(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
             except Exception:
                 worker_logger.warning(f"Trap {trap_index+1}: Actin analysis failed.", exc_info=True)
                 

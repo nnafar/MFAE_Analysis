@@ -17,7 +17,7 @@ paths:
 
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "260128_Experiment5-100V-5ms-frame10-actin"
+  experiment_id: "Trial_3"
 
 
 # ===================================================================
@@ -62,8 +62,6 @@ model_parameters:
 # --- 4. RUPTURE DETECTION (INTENSITY ANALYSIS) ---
 # ===================================================================
 # Settings for identifying when the cell membrane breaks (bursts).
-# NOTE: This pipeline uses "Haze Detection" (intensity changes inside the pipette)
-# rather than length drops, making it safe for electroporation (retraction) experiments.
 
 rupture_detection:
   # Main Switch: Set to True to enable rupture check. Set False for raw data only.
@@ -72,13 +70,15 @@ rupture_detection:
   # --- SPATIAL MONITORING ("The Eyes") ---
   # Where to look inside the pipette (ahead of the cell tip)
   rupture_offset_from_tip_px: 10     # Gap between cell tip and box [pixels]
-  rupture_window_width_px: 5        # Width of the monitoring box [pixels]
+  rupture_window_width_px: 5         # Width of the monitoring box [pixels]
   
-  # --- TIMING ---
-  entry_velocity_threshold_px: 2.0  # Speed to mark "Time 0" (Cell Entry)
-  cusum_settling_buffer: 0        # [Was 3] Start immediately after entry
-  cusum_baseline_len: 5           # Keep at 5 for good statistics
-  cusum_baseline_lag: 2           # [Was 3] 2 frames (3.4s) is enough to skip the ramp
+  # --- TIMING & CELL PRESENCE ---
+  entry_protrusion_threshold_um: 0.5  # Protrusion length marking cell entry (replaces entry_velocity_threshold_px)
+  exit_protrusion_threshold_um: 0.5   # Absolute length indicating the cell left the trap
+  exit_drop_ratio: 0.15               # Fractional drop (85% of its length) from previous frame indicating cell slip
+  cusum_settling_buffer: 0            # [Was 3] Start immediately after entry
+  min_cusum_baseline_frames: 5        # Keep at 5 for good statistics
+  cusum_baseline_lag: 2               # [Was 3] 2 frames is enough to skip the ramp
 
   # --- ALGORITHM TUNING (MULTI-MODE) ---
   
@@ -92,13 +92,10 @@ rupture_detection:
   enable_step_check: True
   step_sigma_threshold: 4.0         # Sensitivity: Needs a distinct jump to trigger.
 
-  # --- DATA CLEANING & SAFETY NETS ---
-  absolute_intensity_threshold: 8   # Catch cells already ruptured at entry
-  max_baseline_sigma: 1.0           # Prevent entry noise from blinding the detector
-  
-  exclude_early_fraction: 0.03
+  # 3. DIRECT DIFFERENCE (Sudden Haze Jumps)
+  sudden_jump_threshold: 1.0        # Intensity difference to trigger acute rupture (lowered from 1.5)
 
-  # 3. DRIFT DETECTION (CUSUM - Slow Leaks)
+  # 4. DRIFT DETECTION (CUSUM - Slow Leaks)
   min_intensity_noise_floor: 1.0    # Minimum assumed noise (prevents div/0 errors on clean images)
   min_drift_tolerance: 3.0          # Minimum change to register as drift (0.1 = very sensitive)
   min_cusum_threshold: 5.0          # Accumulation threshold to trigger alarm
@@ -106,13 +103,25 @@ rupture_detection:
   cusum_drift_tolerance_factor: 0.3 # (k) Multiplier for noise sigma; lowered from 0.5
   cusum_threshold_factor: 8.0       # (h) Multiplier for noise sigma to trigger
 
-  # --- DATA CLEANING ---
-  exclude_early_fraction: 0.03
+  # --- PULSE CONTEXT DETECTION (Electroporation Ruptures) ---
+  #    Compares intensity in a window before vs. after the known pulse frame.
+  #    Only activates when dye_uptake_parameters.enable is True.
+  pulse_context_pre_window: 5         # Frames before pulse to average as pre-pulse baseline
+  pulse_context_post_window: 5        # Frames after pulse to average for comparison
+  pulse_context_fold_threshold: 1.3   # Post/pre ratio required to flag rupture (1.3 = 30% increase)
+  pulse_context_abs_threshold: 0.5    # Minimum absolute intensity increase also required
 
-  # Slip/Retraction Handling (Physics logic only, NOT used for rupture)
-  drop_threshold: 0.4               
-  absolute_threshold: 1.0           
-  window_size: 15                   
+  # --- DOA ARBITRATION GUARD ---
+  # When a cell has high initial intensity, the DOA check asks: "is there any acute
+  # event later in the trace that proves this isn't a DOA cell?"
+  # This setting controls how many frames after entry an event must occur before it
+  # counts as evidence against DOA. Events in the first N frames are entry noise.
+  doa_min_acute_delay_frames: 3
+
+  # --- DATA CLEANING & SAFETY NETS ---
+  exclude_early_fraction: 0.03  
+  absolute_intensity_threshold: 8   # Catch cells already ruptured at entry
+  max_baseline_sigma: 1.0           # Prevent entry noise from blinding the detector
 
   # Outlier Removal
   enable_outlier_rejection: False
@@ -185,7 +194,9 @@ actin_parameters:
 # Modify these only if the image processing or fitting is failing.
 
 image_processing:
-  wall_clip_margin: 0.25           # Ignore top/bottom 20% of image (hides pipette walls).
+  min_area_threshold: 100          # Minimum cell area to track [pixels²]
+  small_object_threshold: 50       # Remove objects smaller than this [pixels²]
+  wall_clip_margin: 0.25           # Ignore top/bottom 75% of the ROI.
   clahe_clip_limit: 2.0            # Contrast enhancement strength.
   clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
   canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).

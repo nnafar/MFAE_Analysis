@@ -187,8 +187,12 @@ class RuptureDetectionConfig(BaseModel):
     intensity_threshold_std: float = 3.0
     rupture_offset_from_tip_px: int = 10
     rupture_window_width_px: int = 15
-    entry_velocity_threshold_px: float = Field(default=2.0, ge=0.0, description="Min velocity to distinguish cell entry from noise")
     
+    
+    entry_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length (um) to mark cell entry")
+    exit_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length drop (um) to mark cell exit")
+    exit_drop_ratio: float = Field(default=0.2, ge=0.0, le=1.0, description="Fractional drop to mark cell exit")
+
     absolute_intensity_threshold: float = Field(default=6.5, gt=0.0, description="Absolute intensity signifying instant rupture")
     max_baseline_sigma: float = Field(default=1.0, gt=0.0, description="Cap on baseline variance to prevent blinding")
     min_cusum_baseline_frames: int = Field(default=5, ge=3, description="Min frames required to calculate CUSUM baseline")
@@ -197,34 +201,26 @@ class RuptureDetectionConfig(BaseModel):
     min_cusum_threshold: float = Field(default=2.0, gt=0.0, description="Minimum threshold H (intensity units)")
 
     exclude_early_fraction: float = Field(ge=0.0, lt=0.2)
-    drop_threshold: float = Field(gt=0.0, le=1.0)
-    absolute_threshold: float = Field(gt=0.0)
-    window_size: int = Field(gt=5, lt=100)
     
     enable_outlier_rejection: bool = True
     outlier_rejection_window: int = Field(gt=3, lt=51)
     outlier_rejection_std_dev: float = Field(gt=0.0, lt=10.0)
     enable_smoothing: bool = Field(default=True, description="Apply rolling median smoothing to raw length data")
     
-    # --- UPDATED TIMING FIELDS ---
-    # 1. Allow 0 buffer to start immediately
     cusum_settling_buffer: int = Field(default=3, ge=0, description="Frames to skip after entry before monitoring rupture")
-    
-    # 2. Add the NEW lag parameter (Missing in previous schema)
     cusum_baseline_lag: int = Field(default=0, ge=0, description="Frames to gap between baseline and test window")
-    
     cusum_baseline_len: int = Field(default=5, ge=3, description="Number of frames to establish baseline noise")
     cusum_sensitivity_sigma: float = Field(default=0.7413, gt=0.0, description="Multiplier for IQR to determine noise sigma")
     
-    # --- TUNING FIELDS ---
     cusum_drift_tolerance_factor: float = Field(default=0.5, gt=0.0, le=2.0, description="Drift tolerance as multiple of sigma (k parameter)")
     cusum_threshold_factor: float = Field(default=10.0, gt=1.0, le=50.0, description="Detection threshold as multiple of sigma (h parameter)")
     
-    # New Tuning Parameters for Spike/Step check
     enable_spike_check: bool = Field(default=True)
     spike_sigma_threshold: float = Field(default=6.0, gt=0.0)
     enable_step_check: bool = Field(default=True)
     step_sigma_threshold: float = Field(default=6.0, gt=0.0)
+    
+    sudden_jump_threshold: float = Field(default=1.0, gt=0.0, description="Intensity difference to trigger acute rupture")
 
     @validator('outlier_rejection_window')
     def window_must_be_odd(cls, v: int) -> int:

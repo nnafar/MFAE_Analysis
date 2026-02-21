@@ -56,7 +56,6 @@ class LineDetectionMFA:
         self.window_height = int(base_h * self.window_scale)
         
         # --- Rupture Parameters (Read from r_params) ---
-        self.entry_velocity_threshold = r_params.get('entry_velocity_threshold_px', 2.0)
         self.rupture_offset = r_params.get('rupture_offset_from_tip_px', 5)
         self.rupture_width = r_params.get('rupture_window_width_px', 5)       
         
@@ -77,10 +76,10 @@ class LineDetectionMFA:
         self.min_drift = r_params.get('min_drift_tolerance', 0.2)
         self.min_cusum_thresh = r_params.get('min_cusum_threshold', 2.0)
         
-        # Processing Parameters (Updated to use image_processing)
+        # Processing Parameters
         self.min_area_threshold = img_params.get('min_area_threshold', 100)         
-        self.small_object_threshold = img_params.get('small_object_threshold', 50)  
-        self.wall_clip_margin = img_params.get('wall_clip_margin', 0.40)         
+        self.small_object_threshold = img_params.get('small_object_threshold', 50) 
+        self.wall_clip_margin = img_params.get('wall_clip_margin', 0.25)         
 
         # --- Results Container ---
         self.results: Dict[str, Any] = {
@@ -88,9 +87,12 @@ class LineDetectionMFA:
             'signal': 'stop',               # Flow control signal (confirm/restart/stop)
             'protrusion_lengths_px': [],    # Raw length data in pixels
             'protrusion_lengths_um': [],    # Converted length in microns
+            'protrusion_area_um2': [],      # Protrusion Area
+            'body_area_um2': [],            # Body Area
             'total_area_um2': [],           # Total cell area
             'body_solidity': [],            # Cell body solidity
-            'entry_frame_index': None,
+            'entry_frame_index': None,      # Cell enters trap
+            'exit_frame_index': None,       # Cell Exit Handling
             # Rupture Detection
             'downstream_intensities': [],   # Brightness values inside the pipette (for rupture)'
             'rupture_detected': False,      # Boolean flag for rupture event
@@ -143,33 +145,26 @@ class LineDetectionMFA:
             return self.results
 
         # 2. Determine Pipette Start X
-        # Use the value passed in __init__ (from setup phase)
-        # Ensure it's within bounds
         pipette_x = self.pipette_coords[0]
         w = ref_image.shape[1]
         pipette_x = max(1, min(w - 1, pipette_x))
         
         # 3. Determine Threshold (Otsu)
-        # Extract ROI for stats (similar to interactive mode logic)
         img_8bit = utils.normalize_to_8bit(ref_image)
         h, w = img_8bit.shape[:2]
         margin = int(h * self.wall_clip_margin)
         
-        # Use protrusion area for statistics
-        if margin > 0:
-            roi_stats = img_8bit[margin:h-margin, :pipette_x]
-        else:
-            roi_stats = img_8bit[:, :pipette_x]
+        # Protrusion threshold
+        roi_stats = img_8bit[margin:h-margin, :pipette_x] if margin > 0 else img_8bit[:, :pipette_x]
+        threshold_prot = int(cv2.threshold(roi_stats, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]) if roi_stats.size > 0 else 50
             
-        if roi_stats.size > 0:
-            otsu_val, _ = cv2.threshold(roi_stats, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            threshold_prot = int(otsu_val)
-        else:
-            threshold_prot = 50 # Fallback
+        # Body threshold (Ensure this always runs for morphology)
+        roi_body = img_8bit[:, pipette_x:]
+        threshold_body = int(cv2.threshold(roi_body, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]) if roi_body.size > 0 else 50
             
-        logger.debug(f"Auto-calculated detection threshold: {threshold_prot}")
+        logger.debug(f"Auto-calculated thresholds: Prot={threshold_prot}, Body={threshold_body}")
         
-        # 4. Run Detection
+        self.results['threshold_body'] = threshold_body
         return self.run_detection_with_parameters(pipette_x, threshold_prot)
 
     def run_detection(self) -> Dict[str, Any]:
@@ -212,20 +207,14 @@ class LineDetectionMFA:
             return self.results
         self.results['threshold_prot'] = thr_prot
         
-        # --- Step 3: Cell Body Threshold (Dye Mode Only) ---
-        # If dye is enabled, we need a separate threshold for the body (Full Height)
-        dye_enabled = self.params.get('dye_uptake_parameters', {}).get('enable', False)
-        
-        if dye_enabled:
-            logger.info("Step 3: Cell Body Threshold (Full Height for Dye)")
-            signal, thr_body = self._interactive_threshold_selection(test_image, pipette_start_x, clip_walls=False)
-            if signal in ('restart', 'stop'):
-                self.results['signal'] = signal
-                return self.results
-            self.results['threshold_body'] = thr_body
-        else:
-            # Fallback: Use the same threshold if dye not enabled
-            self.results['threshold_body'] = thr_prot            
+        # --- Step 3: Cell Body Threshold  ---
+        # Separate threshold for the body (Full ROI Height)
+        logger.info("Step 3: Cell Body Threshold (Full ROI Height)")
+        signal, thr_body = self._interactive_threshold_selection(test_image, pipette_start_x, clip_walls=False)
+        if signal in ('restart', 'stop'):
+            self.results['signal'] = signal
+            return self.results
+            self.results['threshold_body'] = thr_body        
             
         # --- Step 4: Automated Processing (Protrusion Detection) ---
         # We only process length using the protrusion threshold here
@@ -664,7 +653,6 @@ class LineDetectionMFA:
     def _process_all_frames(self, pipette_start_x: int, threshold: int) -> None:
         """
         Loops through frames to calculate Protrusion Length (Membrane Channel).
-        Does NOT handle dye uptake.
         """
         # Updated to extract scale factor using proper nesting
         scale_factor = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
@@ -674,6 +662,8 @@ class LineDetectionMFA:
         for i, image in enumerate(self.roi_images):
             if image is None:
                 protrusion_px_list.append(0); downstream_int_list.append(0)
+                self.results['protrusion_area_um2'].append(0.0)
+                self.results['body_area_um2'].append(0.0)
                 self.results['total_area_um2'].append(0.0)    
                 self.results['body_solidity'].append(0.0)     
                 self.results['debug_images'].append(None)
@@ -687,30 +677,21 @@ class LineDetectionMFA:
             thr_prot = self.results.get('threshold_prot', threshold)
             thr_body = self.results.get('threshold_body', threshold)
             
-            # A) Generate standard masks (This correctly captures the body without deleting it)
-            _, mask_body_standard = utils.generate_dual_masks(
-                image, pipette_start_x, thr_prot, thr_body, self.params
-            )
-            
-            # B) Generate the highly-tuned protrusion mask using your internal segmenter
-            mask_prot= self._segment_mask(
-                image, 
-                threshold, 
-                clip_walls=True, 
-                limit_x_max=pipette_start_x
-            )
-            
-            # C) Combine for true total cell calculations
+            # A) Generate masks for cell body, protrusion, and total cell
+            _, mask_body_standard = utils.generate_dual_masks(image, pipette_start_x, thr_prot, thr_body, self.params)
+            mask_prot= self._segment_mask(image, threshold, clip_walls=True, limit_x_max=pipette_start_x)
             mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
             
             # Measure length and area
-            protrusion_len_px, cell_area = self._measure_protrusion_from_mask(mask_prot, pipette_start_x, gray_image)
+            protrusion_len_px, _ = self._measure_protrusion_from_mask(mask_prot, pipette_start_x, gray_image)
             protrusion_px_list.append(protrusion_len_px)
             
             # Measure Morphology (Total Area & Body Solidity) using the un-erased body mask
-            total_area, body_solidity = self._calculate_morphology(mask_total, mask_body_standard)
-            self.results['total_area_um2'].append(total_area)
-            self.results['body_solidity'].append(body_solidity)
+            a_prot, a_body, a_tot, solidity = self._calculate_morphology(mask_prot, mask_body_standard, mask_total)
+            self.results['protrusion_area_um2'].append(a_prot)
+            self.results['body_area_um2'].append(a_body)
+            self.results['total_area_um2'].append(a_tot)
+            self.results['body_solidity'].append(solidity)
             
             # Measure Rupture Intensity
             tip_x = pipette_start_x - protrusion_len_px
@@ -721,12 +702,46 @@ class LineDetectionMFA:
             self.results['debug_images'].append(debug_image)
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
 
-        # Post-Processing: Smoothing (Updated to use rupture_detection parameters)
+        # Post-Processing: Smoothing
         if self.params.get('rupture_detection', {}).get('enable_smoothing', True):
             self.results['protrusion_lengths_px'] = self._simple_smoothing_filter(protrusion_px_list)
         else:
             self.results['protrusion_lengths_px'] = protrusion_px_list
-            
+        
+        # --- ENTRY AND EXIT SYNCHRONIZATION ---
+        protrusions = self.results['protrusion_lengths_um']
+        entry_thresh = self.params.get('rupture_detection', {}).get('entry_protrusion_threshold_um', 0.5)
+        exit_thresh = self.params.get('rupture_detection', {}).get('exit_protrusion_threshold_um', 0.5)
+        exit_ratio = self.params.get('rupture_detection', {}).get('exit_drop_ratio', 0.2)
+        
+        # 1. Entry: Target the frame prior to initial detection spike
+        entry_idx = 0
+        for i, p in enumerate(protrusions):
+            if p > entry_thresh:
+                entry_idx = max(0, i - 1)
+                break
+        self.results['entry_frame_index'] = entry_idx
+        
+        # 2. Exit: Detect cell slip or massive loss after stable period
+        exit_idx = len(protrusions)
+        for i in range(entry_idx + 5, len(protrusions)):
+            p = protrusions[i]
+            p_prev = protrusions[i-1]
+            if p < exit_thresh or (p_prev > 3.0 and p < exit_ratio * p_prev):
+                exit_idx = i
+                break
+        self.results['exit_frame_index'] = exit_idx
+        
+        # Nullify out-of-bounds data physically isolated to the active period
+        for i in range(len(protrusions)):
+            if i < entry_idx or i > exit_idx:
+                self.results['protrusion_lengths_px'][i] = np.nan
+                self.results['protrusion_lengths_um'][i] = np.nan
+                self.results['protrusion_area_um2'][i] = np.nan
+                self.results['body_area_um2'][i] = np.nan
+                self.results['total_area_um2'][i] = np.nan
+                self.results['body_solidity'][i] = np.nan
+        
         self.results['protrusion_lengths_um'] = [p * scale_factor for p in self.results['protrusion_lengths_px']]
         self.results['downstream_intensities'] = downstream_int_list
 
@@ -804,118 +819,162 @@ class LineDetectionMFA:
         
         return debug_img
     
+    def _abort(self, signal: str) -> Dict[str, Any]:
+        self.results['signal'] = signal
+        return self.results    
     
-    def _calculate_morphology(self, mask_total: np.ndarray, mask_body: np.ndarray) -> Tuple[float, float]:
-        """Calculates total cell area and body-only solidity with robust fallbacks."""
+    def _calculate_morphology(self, mask_prot: np.ndarray, mask_body: np.ndarray, mask_total: np.ndarray) -> Tuple[float, float, float, float]:
+        """Calculates areas and strictly isolates solidity to the cell body."""
         scale_factor = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
+        sf2 = scale_factor ** 2
         
-        # 1. Total Area
-        total_area_px = cv2.countNonZero(mask_total)
-        total_area_um2 = total_area_px * (scale_factor ** 2)
+        # 1. Individual Areas
+        prot_area = cv2.countNonZero(mask_prot) * sf2
+        body_area = cv2.countNonZero(mask_body) * sf2
+        total_area = cv2.countNonZero(mask_total) * sf2
         
         # 2. Body Solidity
+        # Performed specifically on the cell body to bypass empty spatial defects surrounding protrusions
         mask_body_u8 = mask_body.astype(np.uint8)
         contours, _ = cv2.findContours(mask_body_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        if not contours:
-            return total_area_um2, 0.0
-            
-        cnt = max(contours, key=cv2.contourArea)
-        area_px = cv2.contourArea(cnt)
-        
-        # Fallback to pixel count if geometric area is 0
-        if area_px == 0:
-            area_px = cv2.countNonZero(mask_body_u8)
-            
-        if len(cnt) >= 3: # Convex hull requires at least 3 points
-            hull = cv2.convexHull(cnt)
-            hull_area = cv2.contourArea(hull)
-            
-            if hull_area > 0:
-                solidity = float(area_px) / hull_area
-                return total_area_um2, solidity
+        solidity = 0.0
+        if contours:
+            cnt = max(contours, key=cv2.contourArea)
+            area_px = cv2.contourArea(cnt)
+            if area_px == 0:
+                area_px = cv2.countNonZero(mask_body_u8)
                 
-        return total_area_um2, 0.0
+            if len(cnt) >= 3: 
+                hull = cv2.convexHull(cnt)
+                hull_area = cv2.contourArea(hull)
+                if hull_area > 0:
+                    solidity = float(area_px) / hull_area
+                    
+        return prot_area, body_area, total_area, solidity
 
     # =========================================================================
     #                       RUPTURE DETECTION LOGIC
     # =========================================================================
     
     def _generate_comprehensive_results(self) -> None:
-        """
-        Runs multiple detectors to find the FIRST failure point.
-        Includes logic to handle 'Already Inside' cases (Trap 2, 14).
-        Note: protrusion_lengths_um is already set by _process_all_frames; no recalculation needed.
-        """
-        protrusions_um = self.results['protrusion_lengths_um']
+        """Runs multiple detectors strictly inside the validated cell-presence bounds."""
         intensities = self.results['downstream_intensities']
         
-        # --- 1. Determine Entry Point & Candidates ---
+        entry_idx = self.results.get('entry_frame_index', 0)
+        exit_idx = self.results.get('exit_frame_index', len(intensities))
+        
+        # Expand the window slightly past the physical exit ---
+        # When a cell pops, it disappears (exit_idx), but the haze flush 
+        # happens at that exact frame or slightly after. 
+        analysis_end = min(len(intensities), exit_idx + 3)
+        valid_intensities = intensities[entry_idx:analysis_end]
+        
         candidates = []
         
-        if intensities:
-            baseline_steady = np.median(intensities[:5])
-            abs_threshold = self.params.get('rupture_detection', {}).get('absolute_intensity_threshold', 6.5)
-            
-            if baseline_steady >= abs_threshold: 
-                # 1. Fetch physical movement
-                protrusions = self.results.get('protrusion_lengths_um', [])
-                
-                # 2. Fetch optical stability
-                haze_variance = np.std(intensities[:5]) if len(intensities) >= 5 else 0
-                
-                is_stagnant = False
-                if len(protrusions) >= 5:
-                    # If it grew less than 0.5um, it is mechanically dead
-                    growth = protrusions[4] - protrusions[0]
-                    is_stagnant = growth < 0.5
-                
-                # If it's physically stagnant OR the light is actively violently fluctuating (leaking)
-                if is_stagnant or haze_variance > 1.0:
-                    candidates.append((0, 'Immediate High Haze (DOA)'))
-                else:
-                    logger.info(f"Ignored high initial haze ({baseline_steady:.1f}); cell is actively creeping. Assuming debris.")
-
-        start_len = protrusions_um[0] if protrusions_um else 0
+        # --- 1. Run temporal event detectors first ---
         
-        if start_len > 20.0:
-            entry_idx = 0
-        else:
-            velocity = np.diff(self.results['protrusion_lengths_px'], prepend=0)
-            entry_idx = next((i for i, v in enumerate(velocity) if v > self.entry_velocity_threshold), 0)
-            if entry_idx >= len(protrusions_um): entry_idx = 0
-            
-        self.results['entry_frame_index'] = entry_idx
-        valid_intensities = intensities[entry_idx:]
-
-        # B. Spike (Transient Burst)
+        # A. Spike (Transient Burst)
         if self.enable_spike:
             is_spike, spike_idx = self._detect_intensity_anomaly(valid_intensities, mode='spike')
             if is_spike: candidates.append((entry_idx + spike_idx, 'Intensity Spike'))
         
-        # C. Step (Fast Leak)
+        # B. Step (Fast Leak)
         if self.enable_step:
             is_step, step_idx = self._detect_intensity_anomaly(valid_intensities, mode='step')
             if is_step: candidates.append((entry_idx + step_idx, 'Intensity Step'))
 
+        # C. Direct Difference (Catches acute haze jumps smoothed out by CUSUM buffer logic)
+        #
+        # BUG FIX: The original code scanned from frame 0 of valid_intensities, which
+        # means the initial intensity ramp as the cell enters the trap was almost always
+        # the largest single-frame jump and always won the argmax. This caused two
+        # problems: (a) a spurious rupture at t~0 for normal cells, and (b) the DOA
+        # check was defeated for high-intensity cells like Trap 16 because a "Sudden
+        # Haze Jump" at t~0 looked like evidence against DOA.
+        #
+        # Fix: skip the first N frames (the cusum_settling_buffer) before scanning, so
+        # the entry ramp is never included in the diff calculation.
+        jump_thresh = self.params.get('rupture_detection', {}).get('sudden_jump_threshold', 1.0)
+        jump_settling = self.params.get('rupture_detection', {}).get('cusum_settling_buffer', 0)
+
+        if len(valid_intensities) > 1 + jump_settling:
+            # Only look at the trace AFTER the settling period
+            scan_region = valid_intensities[jump_settling:]
+            diffs = np.diff(scan_region)
+            max_diff_idx = np.argmax(diffs)
+            if diffs[max_diff_idx] > max(jump_thresh, self.min_drift):
+                # Translate the index back into the full valid_intensities coordinate space
+                adjusted_idx = max_diff_idx + jump_settling + 1
+                candidates.append((entry_idx + adjusted_idx, 'Sudden Haze Jump'))
+
         # D. CUSUM (Slow Drift)
         is_cusum, cusum_idx = self._detect_cusum_drift(valid_intensities)
         if is_cusum: candidates.append((entry_idx + cusum_idx, 'Haze Drift'))
-        
-        # E. LATE SAFETY CHECK
-        if not candidates and valid_intensities:
-            final_mean = np.mean(valid_intensities[-5:])
-            if final_mean > 25.0:
-                grad = np.gradient(valid_intensities)
-                max_grad_idx = np.argmax(grad)
-                candidates.append((entry_idx + max_grad_idx, 'Late High Haze'))
 
-        # Arbitrate: Pick the earliest detected event
+        # E. Pulse Context (Pulse-Induced Rupture)
+        #
+        # This detector is purpose-built for electroporation experiments.
+        # It compares the median intensity in a short window BEFORE the pulse to a
+        # short window AFTER the pulse. If the post-pulse intensity is meaningfully
+        # higher, the membrane was disrupted by the pulse.
+        #
+        # This catches patterns the other detectors miss:
+        #   - Trap 13/15: transient spikes that return to baseline before CUSUM can
+        #     accumulate enough evidence.
+        #   - Trap 14/18: gradual rises where the rolling CUSUM baseline follows the
+        #     signal upward and never registers a large enough deviation.
+        #   - Trap 16: a genuine post-pulse rupture in a cell with high initial haze,
+        #     which was previously swallowed by the DOA check.
+        #
+        # pulse_frame_idx is injected into the params dict by MFA_analysis.py (Step 1).
+        # If dye_uptake is disabled, the key won't exist and this block is skipped.
+        pulse_frame_idx = self.params.get('rupture_detection', {}).get('pulse_frame_idx', None)
+        if pulse_frame_idx is not None:
+            is_pulse_rupture, pulse_rupt_idx = self._detect_pulse_context_rupture(
+                intensities,      # Pass the FULL array — pulse_frame_idx is an absolute index
+                entry_idx,
+                pulse_frame_idx
+            )
+            if is_pulse_rupture:
+                candidates.append((pulse_rupt_idx, 'Pulse-Induced Rupture'))
+
+        # --- 2. Evaluate DOA Context ---
+        abs_threshold = self.params.get('rupture_detection', {}).get('absolute_intensity_threshold', 6.5)
+
+        if len(valid_intensities) > 0 and np.median(valid_intensities[:3]) >= abs_threshold:
+            # High initial intensity detected. We need to decide: did this cell rupture
+            # upon entry (DOA), or did it enter intact and rupture later (e.g. at the pulse)?
+            #
+            # The original code checked for ANY acute event in the candidates list.
+            # The bug: the Sudden Haze Jump at t~0 (the entry ramp) was always in that
+            # list, so DOA was never assigned even for genuine DOA cells like Trap 2.
+            # The Step 2 fix removes that entry-ramp candidate. But we add an extra
+            # guard here as well: only count acute events that occur AFTER a minimum
+            # delay from entry. Anything in the first N frames is entry noise, not
+            # evidence of a real late rupture.
+            doa_min_delay = self.params.get('rupture_detection', {}).get('doa_min_acute_delay_frames', 3)
+
+            acute_events = [
+                c for c in candidates
+                if c[1] in ('Intensity Spike', 'Intensity Step', 'Sudden Haze Jump', 'Pulse-Induced Rupture')
+                and c[0] >= entry_idx + doa_min_delay   # Must be meaningfully after entry
+            ]
+
+            if not acute_events:
+                candidates.append((entry_idx, 'DOA: Sustained High Haze'))
+
+        # --- 3. Arbitrate ---
+        # Pick the earliest detected event among valid candidates
         if candidates:
             candidates.sort(key=lambda x: x[0])
             best_idx, reason = candidates[0]
+            
+            # Align the detected haze anomaly with the physical disappearance.
+            final_rupture_idx = min(best_idx, max(0, exit_idx - 1))
+            
             self.results['rupture_detected'] = True
-            self.results['rupture_frame_index'] = best_idx
+            self.results['rupture_frame_index'] = final_rupture_idx
             self.results['rupture_reason'] = reason
         else:
             self.results['rupture_detected'] = False
@@ -929,7 +988,7 @@ class LineDetectionMFA:
         r_params = self.params.get('rupture_detection', {})
         
         settling = r_params.get('cusum_settling_buffer', 3)
-        baseline_len = r_params.get('cusum_baseline_len', 5)
+        baseline_len = r_params.get('min_cusum_baseline_frames', 5)
         lag = r_params.get('cusum_baseline_lag', 0)
         
         min_len = settling + baseline_len + lag + 1
@@ -968,7 +1027,7 @@ class LineDetectionMFA:
         """
         r_params = self.params.get('rupture_detection', {})
         settling = r_params.get('cusum_settling_buffer', 3)
-        baseline_len = r_params.get('cusum_baseline_len', 5)
+        baseline_len = r_params.get('min_cusum_baseline_frames', 5)
         lag = r_params.get('cusum_baseline_lag', 0)
         
         min_len = settling + baseline_len + lag + 1
@@ -1008,6 +1067,78 @@ class LineDetectionMFA:
             if S_pos > h:
                 return True, i
                 
+        return False, None
+
+    def _detect_pulse_context_rupture(
+        self,
+        intensities: List[float],
+        entry_idx: int,
+        pulse_frame_idx: int
+    ) -> Tuple[bool, Optional[int]]:
+        """
+        Detects membrane rupture caused by an electric pulse.
+
+        This detector has one major advantage over the general detectors: it knows
+        exactly when the pulse was applied, so it can compare the median intensity
+        just before vs. just after that specific moment.
+
+        This makes it insensitive to the shape of the rupture event (spike, step, or
+        gradual rise) because it only asks: "is the average intensity in the N frames
+        after the pulse higher than the N frames before it by a meaningful amount?"
+
+        Args:
+            intensities:     The full downstream intensity array for all frames.
+            entry_idx:       Frame index where the cell entered the trap.
+            pulse_frame_idx: Absolute frame index of the electric pulse (0-based).
+
+        Returns:
+            (detected, frame_idx) — frame_idx is the pulse frame if rupture detected,
+            or None if not.
+        """
+        r_params = self.params.get('rupture_detection', {})
+
+        # How many frames before and after the pulse to average.
+        # Larger windows are more stable but can miss very brief events.
+        pre_window  = r_params.get('pulse_context_pre_window',  5)
+        post_window = r_params.get('pulse_context_post_window', 5)
+
+        # The post-pulse median must be at least this many times the pre-pulse median.
+        # 1.3 means a 30% increase. Lower = more sensitive, higher = fewer false positives.
+        fold_thresh = r_params.get('pulse_context_fold_threshold', 1.3)
+
+        # The absolute intensity increase must also exceed this value.
+        # This prevents triggering on very noisy but low-signal cells where a 30%
+        # fold change might only represent 0.2 intensity units of noise.
+        abs_thresh  = r_params.get('pulse_context_abs_threshold', 0.5)
+
+        n = len(intensities)
+
+        # Safety checks: the pulse must fall within the trace and leave room for both windows
+        if pulse_frame_idx <= entry_idx:
+            return False, None
+        if pulse_frame_idx - pre_window < entry_idx:
+            return False, None
+        if pulse_frame_idx + post_window >= n:
+            return False, None
+
+        # Build the two comparison windows
+        pre_vals  = intensities[pulse_frame_idx - pre_window : pulse_frame_idx]
+        post_vals = intensities[pulse_frame_idx + 1           : pulse_frame_idx + 1 + post_window]
+
+        pre_median  = float(np.median(pre_vals))
+        post_median = float(np.median(post_vals))
+
+        # Guard against near-zero baselines (very dark images)
+        if pre_median < 0.1:
+            return False, None
+
+        fold_change = post_median / pre_median
+        abs_change  = post_median - pre_median
+
+        if fold_change >= fold_thresh and abs_change >= abs_thresh:
+            # Pin the rupture to the pulse frame itself
+            return True, pulse_frame_idx
+
         return False, None
 
     def _measure_downstream_intensity(self, image: np.ndarray, tip_x: float, pipette_x: int) -> float:

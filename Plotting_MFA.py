@@ -17,9 +17,6 @@ import cv2
 
 import Utils_MFA as utils
 
-if TYPE_CHECKING:
-    from Fitting_MFA import FittingMFA
-
 logger = logging.getLogger(__name__)
 
 # Standard units for axis labels
@@ -229,7 +226,7 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     utils.save_plot_png(Path(output_dir) / f"trap_{trap_index:02d}_kymograph.png")
     plt.close(fig)
 
-# --- 3. PROTRUSION TRACE PLOT (Unchanged) ---
+# --- 3. PROTRUSION TRACE PLOT ---
 def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarray, 
                           protrusions: np.ndarray, trap_index: int, save_path: Path, 
                           params: Dict[str, Any], rupture_time: Optional[float], 
@@ -239,6 +236,15 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
     utils.set_paper_style()
     colors = utils.MFA_COLORS
     
+    # --- Time Synchronization ---
+    valid_indices = np.where(~np.isnan(protrusions))[0]
+    entry_idx = valid_indices[0] if len(valid_indices) > 0 else 0
+    t_shift = time_points[entry_idx]
+    
+    time_shifted = time_points - t_shift
+    if rupture_time is not None: rupture_time -= t_shift
+    if pulse_time is not None: pulse_time -= t_shift
+
     fig = plt.figure(figsize=(16, 10))
     gs = gridspec.GridSpec(3, 4, height_ratios=[1, 1.5, 1.5])
     fig.suptitle(f'Trap #{trap_index}: Protrusion Dynamics')
@@ -249,21 +255,21 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
         for i, idx in enumerate(idxs):
             ax = fig.add_subplot(gs[0, i])
             ax.imshow(cv2.cvtColor(valid[idx], cv2.COLOR_BGR2RGB))
-            ax.set_title(f"t={time_points[idx]:.1f}s")
+            ax.set_title(f"t={time_shifted[idx]:.1f}s")
             ax.axis('off')
 
     ax1 = fig.add_subplot(gs[1, :])
-    ax1.plot(time_points, protrusions, 'o-', color=colors['primary'], markersize=4, label='Length')
+    ax1.plot(time_shifted, protrusions, 'o-', color=colors['primary'], markersize=4, label='Length')
     ax1.set_ylabel('Length (μm)')
     ax1.grid(True, alpha=0.3)
     
     ax2 = fig.add_subplot(gs[2, :], sharex=ax1)
     if intensities is not None:
-        ax2.plot(time_points, intensities, '-', color=colors['quaternary'], linewidth=2, label='Haze Intensity')
+        ax2.plot(time_shifted, intensities, '-', color=colors['quaternary'], linewidth=2, label='Haze Intensity')
     ax2.set_ylabel('Intensity (a.u.)'); ax2.set_xlabel('Time (s)')
     ax2.grid(True, alpha=0.3)
 
-    if rupture_time is not None:  # Explicit check allows 0.0s to be valid
+    if rupture_time is not None:
         for ax in [ax1, ax2]:
             ax.axvline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2.5, label='Rupture Detected')
             ax.legend()
@@ -341,8 +347,7 @@ class MFAPlotter:
         plt.close(fig)
         
 # --- 4. ACTIN PLOT ---
-def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None):
-    """Generates the suite of Actin distribution plots."""
+def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None, pulse_time: Optional[float] = None, rupture_time: Optional[float] = None):
     utils.set_paper_style()
     output_dir = Path(output_dir)
     t = np.array(results.get('time_s', []))
@@ -350,15 +355,22 @@ def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Pat
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(t, results.get('actin_ratio_pb', []), 'o-', color=utils.MFA_COLORS['secondary'], linewidth=2)
+    
+    if rupture_time is not None:
+        ax.axvline(rupture_time, color=utils.MFA_COLORS['rupture'], linestyle='--', linewidth=2.5, label='Rupture Detected')
+    if pulse_time is not None:
+        ax.axvline(pulse_time, color=utils.MFA_COLORS['pulse'], linestyle=':', linewidth=2.5, label='Pulse Applied')
+    
     ax.set_ylabel("Actin Ratio (Protrusion / Body)")
     ax.set_xlabel("Time (s)")
     ax.set_title(f"Trap {trap_idx}: Actin Distribution")
+    if rupture_time is not None or pulse_time is not None:
+        ax.legend()
     
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Ratio.png")
     plt.close(fig)
 
-def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: float):
-    """Generates the Space-Time Kymograph and Diffusion Profiles for Actin."""
+def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: float, pulse_time: Optional[float] = None, rupture_time: Optional[float] = None):
     utils.set_paper_style()
     output_dir = Path(output_dir)
     t = np.array(results.get('time_s', []))
@@ -369,20 +381,27 @@ def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, ou
     scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
     max_w = max(len(p) for p in profiles)
     
-    # --- 1. Actin Kymograph ---
+    # Kymograph
     kymo = np.zeros((len(profiles), max_w))
     for i, p in enumerate(profiles): kymo[i, :len(p)] = p
     
     fig_kymo, ax_kymo = plt.subplots(figsize=(10, 6))
     extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
     
-    im = ax_kymo.imshow(kymo, aspect='auto', extent=extent, cmap='RdBu_r', interpolation='nearest') # Using RdBu_r to match your attached image
+    im = ax_kymo.imshow(kymo, aspect='auto', extent=extent, cmap='RdBu_r', interpolation='nearest')
     ax_kymo.axvline(0, color='white', linestyle='--', linewidth=1, label='Entrance', alpha=0.7)
     
+    if rupture_time is not None:
+        ax_kymo.axhline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2, label='Rupture')
+    if pulse_time is not None:
+        ax_kymo.axhline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2, label='Pulse')
+
     plt.colorbar(im, ax=ax_kymo, label="Actin Intensity")
     ax_kymo.set_xlabel("Position relative to channel entrance (µm)")
     ax_kymo.set_ylabel("Time (s)")
     ax_kymo.set_title(f"Trap {trap_idx}: Actin Uptake Kymograph")
+    if rupture_time is not None or pulse_time is not None:
+        ax_kymo.legend()
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Kymograph.png")
     plt.close(fig_kymo)
 
@@ -410,57 +429,74 @@ def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, ou
 
 
 def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[float], output_dir: Path, experiment_id: str):
-    """Plots the change (Delta) in Area and Solidity for all traps as a bar chart."""
+    """Plots the Normalized Change in Area metrics and Solidity as bar charts."""
     utils.set_paper_style()
     output_dir = Path(output_dir)
     
     trap_ids = []
-    delta_areas = []
+    delta_areas_prot = []
+    delta_areas_body = []
+    delta_areas_tot = []
     delta_solidities = []
     
     for res in sorted(all_results, key=lambda x: x['trap_index']):
         if res.get('status') in ('success', 'detection_only', 'fit_failed') and 'data' in res:
             data = res['data']
-            if 'area' in data and 'solidity' in data and len(data['area']) > 0:
-                area = np.array(data['area'])
+            if 'solidity' in data and len(data['solidity']) > 0:
                 solidity = np.array(data['solidity'])
+                a_prot = np.array(data.get('area_prot', []))
+                a_body = np.array(data.get('area_body', []))
+                a_tot = np.array(data.get('area', []))
                 
+                # Fetch valid indices accounting for the NaN padding
+                valid_indices = np.where(~np.isnan(solidity))[0]
+                if len(valid_indices) < 3:
+                    continue
+                
+                start_idx = valid_indices[0]
+                
+                # --- True end index calculation ---
                 r_idx = data.get('rupture_idx')
-                # Determine the final valid frame (either rupture or end of experiment)
-                end_idx = r_idx if (r_idx is not None and r_idx < len(area)) else len(area) - 1
+                if r_idx is not None and r_idx < len(solidity):
+                    end_idx = r_idx
+                else:
+                    # If the cell exits without rupturing, use the last physical frame
+                    end_idx = valid_indices[-1] + 1 
                 
-                if end_idx < 3: 
-                    continue # Not enough data to calculate a reliable change
+                init_sol = np.nanmean(solidity[start_idx:start_idx+3])
+                final_sol = np.nanmean(solidity[max(start_idx, end_idx-3):end_idx])
                 
-                # Average the first 3 frames for a stable initial baseline
-                init_area = np.nanmean(area[:3])
-                init_sol = np.nanmean(solidity[:3])
-                
-                # Average the last 3 valid frames for a stable final reading
-                final_area = np.nanmean(area[max(0, end_idx-3):end_idx])
-                final_sol = np.nanmean(solidity[max(0, end_idx-3):end_idx])
-                
+                def calc_norm_delta(arr):
+                    if len(arr) == 0: return 0.0
+                    i_val = np.nanmean(arr[start_idx:start_idx+3])
+                    f_val = np.nanmean(arr[max(start_idx, end_idx-3):end_idx])
+                    return ((f_val - i_val) / i_val * 100) if i_val > 0 else 0.0
+
                 trap_ids.append(f"Trap {data['trap_index'] + 1}")
-                delta_areas.append(final_area - init_area)
+                delta_areas_prot.append(calc_norm_delta(a_prot))
+                delta_areas_body.append(calc_norm_delta(a_body))
+                delta_areas_tot.append(calc_norm_delta(a_tot))
                 delta_solidities.append(final_sol - init_sol)
 
     if not trap_ids:
         return
 
-    # --- 1. Plot Delta Area ---
-    fig_area, ax_area = plt.subplots(figsize=(12, 6))
-    bars = ax_area.bar(trap_ids, delta_areas, color=utils.MFA_COLORS['secondary'], alpha=0.8, edgecolor='black')
-    ax_area.axhline(0, color='black', linewidth=1.5)
-    ax_area.set_ylabel("Change in Total Cell Area ($\Delta$ µm²)")
-    ax_area.set_title(f"Cell Area Dynamics (Start vs. Rupture) - {experiment_id}")
-    plt.xticks(rotation=45, ha='right')
+    # --- 1. Plot Normalized Delta Area (Grouped Bar) ---
+    fig_area, ax_area = plt.subplots(figsize=(14, 6))
+    x = np.arange(len(trap_ids))
+    width = 0.25
     
-    # Add value labels on top of bars
-    for bar in bars:
-        yval = bar.get_height()
-        offset = 5 if yval >= 0 else -15
-        ax_area.text(bar.get_x() + bar.get_width()/2, yval + offset, f"{yval:.1f}", ha='center', va='bottom' if yval >=0 else 'top', fontsize=9)
-        
+    ax_area.bar(x - width, delta_areas_prot, width, label='Protrusion', color=utils.MFA_COLORS['secondary'], edgecolor='black')
+    ax_area.bar(x, delta_areas_body, width, label='Cell Body', color=utils.MFA_COLORS['tertiary'], edgecolor='black')
+    ax_area.bar(x + width, delta_areas_tot, width, label='Total', color=utils.MFA_COLORS['primary'], edgecolor='black')
+    
+    ax_area.axhline(0, color='black', linewidth=1.5)
+    ax_area.set_ylabel("Normalized Area Change (%)")
+    ax_area.set_title(f"Cell Area Dynamics (Start vs. Rupture) - {experiment_id}")
+    ax_area.set_xticks(x)
+    ax_area.set_xticklabels(trap_ids, rotation=45, ha='right')
+    ax_area.legend()
+    
     plt.tight_layout()
     utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Area.png")
     plt.close(fig_area)
