@@ -40,7 +40,29 @@ experiment_parameters:
   max_traps: 9            
 
 # ===================================================================
-# --- 3. PHYSICS MODEL ---
+# --- 3. GUV MODE ---
+# ===================================================================
+# Giant Unilamellar Vesicles (GUVs) have different imaging characteristics
+# compared to cells: the fluorescent signal forms a bright ring around a dark
+# hollow interior, and the membrane is often already deformed or ruptured by
+# the midpoint of the video. Enable this section when imaging GUVs.
+
+guv_settings:
+  enable: True                   # Master switch. Set True for GUV experiments.
+
+  # GUVs produce a hollow ring after thresholding; the dark interior is NOT
+  # filled by standard morphological operations. This option fills it using a
+  # flood-fill from the image border, which reliably captures even patchy rings.
+  fill_membrane_holes: True
+
+  # Which frame to display during the threshold-selection step.
+  # For GUVs, use an early frame (e.g. 2) where the membrane is still intact
+  # and spherical. The middle-of-video default used for cells often catches a
+  # partially-entered or ruptured GUV, making thresholding unreliable.
+  selection_frame_index: 3
+
+# ===================================================================
+# --- 4. PHYSICS MODEL ---
 # ===================================================================
 
 # Controls how we calculate stiffness and viscosity from the cell protrusion length.
@@ -61,7 +83,7 @@ model_parameters:
   fluid_viscosity_pa_s: 1e-3 # [Pa·s]
 
 # ===================================================================
-# --- 4. RUPTURE DETECTION (INTENSITY ANALYSIS) ---
+# --- 5. RUPTURE DETECTION (INTENSITY ANALYSIS) ---
 # ===================================================================
 # Settings for identifying when the cell membrane breaks (bursts).
 
@@ -139,7 +161,7 @@ rupture_detection:
   outlier_rejection_std_dev: 2.5
 
 # ===================================================================
-# --- 5. AUTOMATION & PERFORMANCE ---
+# --- 6. AUTOMATION & PERFORMANCE ---
 # ===================================================================
 
 workflow_settings:
@@ -174,10 +196,11 @@ workflow_settings:
   default_roi_height_um: 45.0       # [µm]
   
   # Setup Screen: Which part of the video to show during setup? (0.5 = Middle of video).
+  # This is ignored when guv_settings.enable is True (guv_settings.selection_frame_index is used instead).
   selection_frame_fraction: 0.5
 
 # ===================================================================
-# --- 6. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
+# --- 7. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
 # ===================================================================
 dye_uptake_parameters:
   enable: False
@@ -192,7 +215,7 @@ dye_uptake_parameters:
   baseline_frames: 5                # How many frames before the pulse to check for background signal.
 
 # ===================================================================
-# --- 7. ACTIN QUANTIFICATION ---
+# --- 8. ACTIN QUANTIFICATION ---
 # ===================================================================
 actin_parameters:
   enable: True                      # Set to True to enable, False to skip
@@ -216,7 +239,7 @@ image_processing:
   canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).
   canny_high_threshold: 150        # Edge detection sensitivity (Upper limit).
   gaussian_kernel_size: [3, 3]     # Blur amount to reduce noise before detection.
-  fill_membrane_holes: True        # Set True for GUVs to fill dark interior lumens.
+  # fill_membrane_holes has moved to the guv_settings section above.
 
 kymograph_parameters:
   default_kymograph_width_px: 100  # Width of the generated space-time image.

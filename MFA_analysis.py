@@ -454,7 +454,10 @@ class MFAAnalysis:
                 crop_gui_params = {
                     **self.params.get('experiment_parameters', {}),
                     **self.params.get('workflow_settings', {}),
-                    **self.params.get('image_processing', {})
+                    **self.params.get('image_processing', {}),
+                    # Pass the full guv_settings dict so CropImage can apply the
+                    # correct frame index for GUV experiments.
+                    'guv_settings': self.params.get('guv_settings', {}),
                 }
                 self.cropper = CropImage(crop_gui_params)
                 self.cropper.max_traps = self.params.get('experiment_parameters', {}).get('max_traps', 20)
@@ -601,9 +604,17 @@ class MFAAnalysis:
         logger.info(f"\nConfiguring {len(selected_indices)} selected traps (Pipette & Thresholds)...")
         num_frames = len(self.file_reader.tif_files)
         
-        frame_frac = self.params.get('workflow_settings', {}).get('selection_frame_fraction', 0.5)
-        test_idx = int(num_frames * frame_frac)
-        test_idx = max(0, min(test_idx, num_frames - 1))
+        wf = self.params.get('workflow_settings', {})
+        guv = self.params.get('guv_settings', {})
+
+        if guv.get('enable', False):
+            # GUV mode: use an early frame so the membrane is still intact.
+            # selection_frame_index defaults to 2 if not set in guv_settings.
+            test_idx = max(0, min(int(guv.get('selection_frame_index', 2)), num_frames - 1))
+        else:
+            # Cell mode: pick a frame proportionally through the video.
+            frame_frac = wf.get('selection_frame_fraction', 0.5)
+            test_idx = max(0, min(int(num_frames * frame_frac), num_frames - 1))
         
         img = self.loader.get_frame(test_idx)
         

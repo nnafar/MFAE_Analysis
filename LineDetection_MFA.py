@@ -48,7 +48,13 @@ class LineDetectionMFA:
         wf_settings = self.params.get('workflow_settings', {})
         img_params = self.params.get('image_processing', {})
 
-        self.fill_membrane_holes = img_params.get('fill_membrane_holes', False)
+        # GUV mode: read fill_membrane_holes from guv_settings (master location).
+        # Falls back to False so standard cell experiments are unaffected.
+        guv_settings = self.params.get('guv_settings', {})
+        self.fill_membrane_holes = (
+            guv_settings.get('enable', False) and
+            guv_settings.get('fill_membrane_holes', True)
+        )
 
         # Interactive Window parameters (Updated to use workflow_settings)
         self.window_scale = wf_settings.get('window_scale_factor', 1.0)
@@ -550,33 +556,83 @@ class LineDetectionMFA:
         return self._clean_binary_mask(binary_mask)
     
     def _clean_binary_mask(self, binary_mask: np.ndarray) -> np.ndarray:
-        """Standard morphological cleaning for masks."""
-        # Filter small blobs
+        """Standard morphological cleaning for masks.
+        
+        For GUVs, the membrane signal is ring-like: bright rim, dark interior.
+        A simple threshold produces a broken ring, not a filled disc.
+        When fill_membrane_holes is True, we find the outer contour of each blob
+        and draw it as a solid filled shape, which fills the lumen regardless
+        of how dark or patchy it is.
+        """
+        # --- Step 1: Remove tiny specks (noise) ---
+        # connectedComponentsWithStats labels every separate white blob and gives us
+        # statistics about each one (position, area, etc.). We keep only blobs that
+        # are at least min_area_threshold pixels in size.
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
         filtered = np.zeros_like(binary_mask)
-        for i in range(1, num_labels):
-            if stats[i, cv2.CC_STAT_AREA] >= self.min_area_threshold: 
+        for i in range(1, num_labels):  # start at 1 to skip the background (label 0)
+            if stats[i, cv2.CC_STAT_AREA] >= self.min_area_threshold:
                 filtered[labels == i] = 255
-        
-        # Close holes
+    
+        # --- Step 2: Morphological close (bridges small gaps) ---
+        # This is a two-step operation: dilate (grow) then erode (shrink).
+        # Net effect: small gaps in the membrane ring get bridged.
         kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        closed = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
-        
-        # Extract outer boundary and fill the entire lumen
-        if self.fill_membrane_holes:
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            filled = np.zeros_like(closed)
-            cv2.drawContours(filled, contours, -1, 255, -1)
-            closed = filled
-        
-        # Remove artifacts on left border
-        cleaned = self._remove_left_border_objects(closed)
-        
-        # Final cleanup
+        filled = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
+    
+        # --- Step 3 (GUV mode): Fill the interior completely ---
+        # For cells with a hollow lumen (GUVs), the close above is not enough.
+        # We find the outer contour of each blob and draw it as a solid filled
+        # polygon. This works even when the interior is completely dark, because
+        # it doesn't rely on pixel intensity at all — only the outer boundary shape.
+        # GUV mode: fill the hollow lumen if enabled in guv_settings.
+        guv_settings = self.params.get('guv_settings', {})
+        if guv_settings.get('enable', False) and guv_settings.get('fill_membrane_holes', True):
+            filled = self._fill_contour_interiors(filled)
+    
+        # --- Step 4: Remove any blob touching the left image border ---
+        # These are usually the channel walls leaking into the ROI, not the cell.
+        cleaned = self._remove_left_border_objects(filled)
+    
+        # --- Step 5: Final gentle cleanup ---
+        # The open operation (erode then dilate) removes thin spurs and tiny specks
+        # that survived Step 1, without shrinking the main blob.
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         opened = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel_open)
-        
+    
         return opened
+
+    def _fill_contour_interiors(self, binary_mask: np.ndarray) -> np.ndarray:
+        """Fill all enclosed holes inside detected blobs.
+
+        How it works (the 'flood from outside' trick):
+            1. Invert the mask so background = white (255), cell blobs = black (0).
+            2. Flood-fill starting from the top-left corner (guaranteed exterior).
+               This paints all connected exterior background a temporary grey (128).
+            3. After flooding, anything still white (255) in the inverted image is
+               an interior hole — surrounded by cell, unreachable from outside.
+            4. Invert back. Those interior holes become white and get OR'd into
+               the original mask, filling them.
+
+        This is more reliable than filling via contours when the membrane is very
+        patchy, because it makes no assumption about contour shape.
+        """
+        # Step 1: invert — background (0) becomes white (255), blobs become black
+        inverted = cv2.bitwise_not(binary_mask)
+
+        # Step 2: flood fill from the top-left corner outward
+        # The mask argument to floodFill must be 2 pixels larger in each dimension
+        h, w = inverted.shape
+        flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+        # We paint the exterior with grey (128) so we can identify it later
+        cv2.floodFill(inverted, flood_mask, seedPoint=(0, 0), newVal=128)
+
+        # Step 3: anything still white (255) in 'inverted' is an interior hole
+        interior_holes = (inverted == 255).astype(np.uint8) * 255
+
+        # Step 4: add the holes back into the original mask
+        result = cv2.bitwise_or(binary_mask, interior_holes)
+        return result
 
     def _remove_left_border_objects(self, binary_image: np.ndarray) -> np.ndarray:
         """

@@ -230,13 +230,19 @@ class CropImage():
             
         # Step 5: Selection
         num_frames = len(self.file_reader.tif_files)
-        fraction = self.params.get('selection_frame_fraction', 0.5)
-        
-        target_idx = int(num_frames * fraction)
-        target_idx = max(0, min(target_idx, num_frames - 1))
-        
+
+        # GUV mode: use the same early frame index as the threshold-selection step
+        # so the user sees consistent, intact GUV images throughout setup.
+        # Cell mode: fall back to the fractional default (e.g. middle of video).
+        guv = self.params.get('guv_settings', {})
+        if guv.get('enable', False):
+            target_idx = max(0, min(int(guv.get('selection_frame_index', 2)), num_frames - 1))
+        else:
+            fraction = self.params.get('selection_frame_fraction', 0.5)
+            target_idx = max(0, min(int(num_frames * fraction), num_frames - 1))
+
         logger.info("--- Step 5: Select Traps to Analyze ---")
-        
+
         selection_image = self.file_reader.read_img(self.file_reader.tif_files[target_idx])
         if selection_image is None:
             logger.warning(f"Could not load frame {target_idx}, falling back to Frame 0 for selection.")
@@ -541,9 +547,9 @@ class CropImage():
             return new_roi
 
 
-    def _verify_trap_position(self, prev_roi: List[int], new_roi: List[int], frame_idx: int = 0) -> Optional[Union[List[int], str]]:
+    def _verify_trap_position(self, prev_roi: List[int], new_roi: List[int]) -> Optional[Union[List[int], str]]:
         """Displays a window for the user to verify or adjust the next trap's ROI."""
-        frame = self.file_reader.read_img(self.file_reader.tif_files[frame_idx])
+        frame = self.file_reader.read_img(self.file_reader.tif_files[self.setup_frame_index])
         rotated = utils.rotate_image(frame, self.rotation_angle)
         
         utils.create_centered_window("Verify Next Trap", self.window_width, self.window_height)

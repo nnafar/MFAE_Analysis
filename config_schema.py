@@ -228,6 +228,31 @@ class RuptureDetectionConfig(BaseModel):
             raise ValueError(f"Outlier rejection window size must be odd, got {v}")
         return v
 
+class GuvSettings(BaseModel):
+    """Settings that apply specifically to GUV (Giant Unilamellar Vesicle) experiments.
+    
+    Set enable=True to activate all GUV-specific behaviour. The individual
+    sub-flags can be turned off independently if needed.
+    """
+    enable: bool = Field(default=False, description="Master switch for GUV mode.")
+    fill_membrane_holes: bool = Field(
+        default=True,
+        description=(
+            "Fill the hollow lumen of GUVs after thresholding using a flood-fill "
+            "from the image border. More reliable than morphological closing for "
+            "patchy or uneven membrane signals."
+        )
+    )
+    selection_frame_index: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Frame used during the interactive threshold-selection step. "
+            "Early frames (e.g. 2) show an intact spherical GUV; mid-video "
+            "frames often show a deformed or ruptured one."
+        )
+    )
+
 class WorkflowConfig(BaseModel):
     """Settings that control the pipeline's execution flow."""
     verify_traps_interactively: bool = True
@@ -257,8 +282,7 @@ class ImageProcessingConstants(BaseModel):
     canny_low_threshold: int = Field(default=50)
     canny_high_threshold: int = Field(default=150)
     gaussian_kernel_size: Tuple[int, int] = Field(default=(3, 3))
-    
-    fill_membrane_holes: bool = Field(default=False, description="Fill closed contours to fix dark lumens in GUVs")
+    # Note: fill_membrane_holes has moved to guv_settings in config.yaml.
 
     @validator('clahe_tile_grid_size')
     def grid_size_valid(cls, v: Tuple[int, int]) -> Tuple[int, int]:
@@ -337,6 +361,7 @@ class MFAConfig(BaseModel):
     
     paths: PathsConfig
     experiment_parameters: ExperimentConfig
+    guv_settings: GuvSettings = Field(default_factory=GuvSettings)
     model_parameters: ModelConfig
     rupture_detection: RuptureDetectionConfig
     workflow_settings: WorkflowConfig

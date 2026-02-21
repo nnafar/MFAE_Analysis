@@ -31,6 +31,7 @@ import pandas as pd
 
 if TYPE_CHECKING:
     from FileHandling_MFA import FileRead
+    import Utils_MFA as utils
 
 logger = logging.getLogger(__name__)
 
@@ -260,12 +261,17 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     Centrally managed mask generation for Protrusion and Cell Body.
     Prevents circular imports between quantification modules.
     """
-    img_8u = normalize_to_8bit(image)
+    img_8u = utils.normalize_to_8bit(image)
     gray = img_8u if len(img_8u.shape) == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
     
     img_params = params.get('image_processing', {})
+    guv_settings = params.get('guv_settings', {})
     margin_fraction = img_params.get('wall_clip_margin', 0.25)
-    fill_holes = img_params.get('fill_membrane_holes', False)
+    # fill_holes is driven entirely by guv_settings so it stays in one place.
+    fill_holes = (
+        guv_settings.get('enable', False) and
+        guv_settings.get('fill_membrane_holes', True)
+    )
     
     clahe = cv2.createCLAHE(clipLimit=img_params.get('clahe_clip_limit', 2.0), tileGridSize=(8,8))
     enhanced = clahe.apply(gray)
@@ -277,7 +283,10 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     
     # 1. Protrusion Mask (Left of pipette, walls clipped)
     _, bin_prot = cv2.threshold(blurred, threshold_prot, 255, cv2.THRESH_BINARY)
-    mask_prot = _clean_mask_internal(bin_prot, fill_holes)
+    
+    # Pass pip_x to allow optional split-convex hull filling before clipping
+    mask_prot = _clean_mask_internal(bin_prot, fill_holes, pip_x)
+    
     if margin > 0:
         mask_prot[:margin, :] = 0
         mask_prot[h-margin:, :] = 0
@@ -285,22 +294,39 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     
     # 2. Body Mask (Right of pipette)
     _, bin_body = cv2.threshold(blurred, threshold_body, 255, cv2.THRESH_BINARY)
-    mask_body = _clean_mask_internal(bin_body, fill_holes)
+    mask_body = _clean_mask_internal(bin_body, fill_holes, pip_x)
     mask_body[:, :pip_x] = 0
 
     return mask_prot, mask_body
 
-def _clean_mask_internal(binary: np.ndarray, fill_holes: bool = False) -> np.ndarray:
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+def _clean_mask_internal(binary: np.ndarray, fill_holes: bool = False, pipette_x: Optional[int] = None) -> np.ndarray:
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close)
     
-    if fill_holes:
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Advanced Split-Convex Hull filling for patchy GUV membranes
+    if fill_holes and pipette_x is not None:
+        left_half = closed.copy()
+        left_half[:, pipette_x:] = 0
+        
+        right_half = closed.copy()
+        right_half[:, :pipette_x] = 0
+        
         filled = np.zeros_like(closed)
-        cv2.drawContours(filled, contours, -1, 255, -1)
+        
+        pts_left = cv2.findNonZero(left_half)
+        if pts_left is not None:
+            hull_left = cv2.convexHull(pts_left)
+            cv2.drawContours(filled, [hull_left], -1, 255, -1)
+            
+        pts_right = cv2.findNonZero(right_half)
+        if pts_right is not None:
+            hull_right = cv2.convexHull(pts_right)
+            cv2.drawContours(filled, [hull_right], -1, 255, -1)
+            
         closed = filled
         
-    return cv2.morphologyEx(closed, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)))
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    return cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_open)
 
 def generate_cortex_masks(mask_total: np.ndarray, cortex_thickness_px: int = 3) -> Tuple[np.ndarray, np.ndarray]:
     """
