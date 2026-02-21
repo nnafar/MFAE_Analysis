@@ -652,7 +652,7 @@ class MFAAnalysis:
                 setup_progress.finish_trap(i, False)
                 
             except Exception as e:
-                logger.error(f"Error in setup trap #{trap_index+1}: {e}")
+                logger.error(f"Error in setup trap #{trap_index+1}: {e}", exc_info=True)
                 self.skipped.append(trap_index)
                 setup_progress.finish_trap(i, True)
 

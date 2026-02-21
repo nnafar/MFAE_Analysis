@@ -59,7 +59,16 @@ guv_settings:
   # For GUVs, use an early frame (e.g. 2) where the membrane is still intact
   # and spherical. The middle-of-video default used for cells often catches a
   # partially-entered or ruptured GUV, making thresholding unreliable.
-  selection_frame_index: 3
+  selection_frame_index: 5
+
+  # Closing kernel size used to merge the broken membrane ring fragments into one
+  # connected blob before convex-hull filling. Units are pixels (odd numbers only;
+  # the code auto-corrects even values).
+  # Rule of thumb: set to roughly half the gap width between arc fragments visible
+  # after thresholding.
+  #   Small / dim GUV, narrow gaps  → 8–12
+  #   Large / bright GUV, wide gaps → 15–25
+  guv_close_kernel_px: 8
 
 # ===================================================================
 # --- 4. PHYSICS MODEL ---

@@ -261,7 +261,7 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     Centrally managed mask generation for Protrusion and Cell Body.
     Prevents circular imports between quantification modules.
     """
-    img_8u = utils.normalize_to_8bit(image)
+    img_8u = normalize_to_8bit(image)
     gray = img_8u if len(img_8u.shape) == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
     
     img_params = params.get('image_processing', {})

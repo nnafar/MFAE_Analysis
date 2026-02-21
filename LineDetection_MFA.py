@@ -557,82 +557,160 @@ class LineDetectionMFA:
     
     def _clean_binary_mask(self, binary_mask: np.ndarray) -> np.ndarray:
         """Standard morphological cleaning for masks.
-        
-        For GUVs, the membrane signal is ring-like: bright rim, dark interior.
-        A simple threshold produces a broken ring, not a filled disc.
-        When fill_membrane_holes is True, we find the outer contour of each blob
-        and draw it as a solid filled shape, which fills the lumen regardless
-        of how dark or patchy it is.
+
+        Standard cell mode:
+            Remove specks → bridge small gaps (7×7 close) → remove border blobs → light open.
+
+        GUV mode:
+            GUV membranes produce a bright ring around a dark hollow interior.
+            After thresholding, that ring usually appears as several disconnected arc
+            fragments rather than one closed loop. The standard 7×7 close is too small
+            to bridge those gaps, so downstream contour-fill only fills each tiny fragment
+            individually — not the full disc.
+
+            The GUV path therefore uses a much larger closing kernel (20×20) to merge the
+            arc fragments into one rough connected blob, then keeps only the single largest
+            blob (discarding background fluorescence halos that may have been pulled in by
+            the large close), and finally replaces that blob with its convex hull filled
+            solid. The convex hull is the tightest polygon that wraps around all pixels of
+            the blob; even a badly broken ring produces a hull that closely approximates
+            the full GUV disc.
         """
+        guv_settings = self.params.get('guv_settings', {})
+        guv_fill = guv_settings.get('enable', False) and guv_settings.get('fill_membrane_holes', True)
+
         # --- Step 1: Remove tiny specks (noise) ---
-        # connectedComponentsWithStats labels every separate white blob and gives us
-        # statistics about each one (position, area, etc.). We keep only blobs that
-        # are at least min_area_threshold pixels in size.
+        # connectedComponentsWithStats labels every separate white blob. We keep
+        # only blobs that are at least min_area_threshold pixels in size.
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
         filtered = np.zeros_like(binary_mask)
         for i in range(1, num_labels):  # start at 1 to skip the background (label 0)
             if stats[i, cv2.CC_STAT_AREA] >= self.min_area_threshold:
                 filtered[labels == i] = 255
-    
-        # --- Step 2: Morphological close (bridges small gaps) ---
-        # This is a two-step operation: dilate (grow) then erode (shrink).
-        # Net effect: small gaps in the membrane ring get bridged.
-        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        filled = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
-    
-        # --- Step 3 (GUV mode): Fill the interior completely ---
-        # For cells with a hollow lumen (GUVs), the close above is not enough.
-        # We find the outer contour of each blob and draw it as a solid filled
-        # polygon. This works even when the interior is completely dark, because
-        # it doesn't rely on pixel intensity at all — only the outer boundary shape.
-        # GUV mode: fill the hollow lumen if enabled in guv_settings.
-        guv_settings = self.params.get('guv_settings', {})
-        if guv_settings.get('enable', False) and guv_settings.get('fill_membrane_holes', True):
-            filled = self._fill_contour_interiors(filled)
-    
-        # --- Step 4: Remove any blob touching the left image border ---
-        # These are usually the channel walls leaking into the ROI, not the cell.
+
+        if guv_fill:
+            # --- GUV Step 2: Large close to merge ring fragments ---
+            # Grows each bright arc fragment outward, bridging gaps between fragments to
+            # fuse them into one connected blob, then shrinks back (that's what MORPH_CLOSE
+            # does: dilate then erode).
+            #
+            # The kernel size controls how far the dilation reaches. It must be large enough
+            # to bridge the gap between arc fragments, but if it's too large it merges
+            # adjacent GUVs or background blobs into the main shape.
+            #
+            # Rule of thumb: set guv_close_kernel_px to roughly half the gap width between
+            # the largest arc fragments you can see after thresholding.
+            # - Small / dim GUV with narrow gaps → try 8–12
+            # - Large / bright GUV with wide gaps → try 15–25
+            # OpenCV requires kernel dimensions to be odd numbers, so we enforce that below.
+            close_px = guv_settings.get('guv_close_kernel_px', 15)
+            close_px = max(3, close_px)                        # must be at least 3
+            close_px = close_px if close_px % 2 == 1 else close_px + 1  # must be odd
+            kernel_guv = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_px, close_px))
+            merged = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_guv)
+
+            # --- GUV Step 3: Keep only the largest blob ---
+            # The large close may pull in background fluorescence halos and fuse them with
+            # the GUV ring, or leave them as separate blobs. Because the GUV ring is always
+            # the dominant structure in the ROI, keeping only the single largest connected
+            # component discards all background contamination before the hull is computed.
+            # If the mask is entirely empty (no GUV detected), this step returns zeros
+            # safely so the pipeline continues without crashing.
+            merged = self._keep_largest_blob(merged)
+
+            # --- GUV Step 4: Convex-hull fill ---
+            # Now that only the GUV blob remains, compute its convex hull and paint it
+            # solid. The hull spans the full extent of the fused ring pixels and produces
+            # a clean filled disc even if the ring is still slightly patchy.
+            filled = self._fill_convex_hulls(merged)
+
+        else:
+            # --- Standard Step 2: Morphological close (bridges small gaps) ---
+            # Net effect: small gaps in the cell boundary get bridged.
+            kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            filled = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
+
+        # --- Step 5: Remove any blob touching the left image border ---
+        # These are usually channel walls leaking into the ROI, not the cell.
         cleaned = self._remove_left_border_objects(filled)
-    
-        # --- Step 5: Final gentle cleanup ---
+
+        # --- Step 6: Final gentle cleanup ---
         # The open operation (erode then dilate) removes thin spurs and tiny specks
-        # that survived Step 1, without shrinking the main blob.
+        # without shrinking the main blob.
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         opened = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel_open)
-    
+
         return opened
 
-    def _fill_contour_interiors(self, binary_mask: np.ndarray) -> np.ndarray:
-        """Fill all enclosed holes inside detected blobs.
+    def _keep_largest_blob(self, binary_mask: np.ndarray) -> np.ndarray:
+        """Return a mask containing only the single largest white blob.
 
-        How it works (the 'flood from outside' trick):
-            1. Invert the mask so background = white (255), cell blobs = black (0).
-            2. Flood-fill starting from the top-left corner (guaranteed exterior).
-               This paints all connected exterior background a temporary grey (128).
-            3. After flooding, anything still white (255) in the inverted image is
-               an interior hole — surrounded by cell, unreachable from outside.
-            4. Invert back. Those interior holes become white and get OR'd into
-               the original mask, filling them.
+        After the large morphological close in GUV mode, the image may still contain
+        multiple white blobs: the fused GUV ring (large) and background fluorescence
+        remnants (small). This function finds the blob with the most pixels and
+        returns a mask with only that blob — everything else is zeroed out.
 
-        This is more reliable than filling via contours when the membrane is very
-        patchy, because it makes no assumption about contour shape.
+        If the input mask is completely empty (no white pixels at all), the function
+        returns a zero mask rather than crashing, so the pipeline handles missing GUVs
+        gracefully.
         """
-        # Step 1: invert — background (0) becomes white (255), blobs become black
-        inverted = cv2.bitwise_not(binary_mask)
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
 
-        # Step 2: flood fill from the top-left corner outward
-        # The mask argument to floodFill must be 2 pixels larger in each dimension
-        h, w = inverted.shape
-        flood_mask = np.zeros((h + 2, w + 2), np.uint8)
-        # We paint the exterior with grey (128) so we can identify it later
-        cv2.floodFill(inverted, flood_mask, seedPoint=(0, 0), newVal=128)
+        if num_labels <= 1:
+            # num_labels == 1 means only the background label exists — mask is empty.
+            return np.zeros_like(binary_mask)
 
-        # Step 3: anything still white (255) in 'inverted' is an interior hole
-        interior_holes = (inverted == 255).astype(np.uint8) * 255
+        # stats has one row per label. Column CC_STAT_AREA holds pixel count.
+        # We skip label 0 (background) by starting the search from index 1.
+        # np.argmax finds the index of the largest value; +1 shifts back to label space.
+        largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
 
-        # Step 4: add the holes back into the original mask
-        result = cv2.bitwise_or(binary_mask, interior_holes)
-        return result
+        output = np.zeros_like(binary_mask)
+        output[labels == largest_label] = 255
+        return output
+
+    def _fill_convex_hulls(self, binary_mask: np.ndarray) -> np.ndarray:
+        """Replace each white blob with its convex hull, painted solid.
+
+        A convex hull is the smallest convex polygon that contains all pixels of a blob.
+        Visually: imagine stretching a rubber band around all the white pixels — the shape
+        it forms is the convex hull.
+
+        Why convex hull instead of contour fill?
+        When a GUV membrane ring is only partially detected (broken arcs), each arc is a
+        separate blob. 'findContours' traces around each arc individually, so filling by
+        contour only fills each tiny arc-shaped region. The convex hull of the same arc,
+        however, spans from one end to the other, which — when the arcs together form
+        most of a circle — produces a filled disc.
+
+        Steps:
+            1. Find every connected white blob using connectedComponentsWithStats.
+            2. Collect the pixel coordinates of each blob.
+            3. Compute the convex hull of those coordinates.
+            4. Draw the hull as a solid filled polygon onto a blank output canvas.
+        """
+        output = np.zeros_like(binary_mask)
+
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
+
+        for i in range(1, num_labels):  # skip label 0 (background)
+            # Get the (x, y) pixel coordinates of all pixels belonging to this blob.
+            # np.column_stack combines two 1-D arrays into an Nx2 array of [x, y] pairs.
+            # cv2.convexHull expects points in this shape.
+            ys, xs = np.where(labels == i)
+            if len(xs) < 3:
+                # A convex hull needs at least 3 points to form a polygon.
+                # Fewer points means a dot or a line — just keep it as-is.
+                output[ys, xs] = 255
+                continue
+
+            points = np.column_stack((xs, ys))     # shape: (N, 2)
+            hull = cv2.convexHull(points)           # shape: (M, 1, 2)
+
+            # Draw the convex hull polygon as a solid filled shape.
+            cv2.fillConvexPoly(output, hull, color=255)
+
+        return output
 
     def _remove_left_border_objects(self, binary_image: np.ndarray) -> np.ndarray:
         """
