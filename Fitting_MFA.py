@@ -160,7 +160,7 @@ class FittingMFA:
                 
                 # Define a physical noise floor (e.g., 0.1 pixels converted to microns)
                 scale_factor = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
-                min_noise_floor = 0.1 * scale_factor
+                min_noise_floor = 0.5 * scale_factor  # Increased from 0.1 to prevent bounds collapse
                 
                 # Prevent bounds from collapsing to zero if the cell is perfectly still
                 rolling_std = np.maximum(rolling_std, min_noise_floor)
@@ -286,10 +286,9 @@ class FittingMFA:
         return self.models_cache
 
 
-    def _fit_with_multi_start(self, func, t, l, bounds, n_starts=7):
+    def _fit_with_multi_start(self, func, t, l, bounds, maxfev=2000, n_starts=7):
         """
-        OPTIMIZATION: Multi-Start Levenberg-Marquardt.
-        Replaces slow Differential Evolution for faster fitting.
+        Multi-Start Levenberg-Marquardt.
         """
         best_r2 = -np.inf
         best_p = None
@@ -304,7 +303,7 @@ class FittingMFA:
             guess = np.random.uniform(safe_lower, safe_upper)
             try:
                 # Use the fast local optimizer (curve_fit)
-                popt, _ = curve_fit(func, t, l, p0=guess, bounds=bounds, maxfev=2000)
+                popt, _ = curve_fit(func, t, l, p0=guess, bounds=bounds, maxfev=maxfev)
                 
                 # Calculate R-squared to evaluate this specific start
                 r2 = self._calculate_r_squared(l, func(t, *popt))
@@ -321,15 +320,16 @@ class FittingMFA:
             raise RuntimeError("Insufficient data.")
 
         models_to_fit = self._get_models_to_fit()
-        use_global = self.params.get('use_global_optimization', False)
+        use_global = self.params.get('use_global_optimization', False)      
         
         for name, model_info in models_to_fit.items():
             try:
                 n_params = model_info["n_params"]
+                maxfev_val = self.params.get('fitting_parameters', {}).get(model_info["maxfev_key"], 2000)
                 # Decide between the multi-start global approach or single local fit
                 if use_global:
                     p_opt, r2 = self._fit_with_multi_start(
-                        model_info["func"], self.t_fit, self.l_fit, model_info["bounds"]
+                        model_info["func"], self.t_fit, self.l_fit, model_info["bounds"], maxfev=maxfev_val
                     )
                     if p_opt is None:
                         raise ValueError(f"Multi-start optimizer failed to converge for {name}.")

@@ -205,18 +205,24 @@ def save_plot_png(save_path: Union[str, Path], dpi: int = 300) -> None:
 # =============================================================================
 
 def normalize_to_8bit(image: np.ndarray) -> np.ndarray:
-    """Normalizes an image of any bit depth to the standard 8-bit (0-255) range."""
+    """Normalizes an image using 1st and 99.9th percentiles to ignore hot pixels."""
     if image is None:
         logger.warning("normalize_to_8bit received a None image. Returning black square.")
         return np.zeros((100, 100), dtype=np.uint8)
     if image.dtype == np.uint8:
         return image
+    
     try:
-        normalized = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
+        # Percentile-based contrast stretching
+        p_low, p_high = np.percentile(image, (1.0, 99.9))
+        if p_high > p_low:
+            normalized = np.clip((image - p_low) / (p_high - p_low) * 255.0, 0, 255)
+        else:
+            normalized = np.zeros_like(image, dtype=float)
         return normalized.astype(np.uint8)
-    except cv2.error as e:
+    except Exception as e:
         logger.warning(f"Failed to normalize image. Returning as is. Error: {e}")
-        if image.ndim > 2: # Handle potential color images
+        if image.ndim > 2:
              return image[..., 0].astype(np.uint8)
         return image.astype(np.uint8)
 

@@ -103,7 +103,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         # --- Inject pulse frame index so the rupture detector can use it ---
         dye_params_pre = params.get('dye_uptake_parameters', {})
         if dye_params_pre.get('enable', False):
-            pulse_frame_0based = dye_params_pre.get('pulse_frame', 10) - 1
+            pulse_frame_0based = dye_params_pre.get('pulse_index', 9)
             # setdefault creates the 'rupture_detection' dict if it doesn't already exist
             params.setdefault('rupture_detection', {})['pulse_frame_idx'] = pulse_frame_0based
 
@@ -123,7 +123,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         pulse_time = None
         dye_params = params.get('dye_uptake_parameters', {})
         if dye_params.get('enable', False):
-            p_idx = dye_params.get('pulse_frame', 10) - 1
+            p_idx = dye_params.get('pulse_index', 9)
             if 0 <= p_idx < len(time_data):
                 pulse_time = time_data[p_idx]
         
@@ -387,17 +387,10 @@ class MFAAnalysis:
         
         for p in temp_base.glob("MFA_temp_*"):
             if not p.is_dir(): continue
-            
             try:
-                # Check folder modification time
-                stat = p.stat()
-                age_hours = (now - stat.st_mtime) / 3600
-                
-                if age_hours > max_age_hours:
-                    logger.warning(f"Removing orphaned temp dir: {p.name} (Age: {age_hours:.1f}h)")
-                    shutil.rmtree(p)
-            except Exception as e:
-                logger.debug(f"Could not check/remove {p.name}: {e}")
+                if (now - p.stat().st_mtime) / 3600 > max_age_hours:
+                    shutil.rmtree(p, ignore_errors=True)
+            except Exception: pass
 
     def _setup_output_directory(self) -> Tuple[Path, Dict[str, Path]]:
         """Creates the structured folder hierarchy for results."""
@@ -431,13 +424,8 @@ class MFAAnalysis:
         return results_dir, subdirs
     
     def cleanup(self):
-        """Removes temporary files (memory maps) to free disk space."""
         if hasattr(self, 'temp_dir') and self.temp_dir.exists():
-            try:
-                shutil.rmtree(self.temp_dir)
-                logger.info(f"Cleaned up temporary directory: {self.temp_dir}")
-            except Exception as e:
-                logger.warning(f"Could not cleanup temp dir: {e}")
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
                     
 
     def run_analysis(self) -> bool:

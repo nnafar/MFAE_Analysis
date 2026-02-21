@@ -250,7 +250,20 @@ class CropImage():
 
         logger.info("Setup complete!")
         return 'confirm'
-
+    
+    def _handle_ui_keypress(self, key: int) -> str:
+        """Centralized hotkey handler for contrast/brightness and flow control."""
+        if key == 13: return 'confirm'
+        if key == 27: return 'stop'
+        if key in (ord('r'), ord('R')): return 'restart'
+    
+        if key in (ord('l'), ord('L')): self.display_alpha = min(3.0, self.display_alpha + 0.1)
+        elif key in (ord('j'), ord('J')): self.display_alpha = max(0.1, self.display_alpha - 0.1)
+        elif key in (ord('k'), ord('K')): self.display_beta = min(100, self.display_beta + 5)
+        elif key in (ord('i'), ord('I')): self.display_beta = max(-100, self.display_beta - 5)
+        
+        return 'continue'
+    
     def _adjust_brightness_contrast(self, image: np.ndarray) -> np.ndarray:
         """Enhances image contrast using CLAHE and manual controls."""
         clip_limit = self.params.get('clahe_clip_limit', 2.0)

@@ -317,8 +317,13 @@ class DyeUptakeConfig(BaseModel):
     
     # Analysis parameters
     pulse_frame: int = Field(default=10, ge=1, description="Frame number where pulse is applied (1-based index)")
+    pulse_index: int = Field(default=9, description="0-based index calculated automatically")
     baseline_frames: int = Field(default=5, ge=1, description="Number of pre-pulse frames to average for baseline")
-
+    
+    @validator('pulse_index', always=True)
+    def calculate_pulse_index(cls, v, values):
+        return max(0, values.get('pulse_frame', 10) - 1)
+    
 class ActinConfig(BaseModel):
     """Configuration for actin distribution analysis."""
     enable: bool = False

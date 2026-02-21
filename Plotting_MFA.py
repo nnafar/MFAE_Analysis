@@ -33,7 +33,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
     if len(t) == 0: return
 
     colors = utils.MFA_COLORS
-    pulse_frame = params.get('dye_uptake_parameters', {}).get('pulse_frame', 10) - 1
+    pulse_frame = params.get('dye_uptake_parameters', {}).get('pulse_index', 9)
     pulse_time = t[min(pulse_frame, len(t)-1)]
     
     if pipette_x is None: pipette_x = results.get('pipette_x_px', 0)
@@ -726,7 +726,7 @@ def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Pa
     pulse_time = None
     dye_params = params.get('dye_uptake_parameters', {})
     if dye_params.get('enable', False):
-        p_idx = dye_params.get('pulse_frame', 10) - 1
+        p_idx = dye_params.get('pulse_index', 9)
         t_first = valid_results[0]['data']['time']
         if 0 <= p_idx < len(t_first):
             pulse_time = t_first[p_idx]
