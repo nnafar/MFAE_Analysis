@@ -2,9 +2,9 @@
 """
 File Handling for Bulk MFAE Analysis.
 UPDATED: 
-- Supports 's', 'ms', 'us', 'µs'.
-- Preserves the original folder label (e.g. "5us") for plotting.
-- Normalizes to milliseconds for sorting logic.
+- Supports extracting Pressure (Pa) directly from the folder name.
+- Groups data by (Pressure, Voltage, Duration).
+- Extracts max scalar values for Spearman correlation mapping.
 """
 
 import os
@@ -28,6 +28,7 @@ class ExperimentMetadata:
     """Holds metadata extracted from the folder name."""
     date: str
     experiment_id: str
+    pressure: int       # e.g., 1100 (from 1100Pa)
     voltage: int        # e.g., 100
     duration: float     # NORMALIZED TO MS (for sorting/physics)
     duration_label: str # ORIGINAL STRING (e.g., "5us", "10s") for plotting
@@ -60,19 +61,20 @@ class BulkDataLoader:
     Scans, parses, and loads MFAE experiment data.
     """
     
-    # UPDATED REGEX:
+    # EXPECTED PATTERN:
     # 1. Separators: [-_] matches hyphen OR underscore.
     # 2. Units: (ms|us|µs|s) matches s, ms, or us.
-    # Example: "260128_Exp1-100V_5s_frame10"
-    FOLDER_PATTERN = re.compile(r"(\d{6})_(.+)[-_](\d+)V[-_](\d+)(ms|us|µs|s)[-_]frame(\d+)", re.IGNORECASE)
+    # 3. Expects a pressure value with "Pa"
+    # Example: "YYMMDD_ExpID-1100Pa-100V-5s-frame10"
+    FOLDER_PATTERN = re.compile(r"(\d{6})_(.+)[-_](\d+)Pa[-_](\d+)V[-_](\d+)(ms|us|µs|s)[-_]frame(\d+)", re.IGNORECASE)
 
     def __init__(self, root_output_dir: str):
         self.root_dir = Path(root_output_dir)
         if not self.root_dir.exists():
             raise FileNotFoundError(f"Root directory not found: {self.root_dir}")
         
-        # Key: (Voltage, Duration_Normalized_ms) -> Value: List[TrapData]
-        self.grouped_data: Dict[Tuple[int, float], List[TrapData]] = {}
+        # Key: (Pressure_Pa, Voltage_V, Duration_Normalized_ms) -> Value: List[TrapData]
+        self.grouped_data: Dict[Tuple[int, int, float], List[TrapData]] = {}
 
     def scan_and_load(self):
         """Main execution method to browse and load all data."""
@@ -83,12 +85,12 @@ class BulkDataLoader:
                 metadata = self._parse_folder_name(entry.name, entry)
                 if metadata:
                     logger.info(f"Found Experiment: {entry.name}")
-                    logger.info(f"   -> Label: {metadata.voltage}V {metadata.duration_label} (Norm: {metadata.duration}ms)")
+                    logger.info(f"   -> Label: {metadata.pressure}Pa | {metadata.voltage}V {metadata.duration_label} (Norm: {metadata.duration}ms)")
                     
                     traps = self._load_experiment_traps(metadata)
                     
-                    # Group by Normalized Duration (ms) so sorting works (5us < 5ms)
-                    group_key = (metadata.voltage, metadata.duration)
+                    # Group by Pressure, Voltage, and Normalized Duration
+                    group_key = (metadata.pressure, metadata.voltage, metadata.duration)
                     if group_key not in self.grouped_data:
                         self.grouped_data[group_key] = []
                     
@@ -100,13 +102,13 @@ class BulkDataLoader:
         if match:
             date_str = match.group(1)
             exp_id = match.group(2)
-            volts = int(match.group(3))
-            raw_val = float(match.group(4))
-            unit = match.group(5).lower()
-            frame = int(match.group(6))
+            pressure = int(match.group(3))
+            volts = int(match.group(4))
+            raw_val = float(match.group(5))
+            unit = match.group(6).lower()
+            frame = int(match.group(7))
             
             # 1. Create the Display Label (e.g. "5us")
-            # We cast raw_val to int if it's a whole number for cleaner labels (5.0 -> 5)
             val_fmt = int(raw_val) if raw_val.is_integer() else raw_val
             label = f"{val_fmt}{unit}"
 
@@ -116,14 +118,14 @@ class BulkDataLoader:
                 duration_ms = raw_val * 1000.0
             elif unit in ['us', 'µs']:
                 duration_ms = raw_val / 1000.0
-            # 'ms' stays as is
             
             return ExperimentMetadata(
                 date=date_str,
                 experiment_id=exp_id,
+                pressure=pressure,
                 voltage=volts,
-                duration=duration_ms,     # Float for sorting
-                duration_label=label,     # String for Plotting
+                duration=duration_ms,
+                duration_label=label,
                 pulse_frame=frame,
                 full_path=full_path
             )
@@ -194,14 +196,43 @@ class BulkDataLoader:
             logger.error(f"Error loading CSV {file_path.name}: {e}")
             return {}
 
-def get_group_stats(grouped_data: Dict[Tuple[int, float], List[TrapData]]):
+def extract_all_scalars(grouped_data: Dict[Tuple[int, int, float], List[TrapData]]) -> pd.DataFrame:
+    """Extracts maximum values from time-series arrays to compute scalar metrics for correlation."""
+    rows = []
+    for (press, volt, dur), traps in grouped_data.items():
+        for trap in traps:
+            row_data = {
+                'Condition': f"{press}Pa_{volt}V_{dur}",
+                'Pressure_Pa': press,
+                'Voltage_V': volt,
+                'Duration_ms': dur,
+                'Trap_ID': trap.trap_id
+            }
+            
+            # Extract max values for protrusion data
+            if hasattr(trap, 'protrusion_data') and trap.protrusion_data:
+                for k, v in trap.protrusion_data.items():
+                    if 'time' not in k.lower() and isinstance(v, np.ndarray) and len(v) > 0:
+                        row_data[f"Prot_{k}"] = np.max(v)
+                        
+            # Extract max values for uptake data
+            if hasattr(trap, 'uptake_data') and trap.uptake_data:
+                for k, v in trap.uptake_data.items():
+                    if 'time' not in k.lower() and isinstance(v, np.ndarray) and len(v) > 0:
+                        row_data[f"Uptake_{k}"] = np.max(v)
+                        
+            rows.append(row_data)
+            
+    return pd.DataFrame(rows)
+
+def get_group_stats(grouped_data: Dict[Tuple[int, int, float], List[TrapData]]):
     summary = []
-    # Sort keys by Voltage, then Duration
+    # Sort keys by Pressure, then Voltage, then Duration
     sorted_keys = sorted(grouped_data.keys())
-    for (volt, dur) in sorted_keys:
-        traps = grouped_data[(volt, dur)]
+    for (press, volt, dur) in sorted_keys:
+        traps = grouped_data[(press, volt, dur)]
         if not traps: continue
         # Use the label from the first trap in the group
         label = traps[0].metadata.duration_label
-        summary.append(f"Condition {volt}V {label}: {len(traps)} traps found.")
+        summary.append(f"Condition [{press}Pa | {volt}V {label}]: {len(traps)} traps found.")
     return "\n".join(summary)

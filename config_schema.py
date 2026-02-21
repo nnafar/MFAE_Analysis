@@ -257,6 +257,8 @@ class ImageProcessingConstants(BaseModel):
     canny_low_threshold: int = Field(default=50)
     canny_high_threshold: int = Field(default=150)
     gaussian_kernel_size: Tuple[int, int] = Field(default=(3, 3))
+    
+    fill_membrane_holes: bool = Field(default=False, description="Fill closed contours to fix dark lumens in GUVs")
 
     @validator('clahe_tile_grid_size')
     def grid_size_valid(cls, v: Tuple[int, int]) -> Tuple[int, int]:

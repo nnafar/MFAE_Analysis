@@ -1,0 +1,5 @@
+For the batch analysis, your folders like this:
+
+Electroporated: YYMMDD_ExperimentID-1100Pa-100V-5ms-frame10
+
+Aspiration: YYMMDD_ExperimentID-1100Pa-0V-0ms-frame0

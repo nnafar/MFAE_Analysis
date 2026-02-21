@@ -48,6 +48,8 @@ class LineDetectionMFA:
         wf_settings = self.params.get('workflow_settings', {})
         img_params = self.params.get('image_processing', {})
 
+        self.fill_membrane_holes = img_params.get('fill_membrane_holes', False)
+
         # Interactive Window parameters (Updated to use workflow_settings)
         self.window_scale = wf_settings.get('window_scale_factor', 1.0)
         base_w = wf_settings.get('interactive_window_width', 1000)
@@ -558,10 +560,17 @@ class LineDetectionMFA:
         
         # Close holes
         kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        filled = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
+        closed = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
+        
+        # Extract outer boundary and fill the entire lumen
+        if self.fill_membrane_holes:
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            filled = np.zeros_like(closed)
+            cv2.drawContours(filled, contours, -1, 255, -1)
+            closed = filled
         
         # Remove artifacts on left border
-        cleaned = self._remove_left_border_objects(filled)
+        cleaned = self._remove_left_border_objects(closed)
         
         # Final cleanup
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))

@@ -31,6 +31,13 @@ def main():
 
     logger.info("--- PHASE 2: VISUALIZATION ---")
     
+    # 1. Build Scalar DataFrame and run Spearman Correlation
+    df_scalars = bfh.extract_all_scalars(grouped_data)
+    if not df_scalars.empty:
+        try: bp.plot_spearman_correlation(df_scalars, results_dir)
+        except Exception as e: logger.error(f"Spearman Correlation Failed: {e}")
+    
+    # 2. Run Aggregate Plotting Suite
     try: bp.plot_max_protrusion_distribution(grouped_data, results_dir)
     except Exception as e: logger.error(f"Plot 1 Failed: {e}")
 

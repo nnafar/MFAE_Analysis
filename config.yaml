@@ -13,11 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment5-100V-5ms-frame10"
-
+  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260210_Experiment225_InV_BranchedCortex"
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "Trial_2"
+  # For bulk analysis name the output folder as:
+  # Electroporated: YYMMDD_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
+  # Aspirated Only: YYMMDD_ExperimentID-XXXXPa-0V-0ms-frame0
+  experiment_id: "260210_Experiment225BranchedCortex-1100Pa-0V-0ms-frame0"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -25,16 +27,17 @@ paths:
 # These MUST match your physical equipment settings.
 experiment_parameters:
   # Microscope Resolution: How many microns is one pixel? (Check your objective lens specs).
-  scale_factor: 0.629      # [µm/pixel]
+  scale_factor: 0.158      # [µm/pixel] (60x = 0.629, 40x = 0.158)
   
   # The pressure difference driving the cell into the pipette.
-  constant_pressure: 1100  # [Pascals]
+  # Calculated as [P_inlet - P_waste-outlet] * 0.55; the multiplication factor is based on Jessy's comsol sim
+  constant_pressure: 1100  # [Pascals] 
   
   # Time between frames. (Used as a backup if image metadata is missing).
-  frame_interval: 1.7      # [Seconds]
+  frame_interval: 0.14      # [Seconds]
   
   # Maximum number of traps to process (prevents infinite loops if detection fails)
-  max_traps: 18            
+  max_traps: 9            
 
 # ===================================================================
 # --- 3. PHYSICS MODEL ---
@@ -177,7 +180,7 @@ workflow_settings:
 # --- 6. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
 # ===================================================================
 dye_uptake_parameters:
-  enable: True
+  enable: False
   has_pulse: True                   # Set to False for control experiments without electroporation.
   
   # File Naming: Strings used to identify which image is which channel.
@@ -213,6 +216,7 @@ image_processing:
   canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).
   canny_high_threshold: 150        # Edge detection sensitivity (Upper limit).
   gaussian_kernel_size: [3, 3]     # Blur amount to reduce noise before detection.
+  fill_membrane_holes: True        # Set True for GUVs to fill dark interior lumens.
 
 kymograph_parameters:
   default_kymograph_width_px: 100  # Width of the generated space-time image.

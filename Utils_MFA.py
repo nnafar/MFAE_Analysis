@@ -256,7 +256,6 @@ def prepare_display_image(image: np.ndarray, window_width: int, window_height: i
 
 def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int, 
                         threshold_body: int, params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
-
     """
     Centrally managed mask generation for Protrusion and Cell Body.
     Prevents circular imports between quantification modules.
@@ -266,6 +265,8 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     
     img_params = params.get('image_processing', {})
     margin_fraction = img_params.get('wall_clip_margin', 0.25)
+    fill_holes = img_params.get('fill_membrane_holes', False)
+    
     clahe = cv2.createCLAHE(clipLimit=img_params.get('clahe_clip_limit', 2.0), tileGridSize=(8,8))
     enhanced = clahe.apply(gray)
     blurred = cv2.GaussianBlur(enhanced, tuple(img_params.get('gaussian_kernel_size', (3,3))), 0)
@@ -276,7 +277,7 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     
     # 1. Protrusion Mask (Left of pipette, walls clipped)
     _, bin_prot = cv2.threshold(blurred, threshold_prot, 255, cv2.THRESH_BINARY)
-    mask_prot = _clean_mask_internal(bin_prot)
+    mask_prot = _clean_mask_internal(bin_prot, fill_holes)
     if margin > 0:
         mask_prot[:margin, :] = 0
         mask_prot[h-margin:, :] = 0
@@ -284,15 +285,22 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     
     # 2. Body Mask (Right of pipette)
     _, bin_body = cv2.threshold(blurred, threshold_body, 255, cv2.THRESH_BINARY)
-    mask_body = _clean_mask_internal(bin_body)
+    mask_body = _clean_mask_internal(bin_body, fill_holes)
     mask_body[:, :pip_x] = 0
 
     return mask_prot, mask_body
 
-def _clean_mask_internal(binary: np.ndarray) -> np.ndarray:
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
-    cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    return cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)))
+def _clean_mask_internal(binary: np.ndarray, fill_holes: bool = False) -> np.ndarray:
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+    closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close)
+    
+    if fill_holes:
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filled = np.zeros_like(closed)
+        cv2.drawContours(filled, contours, -1, 255, -1)
+        closed = filled
+        
+    return cv2.morphologyEx(closed, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)))
 
 def generate_cortex_masks(mask_total: np.ndarray, cortex_thickness_px: int = 3) -> Tuple[np.ndarray, np.ndarray]:
     """

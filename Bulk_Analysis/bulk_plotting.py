@@ -72,6 +72,12 @@ def determine_status(trap: bfh.TrapData) -> str:
     if t_full_max == 0: return "Unknown"
     if t_filtered_max < (0.95 * t_full_max): return "Ruptured"
     else: return "Intact"
+    
+def get_cond_label(meta: bfh.ExperimentMetadata) -> str:
+    """Generates a unique, file-safe string identifying the condition."""
+    if meta.voltage == 0:
+        return f"{meta.pressure}Pa_Control"
+    return f"{meta.pressure}Pa_{meta.voltage}V_{meta.duration_label}"
 
 def align_time_to_pulse(time_array: np.ndarray, pulse_frame: int) -> np.ndarray:
     if len(time_array) <= pulse_frame:
@@ -155,7 +161,7 @@ def plot_max_protrusion_distribution(grouped_data, output_dir: Path):
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = f"{traps[0].metadata.voltage}V {traps[0].metadata.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         for trap in traps:
             status = determine_status(trap)
             if status in ["Empty", "Unknown"]: continue
@@ -185,7 +191,7 @@ def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
         if not traps: continue
         
         meta = traps[0].metadata
-        cond_label = f"{meta.voltage}V_{meta.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         
         # 1. Aggregate Data per Experiment (Replicate)
         records = []
@@ -247,7 +253,7 @@ def plot_rupture_probability(grouped_data, output_dir: Path):
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = f"{traps[0].metadata.voltage}V {traps[0].metadata.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         total = sum(1 for t in traps if determine_status(t) not in ["Empty", "Unknown"])
         if total == 0: continue
         ruptured = sum(1 for t in traps if determine_status(t) == "Ruptured")
@@ -275,7 +281,7 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
         if not traps: continue
         
         meta = traps[0].metadata
-        cond_label = f"{meta.voltage}V_{meta.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         
         # 1. Group by Trap ID
         trap_groups = _group_by_trap_id(traps)
@@ -426,7 +432,7 @@ def plot_protrusion_recoil_velocity(grouped_data, output_dir: Path):
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = f"{traps[0].metadata.voltage}V {traps[0].metadata.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         for trap in traps:
             status = determine_status(trap)
             if status != "Intact": continue
@@ -450,7 +456,7 @@ def plot_uptake_exponential_fit(grouped_data, output_dir: Path):
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = f"{traps[0].metadata.voltage}V {traps[0].metadata.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         for trap in traps:
             status = determine_status(trap)
             if status != "Intact": continue
@@ -484,7 +490,7 @@ def plot_correlation_length_vs_uptake(grouped_data, output_dir: Path):
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = f"{traps[0].metadata.voltage}V {traps[0].metadata.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         for trap in traps:
             status = determine_status(trap)
             if status in ["Empty", "Unknown"]: continue
@@ -512,7 +518,7 @@ def plot_per_trap_uptake_distribution(grouped_data, output_dir: Path):
         if not traps: continue
         
         meta = traps[0].metadata
-        cond_label = f"{meta.voltage}V_{meta.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         
         records = []
         for trap in sorted(traps, key=lambda t: t.trap_id):
@@ -598,7 +604,7 @@ def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = f"{traps[0].metadata.voltage}V_{traps[0].metadata.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         
         trap_groups = _group_by_trap_id(traps)
         sorted_ids = sorted(trap_groups.keys())
@@ -651,7 +657,7 @@ def plot_recoil_fits_multipanel(grouped_data, output_dir: Path):
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = f"{traps[0].metadata.voltage}V_{traps[0].metadata.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         
         trap_groups = _group_by_trap_id(traps)
         sorted_ids = sorted(trap_groups.keys())
@@ -701,7 +707,7 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = f"{traps[0].metadata.voltage}V_{traps[0].metadata.duration_label}"
+        cond_label = get_cond_label(traps[0].metadata)
         
         trap_groups = _group_by_trap_id(traps)
         sorted_ids = sorted(trap_groups.keys())
@@ -763,3 +769,48 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
         
         plt.savefig(output_dir / f"Uptake_Traces_Panel_{cond_label}.png", dpi=PANEL_DPI)
         plt.close()
+        
+def plot_spearman_correlation(df_scalars: pd.DataFrame, output_dir: Path) -> None:
+    """
+    Computes a Spearman correlation matrix across all max scalar metrics 
+    and generates a heatmap to classify cell behavior.
+    """
+    # Drop identifiers and textual metadata
+    cols_to_drop = ['Condition', 'Trap_ID']
+    df_numeric = df_scalars.drop(columns=[c for c in cols_to_drop if c in df_scalars.columns])
+    df_numeric = df_numeric.select_dtypes(include=[np.number])
+    
+    # Drop columns with zero variance (prevents division by zero)
+    df_numeric = df_numeric.loc[:, df_numeric.nunique() > 1]
+    
+    if df_numeric.shape[1] < 2:
+        logger.warning("Insufficient variable variance for correlation analysis.")
+        return
+        
+    corr_matrix = df_numeric.corr(method='spearman')
+    
+    fig, ax = plt.subplots(figsize=(16, 14))
+    sns.heatmap(
+        corr_matrix, 
+        annot=False,            
+        cmap='coolwarm', 
+        vmin=-1, 
+        vmax=1, 
+        center=0, 
+        square=True, 
+        linewidths=0.5, 
+        cbar_kws={"shrink": 0.8, "label": "Spearman Correlation Coefficient (ρ)"}, 
+        ax=ax
+    )
+    
+    ax.set_title("Spearman Correlation of Morphological and Fluorescent Metrics", pad=20, weight='bold')
+    plt.xticks(rotation=45, ha='right', fontsize=8)
+    plt.yticks(fontsize=8)
+    plt.tight_layout()
+    
+    save_path = output_dir / "spearman_correlation_heatmap.png"
+    plt.savefig(save_path, dpi=300)
+    plt.close(fig)
+    
+    corr_matrix.to_csv(output_dir / "spearman_correlation_matrix.csv")
+    logger.info(f"Saved Spearman correlation heatmap and matrix.")
