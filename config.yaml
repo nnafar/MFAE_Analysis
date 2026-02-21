@@ -108,7 +108,7 @@ rupture_detection:
   #    Only activates when dye_uptake_parameters.enable is True.
   pulse_context_pre_window: 5         # Frames before pulse to average as pre-pulse baseline
   pulse_context_post_window: 5        # Frames after pulse to average for comparison (sustained leak check)
-  pulse_context_peak_window: 3        # Frames after pulse to check for peak (transient burst check)
+  pulse_context_peak_window: 2        # Frames after pulse to check for peak (transient burst check)
   pulse_context_fold_threshold: 1.3   # Post/pre ratio required to flag rupture (1.3 = 30% increase)
   pulse_context_abs_threshold: 0.5    # Minimum absolute intensity increase also required
 
@@ -118,6 +118,12 @@ rupture_detection:
   # This setting controls how many frames after entry an event must occur before it
   # counts as evidence against DOA. Events in the first N frames are entry noise.
   doa_min_acute_delay_frames: 3
+
+  # --- EXIT DETECTION PULSE GUARD ---
+  # Frames around the pulse to skip when checking for cell exit.
+  # Prevents false exits caused by the electric field disrupting length detection.
+  # Window runs from (pulse_frame - 1) to (pulse_frame + this value).
+  pulse_exit_blanking_frames: 5
 
   # --- DATA CLEANING & SAFETY NETS ---
   exclude_early_fraction: 0.03  

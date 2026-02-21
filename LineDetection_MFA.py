@@ -725,9 +725,26 @@ class LineDetectionMFA:
                 break
         self.results['entry_frame_index'] = entry_idx
         
-        # 2. Exit: Detect cell slip or massive loss after stable period
+        # 2. Exit: Detect cell slip or massive loss after stable period.
+        #
+        # PULSE GUARD: During an electroporation pulse, the electric field can briefly
+        # disrupt the image — either the cell appears to vanish (triggering exit_thresh)
+        # or the length spikes then collapses (triggering exit_ratio). Both are artefacts,
+        # not real exits. We skip the exit check for a short blanking window around the
+        # known pulse frame so these frames cannot cause a false early exit.
+        pulse_frame = self.params.get('dye_uptake_parameters', {}).get('pulse_frame', None)
+        pulse_blanking = self.params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
+
+        # Build the set of frames to skip (only when a pulse frame is known)
+        if pulse_frame is not None:
+            blanked_frames = set(range(pulse_frame - 1, pulse_frame + pulse_blanking + 1))
+        else:
+            blanked_frames = set()
+
         exit_idx = len(protrusions)
         for i in range(entry_idx + 5, len(protrusions)):
+            if i in blanked_frames:
+                continue  # Skip — pulse artefact window, not a real exit
             p = protrusions[i]
             p_prev = protrusions[i-1]
             if p < exit_thresh or (p_prev > 3.0 and p < exit_ratio * p_prev):
@@ -1053,33 +1070,6 @@ class LineDetectionMFA:
     ) -> Tuple[bool, Optional[int]]:
         """
         Detects membrane rupture caused by an electric pulse.
-
-        Runs two complementary checks, both of which compare intensity only within
-        a narrow window around the known pulse frame. This keeps the detector blind
-        to noise elsewhere in the trace.
-
-        CHECK 1 — SUSTAINED LEAK (median-based):
-            Asks: "Is the average intensity in the N frames after the pulse higher
-            than the N frames before it?" Catches persistent leaks like Traps 14/18.
-
-        CHECK 2 — TRANSIENT BURST (peak-based):
-            Asks: "Did the intensity spike sharply in the first 1-2 frames after the
-            pulse, even if it quickly returned to baseline?" Catches brief cytoplasm
-            bursts that reseal rapidly, like Trap 13. Using the peak (max) instead of
-            the median means a single bright frame is sufficient evidence.
-
-        Both checks require the same absolute and fold-change thresholds, so they
-        are equally conservative — the only difference is whether they look at the
-        sustained level or the momentary peak of the post-pulse signal.
-
-        Args:
-            intensities:     The full downstream intensity array for all frames.
-            entry_idx:       Frame index where the cell entered the trap.
-            pulse_frame_idx: Absolute frame index of the electric pulse (0-based).
-
-        Returns:
-            (detected, frame_idx) — frame_idx is the pulse frame if rupture detected,
-            or None if not.
         """
         r_params = self.params.get('rupture_detection', {})
 
@@ -1088,14 +1078,12 @@ class LineDetectionMFA:
         post_window = r_params.get('pulse_context_post_window', 5)
 
         # How many frames immediately after the pulse to use for the peak check.
-        # Kept small (1-3) so we only catch the burst itself, not later noise.
-        peak_window = r_params.get('pulse_context_peak_window', 3)
+        # Kept small (1-2) so we only catch the burst itself, not later noise.
+        peak_window = r_params.get('pulse_context_peak_window', 2)
 
         # Shared thresholds for both checks:
         # - fold_thresh: post signal must be at least this multiple of pre signal.
         # - abs_thresh:  post signal must also exceed pre signal by this absolute amount.
-        #   The absolute floor prevents triggering on very low-signal / noisy baselines
-        #   where a 30% fold change might be only 0.2 intensity units of noise.
         fold_thresh = r_params.get('pulse_context_fold_threshold', 1.3)
         abs_thresh  = r_params.get('pulse_context_abs_threshold', 0.5)
 
