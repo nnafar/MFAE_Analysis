@@ -124,12 +124,17 @@ class ActinAnalyzer:
             # --- 2. Body cortex vs. lumen ---
             'actin_body_cortex_mean':        [],
             'actin_body_lumen_mean':         [],
-            # > 1 = edge enriched | ≈ 1 = uniform | < 1 = interior enriched
             'actin_body_cortex_lumen_ratio': [],
-            # Low CV = continuous ring | High CV = patches
             'actin_body_cortex_cv':          [],
-            # Human-readable: "cortex" | "patches" | "uniform" | "interior"
             'actin_body_structure_label':    [],
+
+            # --- 2b. Protrusion cortex vs. lumen ---
+            'actin_prot_cortex_mean':        [],
+            'actin_prot_lumen_mean':         [],
+            'actin_prot_cortex_lumen_ratio': [],
+            'actin_prot_cortex_cv':          [],
+            'actin_prot_structure_label':    [],
+
 
             # --- 3. Spatial zones (absolute means) ---
             'zone_tip_mean':         [],
@@ -188,12 +193,21 @@ class ActinAnalyzer:
         # pulse_frame.  If the pulse hasn't happened yet in the sequence
         # (pulse_frame == 0), baseline defaults to the first few frames.
         # ----------------------------------------------------------------
-        baseline_end   = min(self.pulse_frame, valid_frames)
-        baseline_start = max(0, baseline_end - self.baseline_len)
+        dye_params = self.params.get('dye_uptake_parameters', {})
+        has_pulse = dye_params.get('has_pulse', True)
+        
+        if has_pulse:
+            baseline_end   = min(self.pulse_frame, valid_frames)
+            baseline_start = max(0, baseline_end - self.baseline_len)
+        else:
+            # Anchor to cell entry (start of trace) for aspiration controls
+            baseline_start = 0
+            baseline_end   = min(self.baseline_len, valid_frames)
 
         # Collect mean values across the baseline window for each region/zone.
         base_prot, base_body, base_total      = [], [], []
         base_tip, base_base_z, base_pn, base_dist = [], [], [], []
+        base_prot_cortex, base_prot_lumen = [], []
 
         for k in range(baseline_start, baseline_end):
             mem_img = self.mem_imgs[k]
@@ -217,6 +231,11 @@ class ActinAnalyzer:
             base_pn.append(    self._masked_mean(act_f, zones['perinuclear']))
             base_dist.append(  self._masked_mean(act_f, zones['distal'])     )
 
+            # Protrusion cortex / lumen baselines
+            _pc, _pl = utils.generate_cortex_masks(mask_prot, self.cortex_thickness_px)
+            base_prot_cortex.append(self._masked_mean(act_f, _pc))
+            base_prot_lumen.append( self._masked_mean(act_f, _pl))
+
         # Convert to scalar I_0 values (mean across baseline frames).
         # max(..., epsilon) prevents division-by-zero later.
         f0_prot  = max(np.mean(base_prot)    if base_prot    else 1.0, epsilon)
@@ -225,7 +244,9 @@ class ActinAnalyzer:
         f0_tip   = max(np.mean(base_tip)     if base_tip     else 1.0, epsilon)
         f0_base_z= max(np.mean(base_base_z)  if base_base_z  else 1.0, epsilon)
         f0_pn    = max(np.mean(base_pn)      if base_pn      else 1.0, epsilon)
-        f0_dist  = max(np.mean(base_dist)    if base_dist    else 1.0, epsilon)
+        f0_dist         = max(np.mean(base_dist)        if base_dist        else 1.0, epsilon)
+        f0_prot_cortex  = max(np.mean(base_prot_cortex) if base_prot_cortex else 1.0, epsilon)
+        f0_prot_lumen   = max(np.mean(base_prot_lumen)  if base_prot_lumen  else 1.0, epsilon)
 
         # ----------------------------------------------------------------
         # STEP 2 — Per-frame analysis
@@ -275,7 +296,25 @@ class ActinAnalyzer:
             self.results['actin_body_cortex_cv'].append(cortex_cv)
             self.results['actin_body_structure_label'].append(label)
 
-            # ---- 2c. Four spatial zones ----
+            # ---- 2c. Protrusion cortex vs. lumen ----
+            # The protrusion is narrow; the eroded lumen may be empty on frames
+            # where cortex_thickness_px >= half the protrusion width.
+            # _mean_and_cv returns (0.0, 0.0) for empty masks gracefully.
+            mask_p_cortex, mask_p_lumen = utils.generate_cortex_masks(
+                mask_prot, self.cortex_thickness_px
+            )
+            p_cortex_mean, p_cortex_cv = self._mean_and_cv(act_f, mask_p_cortex)
+            p_lumen_mean, _            = self._mean_and_cv(act_f, mask_p_lumen)
+            p_cl_ratio = p_cortex_mean / max(p_lumen_mean, epsilon)
+            p_label    = self._classify_structure(p_cl_ratio, p_cortex_cv)
+
+            self.results['actin_prot_cortex_mean'].append(p_cortex_mean)
+            self.results['actin_prot_lumen_mean'].append( p_lumen_mean)
+            self.results['actin_prot_cortex_lumen_ratio'].append(p_cl_ratio)
+            self.results['actin_prot_cortex_cv'].append(p_cortex_cv)
+            self.results['actin_prot_structure_label'].append(p_label)
+
+            # ---- 2d. Four spatial zones ----
             zones = self._build_zone_masks(mask_prot, mask_body)
 
             tip_m  = self._masked_mean(act_f, zones['tip'])
@@ -524,9 +563,12 @@ class ActinAnalyzer:
         n_frames = len(self.results['zone_tip_mean'])
         pulse    = self.pulse_frame
         epsilon  = 1e-6
-
-        # If the pulse frame is outside the data, skip gracefully.
-        if pulse <= 0 or pulse >= n_frames:
+        
+        dye_params = self.params.get('dye_uptake_parameters', {})
+        has_pulse = dye_params.get('has_pulse', True)
+        
+        # If a pulse is configured but outside the data range, skip gracefully.
+        if has_pulse and (pulse <= 0 or pulse >= n_frames):
             logger.debug(
                 f"Pulse frame {pulse} is outside processed range "
                 f"(0–{n_frames-1}); skipping pulse remodelling."
@@ -536,13 +578,21 @@ class ActinAnalyzer:
         for zone in ('tip', 'base', 'perinuclear', 'distal'):
             means = np.array(self.results[f'zone_{zone}_mean'], dtype=float)
 
-            # Pre-window: up to pre_pulse_window frames just before the pulse
-            pre_start = max(0, pulse - self.pre_pulse_window)
-            pre_vals  = means[pre_start : pulse]   # does NOT include pulse frame
+            if has_pulse:
+                # Pre-window: up to pre_pulse_window frames just before the pulse
+                pre_start = max(0, pulse - self.pre_pulse_window)
+                pre_vals  = means[pre_start : pulse]   # does NOT include pulse frame
 
-            # Post-window: first post_pulse_window frames after the pulse
-            post_end  = min(n_frames, pulse + 1 + self.post_pulse_window)
-            post_vals = means[pulse + 1 : post_end]
+                # Post-window: first post_pulse_window frames after the pulse
+                post_end  = min(n_frames, pulse + 1 + self.post_pulse_window)
+                post_vals = means[pulse + 1 : post_end]
+            else:
+                # Aspiration Remodeling (Entry vs. Plateau)
+                pre_end = min(self.pre_pulse_window, n_frames)
+                pre_vals = means[0 : pre_end]
+                
+                post_start = max(0, n_frames - self.post_pulse_window)
+                post_vals = means[post_start : n_frames]
 
             if pre_vals.size == 0 or post_vals.size == 0:
                 ratio = None
@@ -568,6 +618,8 @@ class ActinAnalyzer:
             'actin_integrated_density_total', 'actin_ratio_pb',
             'actin_body_cortex_mean', 'actin_body_lumen_mean',
             'actin_body_cortex_lumen_ratio', 'actin_body_cortex_cv',
+            'actin_prot_cortex_mean', 'actin_prot_lumen_mean',
+            'actin_prot_cortex_lumen_ratio', 'actin_prot_cortex_cv',
             'zone_tip_mean',    'zone_base_mean',
             'zone_perinuclear_mean', 'zone_distal_mean',
             'zone_tip_norm',    'zone_base_norm',
@@ -578,6 +630,7 @@ class ActinAnalyzer:
         for k in scalar_keys:
             self.results[k].append(0.0)
         self.results['actin_body_structure_label'].append('unknown')
+        self.results['actin_prot_structure_label'].append('unknown')
         self.results['spatial_profiles'].append(np.zeros(10))
 
     # =========================================================================
@@ -681,7 +734,8 @@ class ActinAnalyzer:
             return
 
         h, w    = ref_img.shape[:2]
-        STRIP_H = 36
+        # 2 info lines + 4 legend items → max(42, 70) = 70px
+        STRIP_H = max(6 + 2*15 + 6, 6 + 4*(10+6) - 6 + 6)  # = 70px
         total_h = h + STRIP_H
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Debug_Zones.avi"
@@ -768,19 +822,24 @@ class ActinAnalyzer:
             return
 
         h, w    = ref_img.shape[:2]
-        STRIP_H = 36
+        # 4 legend items: body cortex/lumen + protrusion cortex/lumen
+        STRIP_H = max(6 + 3*15 + 6, 6 + 4*(10+6) - 6 + 6)  # = 69px
         total_h = h + STRIP_H
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Debug_Cortex.avi"
         writer    = self._make_video_writer(save_path, w, total_h)
 
-        col_cortex = utils.get_bgr_color('dark_red')
-        col_lumen  = utils.get_bgr_color('light_blue')
-        col_line   = (255, 255, 255)
+        col_b_cortex = utils.get_bgr_color('dark_red')
+        col_b_lumen  = utils.get_bgr_color('light_blue')
+        col_p_cortex = utils.get_bgr_color('medium_red')
+        col_p_lumen  = utils.get_bgr_color('medium_blue')
+        col_line     = (255, 255, 255)
 
         legend_items = [
-            (col_cortex, "Cortex shell"),
-            (col_lumen,  "Body lumen"),
+            (col_b_cortex, "Body cortex"),
+            (col_b_lumen,  "Body lumen"),
+            (col_p_cortex, "Prot cortex"),
+            (col_p_lumen,  "Prot lumen"),
         ]
 
         for i in range(n_frames):
@@ -791,35 +850,44 @@ class ActinAnalyzer:
                 writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
                 continue
 
-            display              = self._build_base_frame(act_img)
-            _, mask_body         = self._get_masks(i, mem_img)
-            mask_cortex, mask_lumen = utils.generate_cortex_masks(
+            display                  = self._build_base_frame(act_img)
+            mask_prot, mask_body     = self._get_masks(i, mem_img)
+            mask_b_cortex, mask_b_lumen = utils.generate_cortex_masks(
                 mask_body, self.cortex_thickness_px
             )
+            mask_p_cortex, mask_p_lumen = utils.generate_cortex_masks(
+                mask_prot, self.cortex_thickness_px
+            )
 
-            # Lumen first (larger area), cortex shell on top so the thin ring
-            # stays visible even when only a few pixels thick.
+            # Lumen fills first (large areas), cortex shells on top.
             layers = [
-                (mask_lumen,  col_lumen),
-                (mask_cortex, col_cortex),
+                (mask_b_lumen,  col_b_lumen),
+                (mask_p_lumen,  col_p_lumen),
+                (mask_b_cortex, col_b_cortex),
+                (mask_p_cortex, col_p_cortex),
             ]
             display = self._draw_masks_on_frame(display, layers, alpha=0.45)
             cv2.line(display, (int(self.pipette_x), 0),
                      (int(self.pipette_x), h), col_line, 1)
 
             time_s   = self.results['time_s'][i] if i < n_frames else 0.0
-            cl_ratio = (self.results['actin_body_cortex_lumen_ratio'][i]
-                        if i < len(self.results['actin_body_cortex_lumen_ratio']) else 0.0)
-            cv_val   = (self.results['actin_body_cortex_cv'][i]
-                        if i < len(self.results['actin_body_cortex_cv']) else 0.0)
-            label    = (self.results['actin_body_structure_label'][i]
-                        if i < len(self.results['actin_body_structure_label']) else '-')
-            n_cortex = int(cv2.countNonZero(mask_cortex))
-            n_lumen  = int(cv2.countNonZero(mask_lumen))
+            b_cl  = (self.results['actin_body_cortex_lumen_ratio'][i]
+                     if i < len(self.results['actin_body_cortex_lumen_ratio']) else 0.0)
+            b_cv  = (self.results['actin_body_cortex_cv'][i]
+                     if i < len(self.results['actin_body_cortex_cv']) else 0.0)
+            b_lbl = (self.results['actin_body_structure_label'][i]
+                     if i < len(self.results['actin_body_structure_label']) else '-')
+            p_cl  = (self.results['actin_prot_cortex_lumen_ratio'][i]
+                     if i < len(self.results['actin_prot_cortex_lumen_ratio']) else 0.0)
+            p_cv  = (self.results['actin_prot_cortex_cv'][i]
+                     if i < len(self.results['actin_prot_cortex_cv']) else 0.0)
+            p_lbl = (self.results['actin_prot_structure_label'][i]
+                     if i < len(self.results['actin_prot_structure_label']) else '-')
 
             info_lines = [
-                f"t = {time_s:.1f}s   cortex={n_cortex}px  lumen={n_lumen}px",
-                f"C/L = {cl_ratio:.2f}   CV = {cv_val:.2f}   [{label}]",
+                f"t={time_s:.1f}s",
+                f"Body  C/L={b_cl:.2f}  CV={b_cv:.2f}  [{b_lbl}]",
+                f"Prot  C/L={p_cl:.2f}  CV={p_cv:.2f}  [{p_lbl}]",
             ]
             frame_out = self._attach_info_strip(
                 display, h, w, info_lines, legend_items, STRIP_H
@@ -869,6 +937,13 @@ class ActinAnalyzer:
             'Body_Cortex_Lumen_Ratio':        _col('actin_body_cortex_lumen_ratio'),
             'Body_Cortex_CV':                 _col('actin_body_cortex_cv'),
             'Body_Structure_Label':           _col('actin_body_structure_label'),
+
+            # Protrusion cortex vs. lumen
+            'Prot_Cortex_Mean':               _col('actin_prot_cortex_mean'),
+            'Prot_Lumen_Mean':                _col('actin_prot_lumen_mean'),
+            'Prot_Cortex_Lumen_Ratio':        _col('actin_prot_cortex_lumen_ratio'),
+            'Prot_Cortex_CV':                 _col('actin_prot_cortex_cv'),
+            'Prot_Structure_Label':           _col('actin_prot_structure_label'),
 
             # Zone means (absolute)
             'Zone_Tip_Mean':                  _col('zone_tip_mean'),

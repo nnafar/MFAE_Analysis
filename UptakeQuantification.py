@@ -127,8 +127,15 @@ class DyeUptakeAnalyzer:
         Main execution loop with region-specific baseline correction and normalization.
         """
         # 1. Calculate Baseline (Cell-Specific F0 for each region)
-        baseline_start = max(0, self.pulse_frame - self.baseline_len)
-        baseline_end = self.pulse_frame
+        dye_params = self.params.get('dye_uptake_parameters', {})
+        has_pulse = dye_params.get('has_pulse', True)
+        
+        if has_pulse:
+            baseline_end = self.pulse_frame
+            baseline_start = max(0, baseline_end - self.baseline_len)
+        else:
+            baseline_start = 0
+            baseline_end = self.baseline_len
         
         base_vals_prot = []
         base_vals_body = []

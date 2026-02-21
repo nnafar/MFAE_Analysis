@@ -17,7 +17,7 @@ paths:
 
 
   # Name for this analysis run. New output folders will be created with this name.
-  experiment_id: "Trial_1"
+  experiment_id: "Trial_2"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -178,6 +178,7 @@ workflow_settings:
 # ===================================================================
 dye_uptake_parameters:
   enable: True
+  has_pulse: True                   # Set to False for control experiments without electroporation.
   
   # File Naming: Strings used to identify which image is which channel.
   membrane_channel_pattern: "C1"    # e.g., Membrane label

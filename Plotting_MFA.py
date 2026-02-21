@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 UNITS = {'E': 'Pa', 'E1': 'Pa', 'E2': 'Pa', 'eta': 'Pa·s', 'eta1': 'Pa·s', 'eta2': 'Pa·s', 'm': 'μm/s', 'b': 'μm', 'a': 'μm/sᵇ', 'c': 'μm'}
 
 # --- 1. DYE UPTAKE DASHBOARD ---
-def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None):
+def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None, pulse_time: Optional[float] = None):
     """
     Generates the suite of Dye Uptake plots with Shaded SEM for ALL metrics including Min-Max.
     """
@@ -33,8 +33,6 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
     if len(t) == 0: return
 
     colors = utils.MFA_COLORS
-    pulse_frame = params.get('dye_uptake_parameters', {}).get('pulse_index', 9)
-    pulse_time = t[min(pulse_frame, len(t)-1)]
     
     if pipette_x is None: pipette_x = results.get('pipette_x_px', 0)
 
@@ -119,7 +117,8 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         fig_het, (ax_std, ax_cv) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
         
         # 1. Standard Deviation Plot
-        ax_std.axvline(pulse_time, color=colors['pulse'], linestyle='--', alpha=0.5)
+        if pulse_time is not None:
+            ax_std.axvline(pulse_time, color=colors['pulse'], linestyle='--', alpha=0.5)
         ax_std.plot(t, results['uptake_total_std'], marker_style, color=colors['primary'], label='Total')
         ax_std.plot(t, results['uptake_protrusion_std'], marker_style, color=colors['secondary'], label='Protrusion')
         ax_std.plot(t, results['uptake_cell_body_std'], marker_style, color=colors['tertiary'], label='Body')
@@ -139,7 +138,8 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         cv_prot = safe_cv(results['uptake_protrusion'], results['uptake_protrusion_std'])
         cv_body = safe_cv(results['uptake_cell_body'], results['uptake_cell_body_std'])
 
-        ax_cv.axvline(pulse_time, color=colors['pulse'], linestyle='--', alpha=0.5)
+        if pulse_time is not None:
+            ax_cv.axvline(pulse_time, color=colors['pulse'], linestyle='--', alpha=0.5)
         ax_cv.plot(t, cv_tot, marker_style, color=colors['primary'], label='Total')
         ax_cv.plot(t, cv_prot, marker_style, color=colors['secondary'], label='Protrusion')
         ax_cv.plot(t, cv_body, marker_style, color=colors['tertiary'], label='Body')
@@ -356,11 +356,19 @@ def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Pat
     """
     utils.set_paper_style()
     output_dir = Path(output_dir)
+    
     t = np.array(results.get('time_s', []))
-    if len(t) == 0:
-        return
+    if len(t) == 0: return
+
+    # Extract pulse time for plotting vertical markers
+    dye_params = params.get('dye_uptake_parameters', {})
+    has_pulse = dye_params.get('has_pulse', True)
+    pulse_idx = dye_params.get('pulse_index', 9)
+    
+    pulse_time = t[pulse_idx] if (has_pulse and 0 <= pulse_idx < len(t)) else None
 
     colors = utils.MFA_COLORS
+    if pipette_x is None: pipette_x = results.get('pipette_x_px', 0)
 
     # Structure label → background colour mapping (subtle fills)
     label_colors = {
@@ -591,26 +599,24 @@ def plot_actin_zones(results: Dict[str, Any], trap_idx: int, output_dir: Path, p
     plt.close(fig)
 
 
-def plot_actin_cortex_structure(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pulse_time: Optional[float] = None, rupture_time: Optional[float] = None):
+def plot_actin_cortex_structure(results: Dict[str, Any], trap_idx: int, output_dir: Path,
+                                params: Dict[str, Any], pulse_time: Optional[float] = None,
+                                rupture_time: Optional[float] = None) -> None:
     """
-    Three-panel dedicated plot for body cortex actin organisation.
+    Six-panel plot for body AND protrusion cortex actin organisation.
 
-    Panel 1 – Cortex vs. lumen mean intensity (absolute, on the same axis).
-               Seeing which line is higher tells you immediately whether actin
-               is enriched at the edge or interior.  When the lines converge,
-               the distribution is uniform.
+    Left column (body):
+        Panel 1 - Body cortex vs. lumen mean intensity.
+        Panel 2 - Body cortex CV with threshold line.
+        Panel 3 - Body structure label colour track.
 
-    Panel 2 – Cortex CV over time with the classification threshold as a
-               horizontal dashed line.  Points above the threshold = patches.
-               Points below = continuous cortex (or uniform/interior).
-
-    Panel 3 – Structure label track: a colour band for every frame so you
-               can read the classification directly without interpreting
-               numbers.  The four categories are:
-                   DARK RED   – patches       (edge-enriched, high CV)
-                   DARK BLUE  – cortex        (edge-enriched, low CV)
-                   LIGHT GREY – uniform       (edge ≈ interior)
-                   LIGHT BLUE – interior      (interior brighter than edge)
+    Right column (protrusion):
+        Panel 4 - Protrusion cortex vs. lumen mean intensity.
+        Panel 5 - Protrusion cortex CV with threshold line.
+        Panel 6 - Protrusion structure label colour track.
+                  The protrusion is narrow, so the lumen mask may be empty on
+                  frames where cortex_thickness_px exceeds half the channel
+                  width. Those frames show 0.0 for lumen mean.
 
     Saved as Trap_XX_Actin_Structure.png.
     """
@@ -623,13 +629,6 @@ def plot_actin_cortex_structure(results: Dict[str, Any], trap_idx: int, output_d
     colors    = utils.MFA_COLORS
     cv_thresh = params.get('actin_parameters', {}).get('cortex_cv_threshold', 0.4)
 
-    cortex_mean = np.array(results.get('actin_body_cortex_mean', []))
-    lumen_mean  = np.array(results.get('actin_body_lumen_mean',  []))
-    cv_vals     = np.array(results.get('actin_body_cortex_cv',   []))
-    labels      = results.get('actin_body_structure_label', [])
-
-    # Map each label to the BGR colour already used in the debug video, but
-    # as a hex string for matplotlib.
     label_to_hex = {
         'cortex':   colors['dark_blue'],
         'patches':  colors['dark_red'],
@@ -638,88 +637,87 @@ def plot_actin_cortex_structure(results: Dict[str, Any], trap_idx: int, output_d
         'unknown':  colors['white'],
     }
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True,
+    def _cortex_panels(axes_col, cortex_mean, lumen_mean, cv_vals, labels,
+                       region_name, cortex_colour, lumen_colour):
+        """Draw the three-panel cortex block for one region into axes_col."""
+        ax1, ax2, ax3 = axes_col
+
+        if len(cortex_mean) == len(t):
+            ax1.plot(t, cortex_mean, '-', color=cortex_colour,
+                     linewidth=2, label='Cortex shell')
+        if len(lumen_mean) == len(t):
+            ax1.plot(t, lumen_mean, '-', color=lumen_colour,
+                     linewidth=2, label='Lumen interior')
+        ax1.set_ylabel("Mean Actin Intensity (a.u.)")
+        ax1.set_title(f"{region_name}: Cortex vs. Lumen")
+        ax1.legend(fontsize=9)
+
+        if len(cv_vals) == len(t):
+            point_colors = [label_to_hex.get(lbl, colors['white']) for lbl in labels]
+            ax2.plot(t, cv_vals, '-', color=colors['light_grey'], linewidth=1.5, zorder=1)
+            ax2.scatter(t, cv_vals, c=point_colors, s=20, zorder=2, linewidths=0)
+        ax2.axhline(cv_thresh, color=colors['dark_red'], linestyle='--',
+                    linewidth=1.5, label=f'CV threshold ({cv_thresh})')
+        ax2.fill_between(t,
+                         cv_thresh,
+                         cv_vals if len(cv_vals) == len(t) else cv_thresh,
+                         where=(cv_vals > cv_thresh) if len(cv_vals) == len(t) else False,
+                         color=colors['pale_red'], alpha=0.3, label='Patches zone')
+        ax2.fill_between(t,
+                         cv_vals if len(cv_vals) == len(t) else 0,
+                         cv_thresh,
+                         where=(cv_vals <= cv_thresh) if len(cv_vals) == len(t) else False,
+                         color=colors['pale_blue'], alpha=0.3, label='Cortex zone')
+        ax2.set_ylabel("Cortex CV (σ / μ)")
+        ax2.set_title(f"{region_name}: Cortex CV")
+        ax2.legend(fontsize=8, loc='upper right')
+
+        if labels and len(t) >= 2:
+            widths = np.append(np.diff(t), np.diff(t)[-1])
+            for t_k, w_k, lbl in zip(t, widths, labels):
+                ax3.barh(0, w_k, left=t_k, height=1,
+                         color=label_to_hex.get(lbl, colors['white']), linewidth=0)
+        ax3.set_yticks([])
+        ax3.set_xlabel("Time (s)")
+        ax3.set_title(f"{region_name}: Structure per Frame")
+
+    fig, axes = plt.subplots(3, 2, figsize=(18, 12), sharex=True,
                              gridspec_kw={'height_ratios': [3, 3, 1]})
     fig.suptitle(f"Trap {trap_idx}: Body Actin Structure", fontweight='bold')
 
-    # ---- Panel 1: cortex mean vs. lumen mean ----
-    ax1 = axes[0]
-    if len(cortex_mean) == len(t):
-        ax1.plot(t, cortex_mean, '-', color=colors['dark_red'],
-                 linewidth=2, label='Cortex shell mean')
-    if len(lumen_mean) == len(t):
-        ax1.plot(t, lumen_mean, '-', color=colors['medium_blue'],
-                 linewidth=2, label='Lumen interior mean')
+    _cortex_panels(
+        axes[:, 0],
+        np.array(results.get('actin_body_cortex_mean', [])),
+        np.array(results.get('actin_body_lumen_mean',  [])),
+        np.array(results.get('actin_body_cortex_cv',   [])),
+        results.get('actin_body_structure_label', []),
+        "Body", colors['dark_red'], colors['medium_blue']
+    )
+    _cortex_panels(
+        axes[:, 1],
+        np.array(results.get('actin_prot_cortex_mean', [])),
+        np.array(results.get('actin_prot_lumen_mean',  [])),
+        np.array(results.get('actin_prot_cortex_cv',   [])),
+        results.get('actin_prot_structure_label', []),
+        "Protrusion", colors['medium_red'], colors['medium_blue']
+    )
 
-    ax1.set_ylabel("Mean Actin Intensity (a.u.)")
-    ax1.set_title("Cortex Shell vs. Lumen Interior Intensity")
-    ax1.legend(fontsize=10)
-
-    # ---- Panel 2: cortex CV ----
-    ax2 = axes[1]
-    if len(cv_vals) == len(t):
-        # Colour each point by its classification so dots match the label track.
-        point_colors = [label_to_hex.get(lbl, colors['white']) for lbl in labels]
-
-        # Plot the line first in neutral colour, then scatter coloured dots on top.
-        ax2.plot(t, cv_vals, '-', color=colors['light_grey'], linewidth=1.5, zorder=1)
-        ax2.scatter(t, cv_vals, c=point_colors, s=30, zorder=2, linewidths=0)
-
-    # Threshold line with a fill to highlight the "patches" zone above it.
-    ax2.axhline(cv_thresh, color=colors['dark_red'], linestyle='--',
-                linewidth=1.5, label=f'CV threshold ({cv_thresh})')
-    ax2.fill_between(t, cv_thresh, cv_vals if len(cv_vals) == len(t) else cv_thresh,
-                     where=(cv_vals > cv_thresh) if len(cv_vals) == len(t) else False,
-                     color=colors['pale_red'], alpha=0.3, label='Patches zone')
-    ax2.fill_between(t, cv_vals if len(cv_vals) == len(t) else 0, cv_thresh,
-                     where=(cv_vals <= cv_thresh) if len(cv_vals) == len(t) else False,
-                     color=colors['pale_blue'], alpha=0.3, label='Cortex zone')
-
-    ax2.set_ylabel("Cortex CV  (σ / μ)")
-    ax2.set_title("Cortex Coefficient of Variation")
-    ax2.legend(fontsize=9, loc='upper right')
-
-    # ---- Panel 3: structure label colour track ----
-    # This panel is short (height_ratio=1). Each frame is a thin vertical bar.
-    ax3 = axes[2]
-    if labels and len(t) >= 2:
-        dt = np.diff(t)
-        # Append last dt again so every frame has a width.
-        widths = np.append(dt, dt[-1])
-
-        for k, (t_k, w_k, lbl) in enumerate(zip(t, widths, labels)):
-            ax3.barh(
-                y=0,                              # single horizontal row
-                width=w_k,
-                left=t_k,
-                height=1,
-                color=label_to_hex.get(lbl, colors['white']),
-                linewidth=0,
-            )
-
-    ax3.set_yticks([])
-    ax3.set_xlabel("Time (s)")
-    ax3.set_title("Structure Classification per Frame")
-
-    # Legend for the colour track
     from matplotlib.patches import Patch
     track_legend = [
-        Patch(color=label_to_hex['cortex'],   label='Cortex  (edge enriched, low CV)'),
+        Patch(color=label_to_hex['cortex'],   label='Cortex (edge enriched, low CV)'),
         Patch(color=label_to_hex['patches'],  label='Patches (edge enriched, high CV)'),
         Patch(color=label_to_hex['uniform'],  label='Uniform'),
         Patch(color=label_to_hex['interior'], label='Interior enriched'),
     ]
-    ax3.legend(handles=track_legend, loc='lower right', ncol=2,
-               fontsize=8, framealpha=0.9)
+    for col in [0, 1]:
+        axes[2, col].legend(handles=track_legend, loc='lower right', ncol=2,
+                             fontsize=8, framealpha=0.9)
 
-    # Shared pulse / rupture lines across all three panels
-    for ax in axes:
+    for ax in axes.flat:
         if pulse_time is not None:
-            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':',
-                       linewidth=2, label='Pulse Applied')
+            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2)
         if rupture_time is not None:
-            ax.axvline(rupture_time, color=colors['rupture'], linestyle='--',
-                       linewidth=2, label='Rupture Detected')
+            ax.axvline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2)
 
     fig.tight_layout()
     utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Structure.png")

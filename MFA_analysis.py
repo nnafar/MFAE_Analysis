@@ -122,7 +122,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         
         pulse_time = None
         dye_params = params.get('dye_uptake_parameters', {})
-        if dye_params.get('enable', False):
+        if dye_params.get('enable', False) and dye_params.get('has_pulse', True):
             p_idx = dye_params.get('pulse_index', 9)
             if 0 <= p_idx < len(time_data):
                 pulse_time = time_data[p_idx]
@@ -290,7 +290,9 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params, frame_masks=det_res.get('frame_masks', []))
                 dye_results = uptake_analyzer.run(time_data)
                 uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
-                Plotting_MFA.plot_dye_uptake_dashboard(dye_results, trap_index + 1, dirs['dye'], params, det_res['pipette_start_x_used'])
+                
+                # Pass pulse_time down to the updated plotter
+                Plotting_MFA.plot_dye_uptake_dashboard(dye_results, trap_index + 1, dirs['dye'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time)
                 
                 # Add the missing debug video call here
                 uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])

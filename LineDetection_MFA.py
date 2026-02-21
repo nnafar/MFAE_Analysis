@@ -1031,11 +1031,35 @@ class LineDetectionMFA:
         lag = r_params.get('cusum_baseline_lag', 0)
         
         min_len = settling + baseline_len + lag + 1
-        if len(trace) < min_len: 
-            return False, None
-        
         S_pos = 0.0
         
+        # Fallback mechanism for very short traces
+        if len(trace) < min_len: 
+            if len(trace) < 3:
+                return False, None
+            
+            baseline = trace[:3]
+            mu = np.median(baseline)
+            q75, q25 = np.percentile(baseline, [75, 25])
+            iqr = q75 - q25
+            raw_sigma = iqr * 0.7413
+            capped_sigma = min(raw_sigma, r_params.get('max_baseline_sigma', 1.0))
+            sigma = max(capped_sigma, self.min_intensity_noise_floor)
+            
+            k = max(self.min_drift, self.cusum_drift_tol * sigma)
+            h = max(self.min_cusum_thresh, self.cusum_thresh_fac * sigma)
+            
+            for i in range(3, len(trace)):
+                deviation = trace[i] - mu - k
+                if deviation > 0:
+                    S_pos += deviation
+                else:
+                    S_pos = 0.0
+                if S_pos > h:
+                    return True, i
+            return False, None
+
+        # Standard dynamic processing
         for i in range(settling + baseline_len + lag, len(trace)):
             # 1. Establish Rolling Baseline
             b_end = i - lag

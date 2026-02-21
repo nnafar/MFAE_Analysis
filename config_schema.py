@@ -310,6 +310,7 @@ class ValidationParameters(BaseModel):
 class DyeUptakeConfig(BaseModel):
     """Configuration for electroporation dye uptake analysis."""
     enable: bool = False
+    has_pulse: bool = Field(default=True, description="Set to False for control experiments without electroporation.")
     
     # Filename patterns to distinguish channels (e.g., "TRITC" vs "FITC")
     membrane_channel_pattern: str = Field(default="C1", description="Substring to identify membrane images")

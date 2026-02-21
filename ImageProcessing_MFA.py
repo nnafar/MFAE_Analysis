@@ -541,9 +541,9 @@ class CropImage():
             return new_roi
 
 
-    def _verify_trap_position(self, prev_roi: List[int], new_roi: List[int]) -> Optional[Union[List[int], str]]:
+    def _verify_trap_position(self, prev_roi: List[int], new_roi: List[int], frame_idx: int = 0) -> Optional[Union[List[int], str]]:
         """Displays a window for the user to verify or adjust the next trap's ROI."""
-        frame = self.file_reader.read_img(self.file_reader.tif_files[self.setup_frame_index])
+        frame = self.file_reader.read_img(self.file_reader.tif_files[frame_idx])
         rotated = utils.rotate_image(frame, self.rotation_angle)
         
         utils.create_centered_window("Verify Next Trap", self.window_width, self.window_height)
