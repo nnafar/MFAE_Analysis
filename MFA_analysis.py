@@ -287,7 +287,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 all_dye_frames = np.memmap(dye_config['path'], dtype=dye_config['dtype'], mode='r', shape=dye_config['shape'])
                 dye_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_dye_frames]
 
-                uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params)
+                uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params, frame_masks=det_res.get('frame_masks', []))
                 dye_results = uptake_analyzer.run(time_data)
                 uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
                 Plotting_MFA.plot_dye_uptake_dashboard(dye_results, trap_index + 1, dirs['dye'], params, det_res['pipette_start_x_used'])
@@ -306,11 +306,15 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 all_actin_frames = np.memmap(actin_config['path'], dtype=actin_config['dtype'], mode='r', shape=actin_config['shape'])
                 actin_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_actin_frames]
                 
-                actin_analyzer = ActinAnalyzer(rois, actin_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], params)
+                actin_analyzer = ActinAnalyzer(rois, actin_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], params, frame_masks=det_res.get('frame_masks', []))
                 actin_results = actin_analyzer.run(time_data)
                 actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
+                actin_analyzer.save_zones_debug_video(trap_index + 1, dirs['actin'])
+                actin_analyzer.save_cortex_debug_video(trap_index + 1, dirs['actin'])
                 Plotting_MFA.plot_actin_dashboard(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
                 Plotting_MFA.plot_actin_kymograph_and_profiles(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
+                Plotting_MFA.plot_actin_zones(actin_results, trap_index + 1, dirs['actin'], params, pulse_time=pulse_time, rupture_time=rupture_time)
+                Plotting_MFA.plot_actin_cortex_structure(actin_results, trap_index + 1, dirs['actin'], params, pulse_time=pulse_time, rupture_time=rupture_time)
             except Exception:
                 worker_logger.warning(f"Trap {trap_index+1}: Actin analysis failed.", exc_info=True)
                 

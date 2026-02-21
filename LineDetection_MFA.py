@@ -109,7 +109,8 @@ class LineDetectionMFA:
             'analysis_timestamp': datetime.now().isoformat(),
             'detection_confidence': [],     # Metric 0.0 or 1.0 indicating tracking success
             'r_eff': 0.0,                   # Placeholder for calculation results
-            'time_seconds': []
+            'time_seconds': [],
+            'frame_masks': [],              # Per-frame (mask_prot, mask_body) tuples for downstream use
         }
         
         # Expose debug frames for preview
@@ -668,6 +669,7 @@ class LineDetectionMFA:
                 self.results['body_solidity'].append(0.0)     
                 self.results['debug_images'].append(None)
                 self.results['detection_confidence'].append(0.0)
+                self.results['frame_masks'].append((None, None))
                 continue
 
             image_8bit = utils.normalize_to_8bit(image)
@@ -705,6 +707,7 @@ class LineDetectionMFA:
             debug_image = self._create_debug_visualization(image, mask_prot, pipette_start_x, protrusion_len_px)
             self.results['debug_images'].append(debug_image)
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
+            self.results['frame_masks'].append((mask_prot, mask_body_standard))
 
         # Post-Processing: Smoothing
         if self.params.get('rupture_detection', {}).get('enable_smoothing', True):

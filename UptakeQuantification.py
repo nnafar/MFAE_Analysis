@@ -28,7 +28,8 @@ class DyeUptakeAnalyzer:
                  threshold_body: int,
                  rupture_idx: Optional[int],
                  params: Dict[str, Any],
-                 start_idx: int = 0):
+                 start_idx: int = 0,
+                 frame_masks: List[Tuple] = None):
         
         self.mem_imgs = membrane_rois
         self.dye_imgs = dye_rois
@@ -40,21 +41,17 @@ class DyeUptakeAnalyzer:
         
         self.rupture_idx = rupture_idx if rupture_idx is not None else len(membrane_rois)
         self.params = params
-        self.start_idx = start_idx 
+        self.start_idx = start_idx
+
+        # Pre-computed per-frame masks from LineDetection — same source used by
+        # protrusion length, kymograph, and actin quantification.
+        self.frame_masks = frame_masks or [] 
         
         # Extract specific dye parameters from config
         dye_params = params.get('dye_uptake_parameters', {})
         self.pulse_frame = max(0, dye_params.get('pulse_index', 9))
         self.baseline_len = dye_params.get('baseline_frames', 5)
         self.scale_factor = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
-        
-        # --- INITIALIZE PROCESSING PARAMS (Required for Mask Gen) ---
-        image_params = params.get('image_processing', {})
-        self.clip_margin = image_params.get('wall_clip_margin', 0.40)
-        self.clahe_limit = image_params.get('clahe_clip_limit', 2.0)
-        
-        kernel = image_params.get('gaussian_kernel_size', (5,5))
-        self.blur_kernel = tuple(kernel) if isinstance(kernel, (list, tuple)) else (5,5)
         
         # Initialize results dictionary
         self.results = {
@@ -107,6 +104,24 @@ class DyeUptakeAnalyzer:
             'pipette_x_px': pipette_x,
         }
         
+    def _get_masks(self, frame_idx: int, mem_img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Returns (mask_prot, mask_body) for a given frame index.
+
+        Uses the pre-computed masks from LineDetection when available so that
+        all modules (LineDetection, DyeUptake, ActinQuantification) operate on
+        identical cell regions. Falls back to recomputing only if no pre-computed
+        masks were supplied.
+        """
+        if self.frame_masks and frame_idx < len(self.frame_masks):
+            mp, mb = self.frame_masks[frame_idx]
+            if mp is not None and mb is not None:
+                return mp, mb
+        return utils.generate_dual_masks(
+            mem_img, self.pipette_x,
+            self.threshold_prot, self.threshold_body, self.params
+        )
+
     def run(self, time_data: List[float]) -> Dict[str, Any]:
         """
         Main execution loop with region-specific baseline correction and normalization.
@@ -129,10 +144,7 @@ class DyeUptakeAnalyzer:
                 continue
             
             # Define the masks for baseline
-            mask_prot_ref, mask_body_ref = utils.generate_dual_masks(
-                mem_ref_img, self.pipette_x, self.threshold_prot, 
-                self.threshold_body, self.params
-            )
+            mask_prot_ref, mask_body_ref = self._get_masks(k, mem_ref_img)
             
             # Define mask_total for the baseline period
             mask_total_ref = cv2.bitwise_or(mask_prot_ref, mask_body_ref)
@@ -181,10 +193,7 @@ class DyeUptakeAnalyzer:
                 continue
             
             # Call centralized utility
-            mask_prot, mask_body = utils.generate_dual_masks(
-                current_mem, self.pipette_x, self.threshold_prot, 
-                self.threshold_body, self.params
-            )
+            mask_prot, mask_body = self._get_masks(i, current_mem)
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
                         
             # B. Quantify Pixel Counts (N) - Required for SEM calculation
@@ -316,10 +325,7 @@ class DyeUptakeAnalyzer:
             dye_img = self.dye_imgs[actual_idx]
             if mem_img is None or dye_img is None: continue
 
-            mask_prot, mask_body = utils.generate_dual_masks(
-                mem_img, self.pipette_x, self.threshold_prot, 
-                self.threshold_body, self.params
-            )
+            mask_prot, mask_body = self._get_masks(actual_idx, mem_img)
             
             norm_dye = cv2.normalize(dye_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             display = cv2.cvtColor(norm_dye, cv2.COLOR_GRAY2BGR)

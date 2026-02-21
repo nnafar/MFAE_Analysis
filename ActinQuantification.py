@@ -53,13 +53,14 @@ logger = logging.getLogger(__name__)
 
 class ActinAnalyzer:
 
-    def __init__(self,
-                 membrane_rois:  List[np.ndarray],
-                 actin_rois:     List[np.ndarray],
+    def __init__(self, 
+                 membrane_rois:  List[np.ndarray], 
+                 actin_rois:     List[np.ndarray], 
                  pipette_x:      int,
                  threshold_prot: int,
                  threshold_body: int,
-                 params:         Dict[str, Any]):
+                 params:         Dict[str, Any],
+                 frame_masks:    List[Tuple] = None):
 
         self.mem_imgs       = membrane_rois
         self.actin_imgs     = actin_rois
@@ -67,6 +68,14 @@ class ActinAnalyzer:
         self.threshold_prot = threshold_prot
         self.threshold_body = threshold_body
         self.params         = params
+
+        # Pre-computed per-frame masks from LineDetection.
+        # Each entry is (mask_prot, mask_body) — the exact same masks used for
+        # protrusion length measurement and kymograph generation, so all metrics
+        # are spatially consistent with each other.
+        # Falls back to recomputing via generate_dual_masks() if not provided
+        # (e.g. when called from older code paths).
+        self.frame_masks = frame_masks or []
 
         # Pull sub-sections once so callers don't repeat .get() chains.
         exp_p   = params.get('experiment_parameters', {})
@@ -192,10 +201,7 @@ class ActinAnalyzer:
             if mem_img is None or act_img is None:
                 continue
 
-            mask_prot, mask_body = utils.generate_dual_masks(
-                mem_img, self.pipette_x,
-                self.threshold_prot, self.threshold_body, self.params
-            )
+            mask_prot, mask_body = self._get_masks(k, mem_img)
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
             act_f      = act_img.astype(float)
 
@@ -232,10 +238,7 @@ class ActinAnalyzer:
                 self._record_empty()
                 continue
 
-            mask_prot, mask_body = utils.generate_dual_masks(
-                mem_img, self.pipette_x,
-                self.threshold_prot, self.threshold_body, self.params
-            )
+            mask_prot, mask_body = self._get_masks(i, mem_img)
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
             act_f      = act_img.astype(float)
 
@@ -309,6 +312,27 @@ class ActinAnalyzer:
     # =========================================================================
     # PRIVATE HELPERS
     # =========================================================================
+
+    def _get_masks(self, frame_idx: int, mem_img: np.ndarray):
+        """
+        Returns (mask_prot, mask_body) for a given frame.
+
+        Uses the pre-computed masks from LineDetection when available — these
+        are the same masks used for protrusion length, kymograph, and dye uptake,
+        ensuring all metrics refer to identical cell regions.
+
+        Falls back to recomputing via generate_dual_masks() only if no pre-
+        computed masks were provided (e.g. legacy call paths).
+        """
+        if self.frame_masks and frame_idx < len(self.frame_masks):
+            mp, mb = self.frame_masks[frame_idx]
+            if mp is not None and mb is not None:
+                return mp, mb
+        # Fallback: recompute (less accurate for protrusion, but safe)
+        return utils.generate_dual_masks(
+            mem_img, self.pipette_x,
+            self.threshold_prot, self.threshold_body, self.params
+        )
 
     @staticmethod
     def _masked_mean(image: np.ndarray, mask: np.ndarray) -> float:
@@ -557,210 +581,253 @@ class ActinAnalyzer:
         self.results['spatial_profiles'].append(np.zeros(10))
 
     # =========================================================================
-    # DEBUG VIDEO
+    # =========================================================================
+    # DEBUG VIDEO HELPERS
     # =========================================================================
 
-    def save_debug_video(self, trap_idx: int, output_dir: Path) -> None:
+    def _make_video_writer(self, save_path: Path, w: int, total_h: int, fps: int = 5) -> cv2.VideoWriter:
+        """Creates an MJPG VideoWriter at the given path and canvas size."""
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        return cv2.VideoWriter(str(save_path), fourcc, fps, (w, total_h), isColor=True)
+
+    def _build_base_frame(self, act_img: np.ndarray) -> np.ndarray:
+        """Normalises the actin image to 8-bit and converts to BGR for display."""
+        norm = cv2.normalize(act_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        return cv2.cvtColor(norm, cv2.COLOR_GRAY2BGR)
+
+    def _draw_masks_on_frame(self, display: np.ndarray,
+                              layers: list, alpha: float = 0.4) -> np.ndarray:
         """
-        Saves a colour-coded overlay video onto the actin channel so you can
-        visually verify that every mask is placed correctly.
+        Draws coloured semi-transparent fills + contour outlines for each
+        (mask, colour) pair in `layers`. Layers drawn first are underneath.
+        Returns a new array — the input is not modified.
+        """
+        out = display.copy()
+        overlay = display.copy()
+        for mask, colour in layers:
+            if cv2.countNonZero(mask) > 0:
+                overlay[mask > 0] = colour
+        cv2.addWeighted(overlay, alpha, out, 1.0 - alpha, 0, out)
+        for mask, colour in layers:
+            contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            cv2.drawContours(out, contours, -1, colour, 1)
+        return out
 
-        Each frame shows five layers drawn on top of the normalised actin image:
+    def _attach_info_strip(self, display: np.ndarray, h: int, w: int,
+                            info_lines: list, legend_items: list,
+                            strip_h: int = 36) -> np.ndarray:
+        """
+        Attaches a black strip below `display`.
+        Left side: up to 2 short text lines.
+        Right side: colour-square legend (one row per item).
+        Returns the combined frame ready to write.
+        """
+        strip = np.zeros((strip_h, w, 3), dtype=np.uint8)
+        frame = np.vstack([display, strip])
 
-            DARK RED   – body cortex shell (the eroded ring)
-            LIGHT BLUE – body lumen (the interior after erosion)
-            DARK BLUE  – protrusion tip zone    (far half of channel)
-            MED BLUE   – protrusion base zone   (near half of channel)
-            PALE RED   – perinuclear body zone  (nearest 1/3 of body)
-            LIGHT RED  – distal body zone       (far 2/3 of body)
+        font  = cv2.FONT_HERSHEY_SIMPLEX
+        fs    = 0.36
+        thick = 1
+        sq    = 9
+        pad   = 5
 
-        The bottom-left corner shows per-frame text:
-            t = current time
-            ratio = cortex/lumen intensity ratio
-            CV    = cortex coefficient of variation
-            label = structure classification
+        for li, line in enumerate(info_lines):
+            y = h + 11 + li * 13
+            cv2.putText(frame, line, (4, y), font, fs, (255, 255, 255), thick, cv2.LINE_AA)
 
-        A vertical white line marks the pipette entrance (pipette_x).
+        max_lw  = max(cv2.getTextSize(lbl, font, fs, thick)[0][0] for _, lbl in legend_items)
+        block_w = sq + pad + max_lw + pad
+        x_start = w - block_w - 4
 
-        The output is saved as an MJPG .avi alongside the CSV.
+        for idx, (colour, lbl) in enumerate(legend_items):
+            n              = len(legend_items)
+            total_block_h  = n * (sq + pad) - pad
+            y_top          = h + (strip_h - total_block_h) // 2 + idx * (sq + pad)
+            y_text         = y_top + sq - 1
+            cv2.rectangle(frame, (x_start, y_top),
+                          (x_start + sq, y_top + sq), colour, -1)
+            cv2.putText(frame, lbl, (x_start + sq + pad, y_text),
+                        font, fs, (255, 255, 255), thick, cv2.LINE_AA)
+
+        return frame
+
+    # =========================================================================
+    # DEBUG VIDEOS
+    # =========================================================================
+
+    def save_zones_debug_video(self, trap_idx: int, output_dir: Path) -> None:
+        """
+        Debug video 1 of 2 — spatial zones.
+
+        Shows the four zone masks overlaid on the actin channel, using the
+        same (mask_prot, mask_body) from LineDetection as all other metrics:
+            DARK BLUE   – Protrusion tip  (far half, deepest in channel)
+            MEDIUM BLUE – Protrusion base (near half, closest to entrance)
+            PALE RED    – Perinuclear body (nearest 1/3 of body)
+            LIGHT RED   – Distal body     (far 2/3 of body)
+
+        Info strip shows current time and pixel count of each zone.
+        Saved as Trap_XX_Actin_Debug_Zones.avi
         """
         n_frames = len(self.results.get('time_s', []))
         if n_frames == 0:
-            logger.warning(f"Trap {trap_idx}: no processed frames; skipping debug video.")
+            logger.warning(f"Trap {trap_idx}: no frames; skipping zones debug video.")
             return
 
-        # Work out the canvas size from the first valid image.
-        ref_img = next(
-            (img for img in self.actin_imgs if img is not None), None
-        )
+        ref_img = next((img for img in self.actin_imgs if img is not None), None)
         if ref_img is None:
-            logger.warning(f"Trap {trap_idx}: all actin images are None; skipping debug video.")
             return
 
-        h, w = ref_img.shape[:2]
-        fps   = 5
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        h, w    = ref_img.shape[:2]
+        STRIP_H = 36
+        total_h = h + STRIP_H
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Debug.avi"
-        writer    = cv2.VideoWriter(str(save_path), fourcc, fps, (w, h), isColor=True)
+        save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Debug_Zones.avi"
+        writer    = self._make_video_writer(save_path, w, total_h)
 
-        # --- Colour palette (BGR) ---
-        # Each anatomical region gets its own colour so they are distinguishable
-        # even when the masks overlap at zone boundaries.
-        col_cortex      = utils.get_bgr_color('dark_red')       # dark red
-        col_lumen       = utils.get_bgr_color('light_blue')     # light blue
-        col_tip         = utils.get_bgr_color('dark_blue')      # dark blue
-        col_base        = utils.get_bgr_color('medium_blue')    # medium blue
-        col_perinuclear = utils.get_bgr_color('pale_red')       # pale red
-        col_distal      = utils.get_bgr_color('light_red')      # light red
-        col_text        = utils.get_bgr_color('white')
-        col_line        = utils.get_bgr_color('white')
+        col_tip         = utils.get_bgr_color('dark_blue')
+        col_base        = utils.get_bgr_color('medium_blue')
+        col_perinuclear = utils.get_bgr_color('pale_red')
+        col_distal      = utils.get_bgr_color('light_red')
+        col_line        = (255, 255, 255)
 
-        # How transparent the colour fill should be.
-        # 0.0 = fully transparent (invisible), 1.0 = fully opaque.
-        # 0.35 lets the underlying actin texture show through.
-        ALPHA = 0.35
+        legend_items = [
+            (col_tip,         "Prot tip"),
+            (col_base,        "Prot base"),
+            (col_perinuclear, "Perinuclear"),
+            (col_distal,      "Distal body"),
+        ]
 
         for i in range(n_frames):
-            mem_img  = self.mem_imgs[i]
-            act_img  = self.actin_imgs[i]
+            mem_img = self.mem_imgs[i]
+            act_img = self.actin_imgs[i]
 
             if mem_img is None or act_img is None:
-                # Write a blank frame so the video stays in sync with time.
-                writer.write(np.zeros((h, w, 3), dtype=np.uint8))
+                writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
                 continue
 
-            # ---- Base image: actin channel, normalised to 8-bit greyscale ----
-            norm_act = cv2.normalize(act_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-            display  = cv2.cvtColor(norm_act, cv2.COLOR_GRAY2BGR)
+            display               = self._build_base_frame(act_img)
+            mask_prot, mask_body  = self._get_masks(i, mem_img)
+            zones                 = self._build_zone_masks(mask_prot, mask_body)
 
-            # ---- Rebuild all masks for this frame ----
-            mask_prot, mask_body = utils.generate_dual_masks(
-                mem_img, self.pipette_x,
-                self.threshold_prot, self.threshold_body, self.params
-            )
-            mask_b_cortex, mask_b_lumen = utils.generate_cortex_masks(
-                mask_body, self.cortex_thickness_px
-            )
-            zones = self._build_zone_masks(mask_prot, mask_body)
-
-            # ---- Draw each mask as a semi-transparent colour fill ----
-            # We draw lumen and zone fills first (they cover larger areas),
-            # then draw the cortex shell on top so its thin ring stays visible.
-            layer_order = [
+            layers = [
                 (zones['distal'],      col_distal),
                 (zones['perinuclear'], col_perinuclear),
                 (zones['base'],        col_base),
                 (zones['tip'],         col_tip),
-                (mask_b_lumen,         col_lumen),
-                (mask_b_cortex,        col_cortex),   # drawn last → always visible
             ]
+            display = self._draw_masks_on_frame(display, layers, alpha=0.45)
+            cv2.line(display, (int(self.pipette_x), 0),
+                     (int(self.pipette_x), h), col_line, 1)
 
-            overlay = display.copy()
-            for mask, colour in layer_order:
-                if cv2.countNonZero(mask) > 0:
-                    overlay[mask > 0] = colour
+            time_s = self.results['time_s'][i] if i < n_frames else 0.0
+            n_tip  = int(cv2.countNonZero(zones['tip']))
+            n_base = int(cv2.countNonZero(zones['base']))
+            n_pn   = int(cv2.countNonZero(zones['perinuclear']))
+            n_dist = int(cv2.countNonZero(zones['distal']))
 
-            # Blend the colour overlay with the greyscale base image.
-            # ALPHA controls opacity of the colour layer.
-            cv2.addWeighted(overlay, ALPHA, display, 1.0 - ALPHA, 0, display)
-
-            # ---- Draw mask contours (outlines) for sharper region edges ----
-            # findContours expects a uint8 binary image.  RETR_EXTERNAL keeps
-            # only the outer boundary; CHAIN_APPROX_SIMPLE compresses straight
-            # edges to save memory.
-            for mask, colour in layer_order:
-                contours, _ = cv2.findContours(
-                    mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-                cv2.drawContours(display, contours, -1, colour, 1)
-
-            # ---- Pipette entrance line ----
-            cv2.line(
-                display,
-                (int(self.pipette_x), 0),
-                (int(self.pipette_x), h),
-                col_line, 1
-            )
-
-            # ---- Per-frame text overlay (bottom-left) ----
-            # Pull pre-computed values from results if available.
-            time_s  = self.results['time_s'][i] if i < n_frames else 0.0
-            cl_ratio = (
-                self.results['actin_body_cortex_lumen_ratio'][i]
-                if i < len(self.results['actin_body_cortex_lumen_ratio'])
-                else 0.0
-            )
-            cv_val = (
-                self.results['actin_body_cortex_cv'][i]
-                if i < len(self.results['actin_body_cortex_cv'])
-                else 0.0
-            )
-            label = (
-                self.results['actin_body_structure_label'][i]
-                if i < len(self.results['actin_body_structure_label'])
-                else '—'
-            )
-
-            text_lines = [
+            info_lines = [
                 f"t = {time_s:.1f}s",
-                f"C/L ratio = {cl_ratio:.2f}",
-                f"Cortex CV = {cv_val:.2f}",
-                f"Structure = {label}",
+                f"tip={n_tip}px  base={n_base}px  pn={n_pn}px  dist={n_dist}px",
             ]
-            utils.add_text_overlay(display, text_lines)
-
-            # ---- Legend (top-right) ----
-            # Small coloured squares with labels so each region is identifiable.
-            legend_items = [
-                (col_cortex,      "Cortex shell"),
-                (col_lumen,       "Body lumen"),
-                (col_tip,         "Prot tip"),
-                (col_base,        "Prot base"),
-                (col_perinuclear, "Perinuclear"),
-                (col_distal,      "Distal body"),
-            ]
-            sq     = 10    # square side in pixels
-            pad    = 6     # gap between square and text, and between rows
-            font   = cv2.FONT_HERSHEY_SIMPLEX
-            fscale = 0.38
-            fthick = 1
-
-            # Measure the longest label to size the background box
-            max_label_w = max(
-                cv2.getTextSize(lbl, font, fscale, fthick)[0][0]
-                for _, lbl in legend_items
+            frame_out = self._attach_info_strip(
+                display, h, w, info_lines, legend_items, STRIP_H
             )
-            row_h    = sq + pad
-            box_w    = sq + pad + max_label_w + pad
-            box_h    = len(legend_items) * row_h + pad
-            box_x    = w - box_w - 5
-            box_y    = 5
-
-            # Semi-transparent dark background
-            bg = display.copy()
-            cv2.rectangle(bg, (box_x - 3, box_y), (w - 2, box_y + box_h), (0, 0, 0), -1)
-            cv2.addWeighted(bg, 0.55, display, 0.45, 0, display)
-
-            for idx, (colour, text) in enumerate(legend_items):
-                y_top  = box_y + pad + idx * row_h
-                y_text = y_top + sq - 1
-                cv2.rectangle(
-                    display,
-                    (box_x, y_top),
-                    (box_x + sq, y_top + sq),
-                    colour, -1
-                )
-                cv2.putText(
-                    display, text,
-                    (box_x + sq + pad, y_text),
-                    font, fscale, col_text, fthick, cv2.LINE_AA
-                )
-
-            writer.write(display)
+            writer.write(frame_out)
 
         writer.release()
-        logger.info(f"Actin debug video saved: {save_path.name}")
+        logger.info(f"Zones debug video saved: {save_path.name}")
+
+    def save_cortex_debug_video(self, trap_idx: int, output_dir: Path) -> None:
+        """
+        Debug video 2 of 2 — body cortex structure.
+
+        Shows the cortex shell and lumen masks on the cell body, using the
+        same mask_body from LineDetection as all other metrics:
+            DARK RED    – Body cortex shell (outer ring after erosion)
+            LIGHT BLUE  – Body lumen       (interior after erosion)
+
+        How the masks are built:
+            1. mask_body comes directly from LineDetection (consistent source).
+            2. Erode mask_body inward by cortex_thickness_px → lumen.
+            3. Cortex shell = mask_body − lumen.
+
+        If lumen=0px in the strip, the body is too narrow for the erosion —
+        reduce cortex_thickness_px in config.yaml.
+        Saved as Trap_XX_Actin_Debug_Cortex.avi
+        """
+        n_frames = len(self.results.get('time_s', []))
+        if n_frames == 0:
+            logger.warning(f"Trap {trap_idx}: no frames; skipping cortex debug video.")
+            return
+
+        ref_img = next((img for img in self.actin_imgs if img is not None), None)
+        if ref_img is None:
+            return
+
+        h, w    = ref_img.shape[:2]
+        STRIP_H = 36
+        total_h = h + STRIP_H
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Debug_Cortex.avi"
+        writer    = self._make_video_writer(save_path, w, total_h)
+
+        col_cortex = utils.get_bgr_color('dark_red')
+        col_lumen  = utils.get_bgr_color('light_blue')
+        col_line   = (255, 255, 255)
+
+        legend_items = [
+            (col_cortex, "Cortex shell"),
+            (col_lumen,  "Body lumen"),
+        ]
+
+        for i in range(n_frames):
+            mem_img = self.mem_imgs[i]
+            act_img = self.actin_imgs[i]
+
+            if mem_img is None or act_img is None:
+                writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
+                continue
+
+            display              = self._build_base_frame(act_img)
+            _, mask_body         = self._get_masks(i, mem_img)
+            mask_cortex, mask_lumen = utils.generate_cortex_masks(
+                mask_body, self.cortex_thickness_px
+            )
+
+            # Lumen first (larger area), cortex shell on top so the thin ring
+            # stays visible even when only a few pixels thick.
+            layers = [
+                (mask_lumen,  col_lumen),
+                (mask_cortex, col_cortex),
+            ]
+            display = self._draw_masks_on_frame(display, layers, alpha=0.45)
+            cv2.line(display, (int(self.pipette_x), 0),
+                     (int(self.pipette_x), h), col_line, 1)
+
+            time_s   = self.results['time_s'][i] if i < n_frames else 0.0
+            cl_ratio = (self.results['actin_body_cortex_lumen_ratio'][i]
+                        if i < len(self.results['actin_body_cortex_lumen_ratio']) else 0.0)
+            cv_val   = (self.results['actin_body_cortex_cv'][i]
+                        if i < len(self.results['actin_body_cortex_cv']) else 0.0)
+            label    = (self.results['actin_body_structure_label'][i]
+                        if i < len(self.results['actin_body_structure_label']) else '-')
+            n_cortex = int(cv2.countNonZero(mask_cortex))
+            n_lumen  = int(cv2.countNonZero(mask_lumen))
+
+            info_lines = [
+                f"t = {time_s:.1f}s   cortex={n_cortex}px  lumen={n_lumen}px",
+                f"C/L = {cl_ratio:.2f}   CV = {cv_val:.2f}   [{label}]",
+            ]
+            frame_out = self._attach_info_strip(
+                display, h, w, info_lines, legend_items, STRIP_H
+            )
+            writer.write(frame_out)
+
+        writer.release()
+        logger.info(f"Cortex debug video saved: {save_path.name}")
 
     # =========================================================================
     # EXPORT
