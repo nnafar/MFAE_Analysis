@@ -708,6 +708,9 @@ class LineDetectionMFA:
         else:
             self.results['protrusion_lengths_px'] = protrusion_px_list
         
+        # --- CONVERT TO MICRONS BEFORE ENTRY/EXIT DETECTION ---
+        self.results['protrusion_lengths_um'] = [p * scale_factor for p in self.results['protrusion_lengths_px']]
+        
         # --- ENTRY AND EXIT SYNCHRONIZATION ---
         protrusions = self.results['protrusion_lengths_um']
         entry_thresh = self.params.get('rupture_detection', {}).get('entry_protrusion_threshold_um', 0.5)
@@ -742,7 +745,6 @@ class LineDetectionMFA:
                 self.results['total_area_um2'][i] = np.nan
                 self.results['body_solidity'][i] = np.nan
         
-        self.results['protrusion_lengths_um'] = [p * scale_factor for p in self.results['protrusion_lengths_px']]
         self.results['downstream_intensities'] = downstream_int_list
 
     def _simple_smoothing_filter(self, values: List[float], window_size: int = 3) -> List[float]:
@@ -885,15 +887,6 @@ class LineDetectionMFA:
             if is_step: candidates.append((entry_idx + step_idx, 'Intensity Step'))
 
         # C. Direct Difference (Catches acute haze jumps smoothed out by CUSUM buffer logic)
-        #
-        # BUG FIX: The original code scanned from frame 0 of valid_intensities, which
-        # means the initial intensity ramp as the cell enters the trap was almost always
-        # the largest single-frame jump and always won the argmax. This caused two
-        # problems: (a) a spurious rupture at t~0 for normal cells, and (b) the DOA
-        # check was defeated for high-intensity cells like Trap 16 because a "Sudden
-        # Haze Jump" at t~0 looked like evidence against DOA.
-        #
-        # Fix: skip the first N frames (the cusum_settling_buffer) before scanning, so
         # the entry ramp is never included in the diff calculation.
         jump_thresh = self.params.get('rupture_detection', {}).get('sudden_jump_threshold', 1.0)
         jump_settling = self.params.get('rupture_detection', {}).get('cusum_settling_buffer', 0)
@@ -903,6 +896,11 @@ class LineDetectionMFA:
             scan_region = valid_intensities[jump_settling:]
             diffs = np.diff(scan_region)
             max_diff_idx = np.argmax(diffs)
+            # Use a conservative floor here. This detector finds the single largest
+            # frame-to-frame jump in the entire trace — a low threshold makes it prone
+            # to noise over long recordings. Pulse-context transient bursts are handled
+            # instead by the peak-based check inside _detect_pulse_context_rupture,
+            # which is gated to the pulse frame and therefore far less prone to false positives.
             if diffs[max_diff_idx] > max(jump_thresh, self.min_drift):
                 # Translate the index back into the full valid_intensities coordinate space
                 adjusted_idx = max_diff_idx + jump_settling + 1
@@ -913,21 +911,6 @@ class LineDetectionMFA:
         if is_cusum: candidates.append((entry_idx + cusum_idx, 'Haze Drift'))
 
         # E. Pulse Context (Pulse-Induced Rupture)
-        #
-        # This detector is purpose-built for electroporation experiments.
-        # It compares the median intensity in a short window BEFORE the pulse to a
-        # short window AFTER the pulse. If the post-pulse intensity is meaningfully
-        # higher, the membrane was disrupted by the pulse.
-        #
-        # This catches patterns the other detectors miss:
-        #   - Trap 13/15: transient spikes that return to baseline before CUSUM can
-        #     accumulate enough evidence.
-        #   - Trap 14/18: gradual rises where the rolling CUSUM baseline follows the
-        #     signal upward and never registers a large enough deviation.
-        #   - Trap 16: a genuine post-pulse rupture in a cell with high initial haze,
-        #     which was previously swallowed by the DOA check.
-        #
-        # pulse_frame_idx is injected into the params dict by MFA_analysis.py (Step 1).
         # If dye_uptake is disabled, the key won't exist and this block is skipped.
         pulse_frame_idx = self.params.get('rupture_detection', {}).get('pulse_frame_idx', None)
         if pulse_frame_idx is not None:
@@ -945,14 +928,7 @@ class LineDetectionMFA:
         if len(valid_intensities) > 0 and np.median(valid_intensities[:3]) >= abs_threshold:
             # High initial intensity detected. We need to decide: did this cell rupture
             # upon entry (DOA), or did it enter intact and rupture later (e.g. at the pulse)?
-            #
-            # The original code checked for ANY acute event in the candidates list.
-            # The bug: the Sudden Haze Jump at t~0 (the entry ramp) was always in that
-            # list, so DOA was never assigned even for genuine DOA cells like Trap 2.
-            # The Step 2 fix removes that entry-ramp candidate. But we add an extra
-            # guard here as well: only count acute events that occur AFTER a minimum
-            # delay from entry. Anything in the first N frames is entry noise, not
-            # evidence of a real late rupture.
+            # guard here: only count acute events that occur AFTER a minimum
             doa_min_delay = self.params.get('rupture_detection', {}).get('doa_min_acute_delay_frames', 3)
 
             acute_events = [
@@ -1078,13 +1054,23 @@ class LineDetectionMFA:
         """
         Detects membrane rupture caused by an electric pulse.
 
-        This detector has one major advantage over the general detectors: it knows
-        exactly when the pulse was applied, so it can compare the median intensity
-        just before vs. just after that specific moment.
+        Runs two complementary checks, both of which compare intensity only within
+        a narrow window around the known pulse frame. This keeps the detector blind
+        to noise elsewhere in the trace.
 
-        This makes it insensitive to the shape of the rupture event (spike, step, or
-        gradual rise) because it only asks: "is the average intensity in the N frames
-        after the pulse higher than the N frames before it by a meaningful amount?"
+        CHECK 1 — SUSTAINED LEAK (median-based):
+            Asks: "Is the average intensity in the N frames after the pulse higher
+            than the N frames before it?" Catches persistent leaks like Traps 14/18.
+
+        CHECK 2 — TRANSIENT BURST (peak-based):
+            Asks: "Did the intensity spike sharply in the first 1-2 frames after the
+            pulse, even if it quickly returned to baseline?" Catches brief cytoplasm
+            bursts that reseal rapidly, like Trap 13. Using the peak (max) instead of
+            the median means a single bright frame is sufficient evidence.
+
+        Both checks require the same absolute and fold-change thresholds, so they
+        are equally conservative — the only difference is whether they look at the
+        sustained level or the momentary peak of the post-pulse signal.
 
         Args:
             intensities:     The full downstream intensity array for all frames.
@@ -1097,23 +1083,25 @@ class LineDetectionMFA:
         """
         r_params = self.params.get('rupture_detection', {})
 
-        # How many frames before and after the pulse to average.
-        # Larger windows are more stable but can miss very brief events.
+        # How many frames before and after the pulse to sample.
         pre_window  = r_params.get('pulse_context_pre_window',  5)
         post_window = r_params.get('pulse_context_post_window', 5)
 
-        # The post-pulse median must be at least this many times the pre-pulse median.
-        # 1.3 means a 30% increase. Lower = more sensitive, higher = fewer false positives.
-        fold_thresh = r_params.get('pulse_context_fold_threshold', 1.3)
+        # How many frames immediately after the pulse to use for the peak check.
+        # Kept small (1-3) so we only catch the burst itself, not later noise.
+        peak_window = r_params.get('pulse_context_peak_window', 3)
 
-        # The absolute intensity increase must also exceed this value.
-        # This prevents triggering on very noisy but low-signal cells where a 30%
-        # fold change might only represent 0.2 intensity units of noise.
+        # Shared thresholds for both checks:
+        # - fold_thresh: post signal must be at least this multiple of pre signal.
+        # - abs_thresh:  post signal must also exceed pre signal by this absolute amount.
+        #   The absolute floor prevents triggering on very low-signal / noisy baselines
+        #   where a 30% fold change might be only 0.2 intensity units of noise.
+        fold_thresh = r_params.get('pulse_context_fold_threshold', 1.3)
         abs_thresh  = r_params.get('pulse_context_abs_threshold', 0.5)
 
         n = len(intensities)
 
-        # Safety checks: the pulse must fall within the trace and leave room for both windows
+        # Safety: pulse must sit inside the trace with room for both windows.
         if pulse_frame_idx <= entry_idx:
             return False, None
         if pulse_frame_idx - pre_window < entry_idx:
@@ -1121,22 +1109,33 @@ class LineDetectionMFA:
         if pulse_frame_idx + post_window >= n:
             return False, None
 
-        # Build the two comparison windows
-        pre_vals  = intensities[pulse_frame_idx - pre_window : pulse_frame_idx]
-        post_vals = intensities[pulse_frame_idx + 1           : pulse_frame_idx + 1 + post_window]
-
-        pre_median  = float(np.median(pre_vals))
-        post_median = float(np.median(post_vals))
+        # --- Shared baseline (used by both checks) ---
+        pre_vals   = intensities[pulse_frame_idx - pre_window : pulse_frame_idx]
+        pre_median = float(np.median(pre_vals))
 
         # Guard against near-zero baselines (very dark images)
         if pre_median < 0.1:
             return False, None
 
-        fold_change = post_median / pre_median
-        abs_change  = post_median - pre_median
+        # --- CHECK 1: Sustained leak (median of full post-window) ---
+        post_vals   = intensities[pulse_frame_idx + 1 : pulse_frame_idx + 1 + post_window]
+        post_median = float(np.median(post_vals))
 
-        if fold_change >= fold_thresh and abs_change >= abs_thresh:
-            # Pin the rupture to the pulse frame itself
+        if (post_median / pre_median >= fold_thresh and
+                post_median - pre_median >= abs_thresh):
+            return True, pulse_frame_idx
+
+        # --- CHECK 2: Transient burst (peak of first few frames after pulse) ---
+        peak_end  = min(n, pulse_frame_idx + 1 + peak_window)
+        peak_vals = intensities[pulse_frame_idx + 1 : peak_end]
+
+        if len(peak_vals) == 0:
+            return False, None
+
+        post_peak = float(np.max(peak_vals))
+
+        if (post_peak / pre_median >= fold_thresh and
+                post_peak - pre_median >= abs_thresh):
             return True, pulse_frame_idx
 
         return False, None

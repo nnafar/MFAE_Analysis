@@ -107,7 +107,8 @@ rupture_detection:
   #    Compares intensity in a window before vs. after the known pulse frame.
   #    Only activates when dye_uptake_parameters.enable is True.
   pulse_context_pre_window: 5         # Frames before pulse to average as pre-pulse baseline
-  pulse_context_post_window: 5        # Frames after pulse to average for comparison
+  pulse_context_post_window: 5        # Frames after pulse to average for comparison (sustained leak check)
+  pulse_context_peak_window: 3        # Frames after pulse to check for peak (transient burst check)
   pulse_context_fold_threshold: 1.3   # Post/pre ratio required to flag rupture (1.3 = 30% increase)
   pulse_context_abs_threshold: 0.5    # Minimum absolute intensity increase also required
 

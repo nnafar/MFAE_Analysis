@@ -72,7 +72,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     try:
         worker_logger.info(f"Starting analysis for Trap {trap_index+1}...")
         
-        # 1. Access Shared Image Data (Membrane Membrane)
+        # 1. Access Shared Image Data (Membrane)
         all_frames = np.memmap(config_dict['mmap_path'], 
                                dtype=config_dict['dtype'], 
                                mode='r', 
@@ -101,10 +101,6 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         thr_prot = config_dict['tuned_threshold_prot']
 
         # --- Inject pulse frame index so the rupture detector can use it ---
-        # The pulse_frame setting in config.yaml is 1-based (frame 1 = first frame),
-        # but everything inside the pipeline uses 0-based indexing. We subtract 1 here.
-        # We only do this when dye_uptake is enabled, because that is when a pulse exists.
-        # The key 'pulse_frame_idx' is read inside LineDetectionMFA._generate_comprehensive_results.
         dye_params_pre = params.get('dye_uptake_parameters', {})
         if dye_params_pre.get('enable', False):
             pulse_frame_0based = dye_params_pre.get('pulse_frame', 10) - 1
