@@ -13,13 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260210_Experiment225_InV_BranchedCortex"
+  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment5-100V-5ms-frame10"
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "260210_Experiment225BranchedCortex-1100Pa-0V-0ms-frame0"
+  experiment_id: "260128_Experiment5-1100Pa-100V-5ms-frame10"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -27,7 +27,7 @@ paths:
 # These MUST match your physical equipment settings.
 experiment_parameters:
   # Microscope Resolution: How many microns is one pixel? (Check your objective lens specs).
-  scale_factor: 0.158      # [µm/pixel] (60x = 0.629, 40x = 0.158)
+  scale_factor: 0.629      # [µm/pixel] (60x = 0.629, 40x = 0.158)
   
   # The pressure difference driving the cell into the pipette.
   # Calculated as [P_inlet - P_waste-outlet] * 0.55; the multiplication factor is based on Jessy's comsol sim
@@ -37,7 +37,7 @@ experiment_parameters:
   frame_interval: 0.14      # [Seconds]
   
   # Maximum number of traps to process (prevents infinite loops if detection fails)
-  max_traps: 9            
+  max_traps: 18            
 
 # ===================================================================
 # --- 3. GUV MODE ---
@@ -48,7 +48,7 @@ experiment_parameters:
 # the midpoint of the video. Enable this section when imaging GUVs.
 
 guv_settings:
-  enable: True                   # Master switch. Set True for GUV experiments.
+  enable: False                   # Master switch. Set True for GUV experiments.
 
   # GUVs produce a hollow ring after thresholding; the dark interior is NOT
   # filled by standard morphological operations. This option fills it using a
@@ -102,7 +102,7 @@ rupture_detection:
   
   # --- SPATIAL MONITORING ("The Eyes") ---
   # Where to look inside the pipette (ahead of the cell tip)
-  rupture_offset_from_tip_px: 10     # Gap between cell tip and box [pixels]
+  rupture_offset_from_tip_px: 7      # Gap between cell tip and box [pixels]
   rupture_window_width_px: 5         # Width of the monitoring box [pixels]
   
   # --- TIMING & CELL PRESENCE ---
@@ -112,6 +112,9 @@ rupture_detection:
   cusum_settling_buffer: 0            # [Was 3] Start immediately after entry
   min_cusum_baseline_frames: 5        # Keep at 5 for good statistics
   cusum_baseline_lag: 2               # [Was 3] 2 frames is enough to skip the ramp
+
+  # Pre-entry DOA scan
+  pre_entry_scan_frames: 10
 
   # --- ALGORITHM TUNING (MULTI-MODE) ---
   
@@ -133,8 +136,14 @@ rupture_detection:
   min_drift_tolerance: 3.0          # Minimum change to register as drift (0.1 = very sensitive)
   min_cusum_threshold: 5.0          # Accumulation threshold to trigger alarm
   
-  cusum_drift_tolerance_factor: 0.3 # (k) Multiplier for noise sigma; lowered from 0.5
+  cusum_drift_tolerance_factor: 0.5 # [was 0.3] (k) Multiplier for noise sigma; lowered from 0.5
   cusum_threshold_factor: 8.0       # (h) Multiplier for noise sigma to trigger
+
+  # Anchored drift check (catches slow leaks)
+  anchored_baseline_frames: 5
+  anchored_fold_threshold: 2.5      # [Was 1.5] (require 150% rise, not 50%)
+  anchored_abs_threshold: 3.0       # [Was 1] (require 3 a.u. absolute rise too)
+  anchored_scan_window: 7           # [Was 5] (require the rise to be sustained over more frames)
 
   # --- PULSE CONTEXT DETECTION (Electroporation Ruptures) ---
   #    Compares intensity in a window before vs. after the known pulse frame.
@@ -160,7 +169,7 @@ rupture_detection:
 
   # --- DATA CLEANING & SAFETY NETS ---
   exclude_early_fraction: 0.03  
-  absolute_intensity_threshold: 8   # Catch cells already ruptured at entry
+  absolute_intensity_threshold: 5   # [Was 8] Catch cells already ruptured at entry
   max_baseline_sigma: 1.0           # Prevent entry noise from blinding the detector
 
   # Outlier Removal
@@ -185,7 +194,7 @@ workflow_settings:
 
   # Speed: Number of CPU cores to use.
   # Recommendation: Set to (Total Cores - 1) or (Total Cores / 2) to prevent system lag.
-  n_workers: 6    
+  n_workers: 3    
   
   # Memory: How many frames to keep in RAM (lowering this saves memory but slows processing).               
   max_cache_size: 50
@@ -212,7 +221,7 @@ workflow_settings:
 # --- 7. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
 # ===================================================================
 dye_uptake_parameters:
-  enable: False
+  enable: True
   has_pulse: True                   # Set to False for control experiments without electroporation.
   
   # File Naming: Strings used to identify which image is which channel.
@@ -228,7 +237,7 @@ dye_uptake_parameters:
 # ===================================================================
 actin_parameters:
   enable: True                      # Set to True to enable, False to skip
-  channel_pattern: "C3"             # Substring to identify actin images
+  channel_pattern: "C1"             # Substring to identify actin images
   cortex_thickness_px: 3            # shell depth; 3 px ≈ 1.9 µm
   cortex_cv_threshold: 0.4          # low = cortex, high = patches
   pre_pulse_window_frames: 5        # frames before pulse for remodelling score
@@ -263,7 +272,7 @@ fitting_parameters:
   # Strategy:
   # True = Differential Evolution (Slow, finds best global fit).
   # False = Levenberg-Marquardt (Fast, fine-tunes local fit).
-  use_global_optimization: True  
+  use_global_optimization: False  
 
   # Max Attempts: Stop trying to fit after this many calculations. 
   jeffreys_maxfev: 50000           

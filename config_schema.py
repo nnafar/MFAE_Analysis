@@ -11,7 +11,10 @@ import math
 import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Union, Optional, Any
+
 from pydantic import BaseModel, Field, validator, ValidationError
+from pydantic import ConfigDict
+from pydantic import field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +85,8 @@ class PathsConfig(BaseModel):
     data_folder: Path
     experiment_id: str = Field(..., min_length=1)
     
-    @validator('data_folder')
+    @field_validator('data_folder')
+    @classmethod
     def folder_must_exist(cls, v: Path) -> Path:
         if not v.exists():
             raise ValueError(f"Data folder does not exist: {v}")
@@ -112,12 +116,14 @@ class ModelConfig(BaseModel):
         description="Son's shape factor (0.1-1.0) or 'auto' for automatic calculation based on aspect ratio"
     )
     
-    @validator('fstar', pre=True, always=True)
-    def validate_and_set_fstar(cls, v: Union[float, str, None], values: Dict[str, Any]) -> float:
+    @field_validator('fstar', mode='before')
+    @classmethod
+    def validate_and_set_fstar(cls, v, info):
         """
         Validate fstar and auto-calculate if set to 'auto'.
         Also warns if manual fstar is outside recommended range.
         """
+        values = info.data
         # Get channel dimensions
         width = values.get('channel_width_um')
         height = values.get('channel_height_um')
@@ -167,9 +173,11 @@ class ModelConfig(BaseModel):
         
         return fstar_float
     
-    @validator('channel_height_um')
-    def validate_aspect_ratio(cls, v: float, values: Dict[str, Any]) -> float:
+    @field_validator('channel_height_um')
+    @classmethod
+    def validate_aspect_ratio(cls, v: float, info) -> float:
         """Check if channel aspect ratio is within reasonable bounds."""
+        values = info.data
         if 'channel_width_um' in values:
             width = values['channel_width_um']
             aspect_ratio = max(width, v) / min(width, v)
@@ -221,8 +229,44 @@ class RuptureDetectionConfig(BaseModel):
     step_sigma_threshold: float = Field(default=6.0, gt=0.0)
     
     sudden_jump_threshold: float = Field(default=1.0, gt=0.0, description="Intensity difference to trigger acute rupture")
-
-    @validator('outlier_rejection_window')
+    
+    # Pulse context detection
+    pulse_context_pre_window: int = Field(default=5, ge=1)
+    pulse_context_post_window: int = Field(default=5, ge=1)
+    pulse_context_peak_window: int = Field(default=2, ge=1)
+    pulse_context_fold_threshold: float = Field(default=1.3, gt=1.0)
+    pulse_context_abs_threshold: float = Field(default=0.5, gt=0.0)
+    
+    # DOA and exit guards
+    doa_min_acute_delay_frames: int = Field(default=3, ge=0)
+    pulse_exit_blanking_frames: int = Field(default=5, ge=0)
+    
+    # Pre-entry DOA scan
+    pre_entry_scan_frames: int = Field(
+        default=10, ge=1,
+        description="Frames before entry to scan for pre-detection high haze (DOA check)"
+    )
+    
+    # Anchored drift check
+    anchored_baseline_frames: int = Field(
+        default=5, ge=2,
+        description="Fixed early frames used as baseline for anchored drift detector"
+    )
+    anchored_fold_threshold: float = Field(
+        default=1.5, gt=1.0,
+        description="Later window must be this multiple of anchored baseline to flag rupture"
+    )
+    anchored_abs_threshold: float = Field(
+        default=1.0, gt=0.0,
+        description="Minimum absolute intensity rise required alongside fold threshold"
+    )
+    anchored_scan_window: int = Field(
+        default=5, ge=2,
+        description="Size of sliding window used by anchored drift detector"
+    )
+    
+    @field_validator('outlier_rejection_window')
+    @classmethod
     def window_must_be_odd(cls, v: int) -> int:
         if v % 2 == 0:
             raise ValueError(f"Outlier rejection window size must be odd, got {v}")
@@ -234,6 +278,8 @@ class GuvSettings(BaseModel):
     Set enable=True to activate all GUV-specific behaviour. The individual
     sub-flags can be turned off independently if needed.
     """
+    guv_close_kernel_px: int = Field(default=15, ge=3, description="Kernel size to merge GUV ring fragments (odd numbers; auto-corrected if even)")
+    
     enable: bool = Field(default=False, description="Master switch for GUV mode.")
     fill_membrane_holes: bool = Field(
         default=True,
@@ -257,6 +303,7 @@ class WorkflowConfig(BaseModel):
     """Settings that control the pipeline's execution flow."""
     verify_traps_interactively: bool = True
     create_kymographs: bool = True
+    window_scale_factor: float = Field(default=1.0, gt=0.0, le=5.0, description="Scaling factor for interactive window size on high-DPI screens")
     max_cache_size: int = Field(gt=10, lt=500)
     trap_spacing_factor: float = Field(gt=1.0, lt=3.0)
     debug_mode: bool = False
@@ -282,10 +329,12 @@ class ImageProcessingConstants(BaseModel):
     canny_low_threshold: int = Field(default=50)
     canny_high_threshold: int = Field(default=150)
     gaussian_kernel_size: Tuple[int, int] = Field(default=(3, 3))
-    # Note: fill_membrane_holes has moved to guv_settings in config.yaml.
+    min_area_threshold: int = Field(default=100, ge=1, description="Minimum blob area to track [pixels²]")
+    small_object_threshold: int = Field(default=50, ge=1, description="Remove objects smaller than this [pixels²]")
 
-    @validator('clahe_tile_grid_size')
-    def grid_size_valid(cls, v: Tuple[int, int]) -> Tuple[int, int]:
+    @field_validator('clahe_tile_grid_size')
+    @classmethod
+    def grid_size_valid(cls, v) -> tuple:
         if not (2 <= v[0] <= 16 and 2 <= v[1] <= 16):
             raise ValueError(f"Grid size components must be between 2 and 16, got {v}")
         return v
@@ -347,14 +396,19 @@ class DyeUptakeConfig(BaseModel):
     pulse_index: int = Field(default=9, description="0-based index calculated automatically")
     baseline_frames: int = Field(default=5, ge=1, description="Number of pre-pulse frames to average for baseline")
     
-    @validator('pulse_index', always=True)
-    def calculate_pulse_index(cls, v, values):
-        return max(0, values.get('pulse_frame', 10) - 1)
+    @field_validator('pulse_index', mode='before')
+    @classmethod
+    def calculate_pulse_index(cls, v, info) -> int:
+        return max(0, info.data.get('pulse_frame', 10) - 1)
     
 class ActinConfig(BaseModel):
     """Configuration for actin distribution analysis."""
     enable: bool = False
     channel_pattern: str = Field(default="C3", description="Substring to identify actin images")
+    cortex_thickness_px: int = Field(default=3, ge=1, description="Cortex shell depth in pixels (3px ≈ 1.9µm at 60x)")
+    cortex_cv_threshold: float = Field(default=0.4, gt=0.0, lt=2.0, description="CV threshold: below = uniform cortex, above = patchy")
+    pre_pulse_window_frames: int = Field(default=5, ge=1, description="Frames before pulse for remodelling score")
+    post_pulse_window_frames: int = Field(default=10, ge=1, description="Frames after pulse for remodelling score")
 
 class MFAConfig(BaseModel):
     """The master schema that combines all sub-configurations."""
@@ -374,8 +428,7 @@ class MFAConfig(BaseModel):
     fitting_parameters: FittingParameters = Field(default_factory=FittingParameters)
     validation_parameters: ValidationParameters = Field(default_factory=ValidationParameters)
 
-    class Config:
-        extra = 'forbid'
+    model_config = ConfigDict(extra='forbid')
         
 # =============================================================================
 # 4. VALIDATION FUNCTION (THIS WAS MISSING)

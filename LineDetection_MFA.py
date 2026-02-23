@@ -223,8 +223,9 @@ class LineDetectionMFA:
         if signal in ('restart', 'stop'):
             self.results['signal'] = signal
             return self.results
-            self.results['threshold_body'] = thr_body        
-            
+        
+        self.results['threshold_body'] = thr_body    
+                    
         # --- Step 4: Automated Processing (Protrusion Detection) ---
         # We only process length using the protrusion threshold here
         self._process_all_frames(pipette_start_x, thr_prot)
@@ -1029,9 +1030,10 @@ class LineDetectionMFA:
     def _generate_comprehensive_results(self) -> None:
         """Runs multiple detectors strictly inside the validated cell-presence bounds."""
         intensities = self.results['downstream_intensities']
+        r_params    = self.params.get('rupture_detection', {})
         
         entry_idx = self.results.get('entry_frame_index', 0)
-        exit_idx = self.results.get('exit_frame_index', len(intensities))
+        exit_idx  = self.results.get('exit_frame_index', len(intensities))
         
         # Expand the window slightly past the physical exit ---
         # When a cell pops, it disappears (exit_idx), but the haze flush 
@@ -1040,6 +1042,23 @@ class LineDetectionMFA:
         valid_intensities = intensities[entry_idx:analysis_end]
         
         candidates = []
+        
+        # Pre-entry DOA check
+        # If the cell ruptured immediately on entry, haze is high from the very first frame,
+        # but protrusion detection may lag, so entry_idx is late.
+        # We catch this by looking at ALL frames BEFORE entry_idx.
+        abs_threshold     = r_params.get('absolute_intensity_threshold', 6.5)
+        pre_entry_window  = r_params.get('pre_entry_scan_frames', 10)
+    
+        if entry_idx > 0:
+            # Take up to `pre_entry_window` frames immediately before entry_idx
+            scan_start = max(0, entry_idx - pre_entry_window)
+            pre_entry_vals = intensities[scan_start:entry_idx]
+            
+            if len(pre_entry_vals) > 0 and np.median(pre_entry_vals) >= abs_threshold:
+                # High haze was present BEFORE the protrusion was detected.
+                # Mark the very first frame as the rupture event.
+                candidates.append((0, 'DOA: Pre-Entry High Haze'))
         
         # --- 1. Run temporal event detectors first ---
         
@@ -1054,7 +1073,6 @@ class LineDetectionMFA:
             if is_step: candidates.append((entry_idx + step_idx, 'Intensity Step'))
 
         # C. Direct Difference (Catches acute haze jumps smoothed out by CUSUM buffer logic)
-        # the entry ramp is never included in the diff calculation.
         jump_thresh = self.params.get('rupture_detection', {}).get('sudden_jump_threshold', 1.0)
         jump_settling = self.params.get('rupture_detection', {}).get('cusum_settling_buffer', 0)
 
@@ -1076,8 +1094,33 @@ class LineDetectionMFA:
         # D. CUSUM (Slow Drift)
         is_cusum, cusum_idx = self._detect_cusum_drift(valid_intensities)
         if is_cusum: candidates.append((entry_idx + cusum_idx, 'Haze Drift'))
-
-        # E. Pulse Context (Pulse-Induced Rupture)
+        
+        # E. Anchored Drift Check (catches slow monotonic leaks) ──
+        # Rolling CUSUM misses gradual rises because its baseline drifts with the
+        # signal. This detector fixes the baseline to the earliest stable frames
+        # and checks whether any later window rises significantly above it.
+        anchored_len  = self.params.get('rupture_detection', {}).get('anchored_baseline_frames', 5)
+        anchored_fold = self.params.get('rupture_detection', {}).get('anchored_fold_threshold', 1.5)
+        anchored_abs  = self.params.get('rupture_detection', {}).get('anchored_abs_threshold', 1.0)
+        scan_window   = self.params.get('rupture_detection', {}).get('anchored_scan_window', 5)
+        
+        if len(valid_intensities) > anchored_len + scan_window:
+            # Fixed reference: median of the first `anchored_len` frames
+            fixed_baseline = float(np.median(valid_intensities[:anchored_len]))
+            
+            if fixed_baseline >= self.min_intensity_noise_floor:
+                # Slide a small window across the rest of the trace
+                for j in range(anchored_len, len(valid_intensities) - scan_window + 1):
+                    window_median = float(np.median(valid_intensities[j : j + scan_window]))
+                    
+                    fold_rise = window_median / fixed_baseline
+                    abs_rise  = window_median - fixed_baseline
+                    
+                    if fold_rise >= anchored_fold and abs_rise >= anchored_abs:
+                        candidates.append((entry_idx + j, 'Anchored Haze Rise'))
+                        break   # Stop at the first crossing — earliest onset wins
+        
+        # F. Pulse Context (Pulse-Induced Rupture)
         # If dye_uptake is disabled, the key won't exist and this block is skipped.
         pulse_frame_idx = self.params.get('rupture_detection', {}).get('pulse_frame_idx', None)
         if pulse_frame_idx is not None:

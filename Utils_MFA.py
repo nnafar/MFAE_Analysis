@@ -296,6 +296,11 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     _, bin_body = cv2.threshold(blurred, threshold_body, 255, cv2.THRESH_BINARY)
     mask_body = _clean_mask_internal(bin_body, fill_holes, pip_x)
     mask_body[:, :pip_x] = 0
+    
+    # Keep only the blob whose left edge is nearest to pipette_x.
+    # Passing cells in the far pocket will have a left edge much further
+    # to the right, so they get discarded automatically.
+    mask_body = _keep_blob_nearest_to_x(mask_body, pip_x)
 
     return mask_prot, mask_body
 
@@ -327,6 +332,54 @@ def _clean_mask_internal(binary: np.ndarray, fill_holes: bool = False, pipette_x
         
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     return cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_open)
+
+def _keep_blob_nearest_to_x(binary_mask: np.ndarray, reference_x: int) -> np.ndarray:
+    """
+    Keeps only the blob whose left edge is closest to reference_x.
+    
+    Why this works for our experiment:
+        The main cell body always sits directly to the right of the pipette
+        entrance, so its left edge is near reference_x. A passing cell that
+        drifts through the pocket sits further right, giving it a larger
+        left-edge distance. We discard everything except the nearest blob.
+    
+    Parameters
+    ----------
+    binary_mask  : uint8 binary image (255 = foreground)
+    reference_x  : the pipette entrance x-coordinate
+    
+    Returns
+    -------
+    A new mask containing only the single nearest blob, or an empty mask
+    if no blobs are found.
+    """
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
+    
+    if num_labels <= 1:
+        # Only background label — nothing to keep.
+        return np.zeros_like(binary_mask)
+    
+    best_label    = -1
+    best_distance = float('inf')
+    
+    for i in range(1, num_labels):   # skip label 0 = background
+        # CC_STAT_LEFT is the x-coordinate of the blob's leftmost pixel.
+        left_edge = stats[i, cv2.CC_STAT_LEFT]
+        
+        # Distance between this blob's left edge and the pipette entrance.
+        # The main cell will have the smallest value here.
+        distance = abs(left_edge - reference_x)
+        
+        if distance < best_distance:
+            best_distance = distance
+            best_label    = i
+    
+    if best_label == -1:
+        return np.zeros_like(binary_mask)
+    
+    output = np.zeros_like(binary_mask)
+    output[labels == best_label] = 255
+    return output
 
 def generate_cortex_masks(mask_total: np.ndarray, cortex_thickness_px: int = 3) -> Tuple[np.ndarray, np.ndarray]:
     """
