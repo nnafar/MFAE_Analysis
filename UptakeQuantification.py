@@ -126,7 +126,13 @@ class DyeUptakeAnalyzer:
         """
         Main execution loop with region-specific baseline correction and normalization.
         """
-        # 1. Calculate Baseline (Cell-Specific F0 for each region)
+        
+        # 1. Determine Processing Range
+        valid_frames = min(len(self.mem_imgs), len(self.dye_imgs))
+        if self.rupture_idx is not None:
+             valid_frames = min(valid_frames, self.rupture_idx + 1)
+        
+        # 2. Calculate Baseline (Cell-Specific F0 for each region)
         dye_params = self.params.get('dye_uptake_parameters', {})
         has_pulse = dye_params.get('enable', False) and dye_params.get('has_pulse', True)
         
@@ -134,8 +140,8 @@ class DyeUptakeAnalyzer:
             baseline_end = self.pulse_frame
             baseline_start = max(0, baseline_end - self.baseline_len)
         else:
-            baseline_start = 0
-            baseline_end = self.baseline_len
+            baseline_start = self.start_idx
+            baseline_end = min(self.start_idx + self.baseline_len, valid_frames)
         
         base_vals_prot = []
         base_vals_body = []
@@ -183,11 +189,6 @@ class DyeUptakeAnalyzer:
             + (f"   Pulse Frame: {self.pulse_frame+1} (t={pulse_time:.1f}s)\n" if has_pulse else "   No pulse applied (control experiment)\n")
             + f"   Baseline Intensity (Total F0): {bg_total:.2f} a.u."
         )
-
-        # 2. Determine Processing Range
-        valid_frames = min(len(self.mem_imgs), len(self.dye_imgs))
-        if self.rupture_idx is not None:
-             valid_frames = min(valid_frames, self.rupture_idx + 1)
         
         # 3. Process Frames (Loop starts from start_idx)
         for i in range(self.start_idx, valid_frames):

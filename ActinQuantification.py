@@ -60,7 +60,8 @@ class ActinAnalyzer:
                  threshold_prot: int,
                  threshold_body: int,
                  params:         Dict[str, Any],
-                 frame_masks:    List[Tuple] = None):
+                 frame_masks:    List[Tuple] = None,
+                 start_idx:      int = 0):
 
         self.mem_imgs       = membrane_rois
         self.actin_imgs     = actin_rois
@@ -76,6 +77,7 @@ class ActinAnalyzer:
         # Falls back to recomputing via generate_dual_masks() if not provided
         # (e.g. when called from older code paths).
         self.frame_masks = frame_masks or []
+        self.start_idx = start_idx
 
         # Pull sub-sections once so callers don't repeat .get() chains.
         exp_p   = params.get('experiment_parameters', {})
@@ -202,9 +204,9 @@ class ActinAnalyzer:
             baseline_end   = min(self.pulse_frame, valid_frames)
             baseline_start = max(0, baseline_end - self.baseline_len)
         else:
-            # Anchor to cell entry (start of trace) for aspiration controls
-            baseline_start = 0
-            baseline_end   = min(self.baseline_len, valid_frames)
+            # Anchor to cell entry, not frame 0
+            baseline_start = self.start_idx
+            baseline_end   = min(self.start_idx + self.baseline_len, valid_frames)
 
         # Collect mean values across the baseline window for each region/zone.
         base_prot, base_body, base_total      = [], [], []
@@ -253,7 +255,7 @@ class ActinAnalyzer:
         # ----------------------------------------------------------------
         # STEP 2 — Per-frame analysis
         # ----------------------------------------------------------------
-        for i in range(valid_frames):
+        for i in range(self.start_idx, valid_frames):
             mem_img = self.mem_imgs[i]
             act_img = self.actin_imgs[i]
 
