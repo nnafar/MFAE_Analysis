@@ -128,7 +128,7 @@ class DyeUptakeAnalyzer:
         """
         # 1. Calculate Baseline (Cell-Specific F0 for each region)
         dye_params = self.params.get('dye_uptake_parameters', {})
-        has_pulse = dye_params.get('has_pulse', True)
+        has_pulse = dye_params.get('enable', False) and dye_params.get('has_pulse', True)
         
         if has_pulse:
             baseline_end = self.pulse_frame
@@ -180,8 +180,8 @@ class DyeUptakeAnalyzer:
         logger.info(
             f"Dye Uptake Analysis:\n"
             f"   Start Frame: {self.start_idx+1} (Cell Entry)\n"
-            f"   Pulse Frame: {self.pulse_frame+1} (t={pulse_time:.1f}s)\n"
-            f"   Baseline Intensity (Total F0): {bg_total:.2f} a.u."
+            + (f"   Pulse Frame: {self.pulse_frame+1} (t={pulse_time:.1f}s)\n" if has_pulse else "   No pulse applied (control experiment)\n")
+            + f"   Baseline Intensity (Total F0): {bg_total:.2f} a.u."
         )
 
         # 2. Determine Processing Range

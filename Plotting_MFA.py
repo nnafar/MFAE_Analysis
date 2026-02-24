@@ -360,11 +360,14 @@ def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Pat
     t = np.array(results.get('time_s', []))
     if len(t) == 0: return
 
-    # Extract pulse time for plotting vertical markers
+    # Extract pulse time for plotting vertical markerss
     dye_params = params.get('dye_uptake_parameters', {})
-    has_pulse = dye_params.get('has_pulse', True)
-    pulse_idx = dye_params.get('pulse_index', 9)
     
+    # Check both enable AND has_pulse
+    dye_enabled = dye_params.get('enable', False)
+    has_pulse = dye_enabled and dye_params.get('has_pulse', True)
+    
+    pulse_idx = dye_params.get('pulse_index', 9)
     pulse_time = t[pulse_idx] if (has_pulse and 0 <= pulse_idx < len(t)) else None
 
     colors = utils.MFA_COLORS

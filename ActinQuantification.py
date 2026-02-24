@@ -194,7 +194,9 @@ class ActinAnalyzer:
         # (pulse_frame == 0), baseline defaults to the first few frames.
         # ----------------------------------------------------------------
         dye_params = self.params.get('dye_uptake_parameters', {})
-        has_pulse = dye_params.get('has_pulse', True)
+        dye_enabled = dye_params.get('enable', False)
+        # Pulse exists ONLY if dye module is enabled AND pulse is flagged true
+        has_pulse = dye_enabled and dye_params.get('has_pulse', True)
         
         if has_pulse:
             baseline_end   = min(self.pulse_frame, valid_frames)
@@ -565,7 +567,7 @@ class ActinAnalyzer:
         epsilon  = 1e-6
         
         dye_params = self.params.get('dye_uptake_parameters', {})
-        has_pulse = dye_params.get('has_pulse', True)
+        has_pulse = dye_params.get('enable', False) and dye_params.get('has_pulse', True)
         
         # If a pulse is configured but outside the data range, skip gracefully.
         if has_pulse and (pulse <= 0 or pulse >= n_frames):

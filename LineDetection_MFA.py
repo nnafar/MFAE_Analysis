@@ -511,18 +511,17 @@ class LineDetectionMFA:
 
     def _segment_mask(self, image: np.ndarray, threshold: int, clip_walls: bool = True, limit_x_max: Optional[int] = None) -> np.ndarray:
         """
-        Creates a binary mask based on the provided threshold and geometry settings.
-        
-        Args:
-            image: Raw image.
-            threshold: Binary threshold value.
-            clip_walls: If True, blacks out top/bottom margins (Standard for protrusion).
-            limit_x_max: If provided, blacks out everything to the right of this X.
+        Creates a binary mask using the user-defined threshold.
+        Applies specific cleaning logic based on GUV vs Cell mode.
         """
+        guv_settings = self.params.get('guv_settings', {})
+        is_guv = guv_settings.get('enable', False)
+
         image_8bit = utils.normalize_to_8bit(image)
+        
+        # 1. Pre-processing (Common)
         gray = image_8bit if len(image_8bit.shape) == 2 else cv2.cvtColor(image_8bit, cv2.COLOR_BGR2GRAY)
         
-        # 1. Enhance & Blur (Updated to use image_processing parameters)
         image_params = self.params.get('image_processing', {})
         clahe = cv2.createCLAHE(
             clipLimit=image_params.get('clahe_clip_limit', 2.0), 
@@ -535,109 +534,174 @@ class LineDetectionMFA:
             0
         )
         
-        # 2. Threshold
-        _, binary_mask = cv2.threshold(blurred, threshold, 255, cv2.THRESH_BINARY)
+        # 2. Thresholding (User Controlled)
+        # We use the global 'threshold' variable so the UI slider works.
+        _, binary = cv2.threshold(blurred, threshold, 255, cv2.THRESH_BINARY)
         
         # 3. Geometric Constraints
-        h, w = binary_mask.shape
-        
-        # A. Clip Walls (Standard for protrusion detection)
+        h, w = binary.shape
         if clip_walls:
             margin = int(h * self.wall_clip_margin) 
             if margin > 0:
-                binary_mask[:margin, :] = 0
-                binary_mask[h-margin:, :] = 0
+                binary[:margin, :] = 0
+                binary[h-margin:, :] = 0
         
-        # B. Clip Right side (if we only want protrusion length)
         if limit_x_max is not None:
             safe_limit = max(0, min(w, limit_x_max))
-            binary_mask[:, safe_limit:] = 0
+            binary[:, safe_limit:] = 0
+            
+        # 4. Mode-Specific Cleaning
+        if is_guv:
+            return self._clean_guv_mask(binary)
+        else:
+            return self._clean_binary_mask(binary)
+        
+    def _clean_guv_mask(self, binary_mask: np.ndarray) -> np.ndarray:
+        """
+        Split-Strategy Cleaning:
+        1. Protrusion (Left): "Seal & Fill". Closes the open 'U' shape to fill the lumen.
+        2. Body (Right): "Solidity & Size". Keeps round objects, ignores aggregates.
+        """
+        h, w = binary_mask.shape
+        
+        # Determine split point (Pipette Entrance)
+        # Fallback to image center if pipette location is unknown
+        if hasattr(self, 'results') and 'pipette_start_x_used' in self.results:
+             pip_x = int(self.results['pipette_start_x_used'])
+        elif self.pipette_coords:
+             pip_x = int(self.pipette_coords[0])
+        else:
+             pip_x = w // 2
 
-        # 4. Filter Noise (small specks)     
-        return self._clean_binary_mask(binary_mask)
+        # Safety clamp
+        pip_x = max(2, min(w - 2, pip_x))
+
+        # --- Split the Mask ---
+        # We process left and right separately to apply different geometric rules.
+        mask_prot = binary_mask[:, :pip_x].copy()
+        mask_body = binary_mask[:, pip_x:].copy()
+
+        # ==========================================
+        # PART 1: PROTRUSION (The "Finger")
+        # Problem: Often discontinuous "U" shape.
+        # Solution: Morphological connect -> Seal Neck -> Fill.
+        # ==========================================
+        
+        # A. Connect broken lines (favor horizontal connections for the channel)
+        kernel_prot = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+        mask_prot = cv2.morphologyEx(mask_prot, cv2.MORPH_CLOSE, kernel_prot)
+
+        # B. "Seal the Neck"
+        # Draw a vertical line at the right edge (pipette entrance).
+        # This turns the open "U" into a closed "D" so we can fill the center.
+        h_p, w_p = mask_prot.shape
+        cv2.line(mask_prot, (w_p - 1, 0), (w_p - 1, h_p), 255, 1)
+
+        # C. Filter & Fill
+        # We accept lower solidity here because protrusions are elongated.
+        mask_prot = self._keep_largest_contour(mask_prot, min_area=50, fill=True)
+
+        # ==========================================
+        # PART 2: BODY (The "Sphere")
+        # Problem: Bright aggregates (jagged) vs GUV (round).
+        # Solution: Solidity score (Area / ConvexHullArea).
+        # ==========================================
+        
+        # A. Connect fragments (Standard circular close)
+        kernel_body = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        mask_body = cv2.morphologyEx(mask_body, cv2.MORPH_CLOSE, kernel_body)
+
+        # B. Smart Filter (Solidity & Distance)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_body)
+        best_label = -1
+        max_score = -1.0
+        
+        # Target: roughly the center of the body image (y-axis center)
+        target_y = h // 2
+        
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < self.min_area_threshold: 
+                continue
+            
+            # Distance from pipette entrance (x=0 in this crop)
+            cx, cy = centroids[i]
+            dist_from_pipette = cx  # smaller is better (closer to entrance)
+            dist_from_center_y = abs(cy - target_y)
+
+            # Check Solidity (Roundness)
+            component_mask = (labels == i).astype(np.uint8) * 255
+            contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            solidity = 0.0
+            if contours:
+                hull = cv2.convexHull(contours[0])
+                hull_area = cv2.contourArea(hull)
+                if hull_area > 0:
+                    solidity = float(area) / hull_area
+
+            # Score: Favor Round (Solidity), Large (Area), and Close (Low Dist)
+            # Aggregates have low solidity. Background GUVs have high distance.
+            score = (area * (solidity**3)) / (dist_from_pipette + dist_from_center_y + 10.0)
+
+            if score > max_score:
+                max_score = score
+                best_label = i
+        
+        # Reconstruct Body Mask
+        mask_body_clean = np.zeros_like(mask_body)
+        if best_label != -1:
+            mask_body_clean[labels == best_label] = 255
+            # Fill the holes (Lumen)
+            contours, _ = cv2.findContours(mask_body_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                 cv2.drawContours(mask_body_clean, contours, -1, 255, thickness=cv2.FILLED)
+
+        # ==========================================
+        # MERGE
+        # ==========================================
+        combined = np.hstack([mask_prot, mask_body_clean])
+        return combined
+
+    def _keep_largest_contour(self, mask: np.ndarray, min_area: int, fill: bool) -> np.ndarray:
+        """Helper to keep only the largest valid object and optionally fill it."""
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        out = np.zeros_like(mask)
+        
+        if not contours:
+            return out
+            
+        # Find largest contour
+        c = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(c) < min_area:
+            return out
+            
+        # Draw (Fill or Outline)
+        if fill:
+            cv2.drawContours(out, [c], -1, 255, thickness=cv2.FILLED)
+        else:
+            cv2.drawContours(out, [c], -1, 255, thickness=1)
+            
+        return out
     
     def _clean_binary_mask(self, binary_mask: np.ndarray) -> np.ndarray:
-        """Standard morphological cleaning for masks.
-
-        Standard cell mode:
-            Remove specks → bridge small gaps (7×7 close) → remove border blobs → light open.
-
-        GUV mode:
-            GUV membranes produce a bright ring around a dark hollow interior.
-            After thresholding, that ring usually appears as several disconnected arc
-            fragments rather than one closed loop. The standard 7×7 close is too small
-            to bridge those gaps, so downstream contour-fill only fills each tiny fragment
-            individually — not the full disc.
-
-            The GUV path therefore uses a much larger closing kernel (20×20) to merge the
-            arc fragments into one rough connected blob, then keeps only the single largest
-            blob (discarding background fluorescence halos that may have been pulled in by
-            the large close), and finally replaces that blob with its convex hull filled
-            solid. The convex hull is the tightest polygon that wraps around all pixels of
-            the blob; even a badly broken ring produces a hull that closely approximates
-            the full GUV disc.
         """
-        guv_settings = self.params.get('guv_settings', {})
-        guv_fill = guv_settings.get('enable', False) and guv_settings.get('fill_membrane_holes', True)
-
+        Standard morphological cleaning for non-GUV cells.
+        """
         # --- Step 1: Remove tiny specks (noise) ---
-        # connectedComponentsWithStats labels every separate white blob. We keep
-        # only blobs that are at least min_area_threshold pixels in size.
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
         filtered = np.zeros_like(binary_mask)
-        for i in range(1, num_labels):  # start at 1 to skip the background (label 0)
+        for i in range(1, num_labels):
             if stats[i, cv2.CC_STAT_AREA] >= self.min_area_threshold:
                 filtered[labels == i] = 255
 
-        if guv_fill:
-            # --- GUV Step 2: Large close to merge ring fragments ---
-            # Grows each bright arc fragment outward, bridging gaps between fragments to
-            # fuse them into one connected blob, then shrinks back (that's what MORPH_CLOSE
-            # does: dilate then erode).
-            #
-            # The kernel size controls how far the dilation reaches. It must be large enough
-            # to bridge the gap between arc fragments, but if it's too large it merges
-            # adjacent GUVs or background blobs into the main shape.
-            #
-            # Rule of thumb: set guv_close_kernel_px to roughly half the gap width between
-            # the largest arc fragments you can see after thresholding.
-            # - Small / dim GUV with narrow gaps → try 8–12
-            # - Large / bright GUV with wide gaps → try 15–25
-            # OpenCV requires kernel dimensions to be odd numbers, so we enforce that below.
-            close_px = guv_settings.get('guv_close_kernel_px', 15)
-            close_px = max(3, close_px)                        # must be at least 3
-            close_px = close_px if close_px % 2 == 1 else close_px + 1  # must be odd
-            kernel_guv = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_px, close_px))
-            merged = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_guv)
+        # --- Step 2: Morphological close (bridges small gaps) ---
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        filled = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
 
-            # --- GUV Step 3: Keep only the largest blob ---
-            # The large close may pull in background fluorescence halos and fuse them with
-            # the GUV ring, or leave them as separate blobs. Because the GUV ring is always
-            # the dominant structure in the ROI, keeping only the single largest connected
-            # component discards all background contamination before the hull is computed.
-            # If the mask is entirely empty (no GUV detected), this step returns zeros
-            # safely so the pipeline continues without crashing.
-            merged = self._keep_largest_blob(merged)
-
-            # --- GUV Step 4: Convex-hull fill ---
-            # Now that only the GUV blob remains, compute its convex hull and paint it
-            # solid. The hull spans the full extent of the fused ring pixels and produces
-            # a clean filled disc even if the ring is still slightly patchy.
-            filled = self._fill_convex_hulls(merged)
-
-        else:
-            # --- Standard Step 2: Morphological close (bridges small gaps) ---
-            # Net effect: small gaps in the cell boundary get bridged.
-            kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-            filled = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
-
-        # --- Step 5: Remove any blob touching the left image border ---
-        # These are usually channel walls leaking into the ROI, not the cell.
+        # --- Step 3: Remove any blob touching the left image border ---
         cleaned = self._remove_left_border_objects(filled)
 
-        # --- Step 6: Final gentle cleanup ---
-        # The open operation (erode then dilate) removes thin spurs and tiny specks
-        # without shrinking the main blob.
+        # --- Step 4: Final gentle cleanup ---
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         opened = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel_open)
 
@@ -706,7 +770,7 @@ class LineDetectionMFA:
                 continue
 
             points = np.column_stack((xs, ys))     # shape: (N, 2)
-            hull = cv2.convexHull(points)           # shape: (M, 1, 2)
+            hull = cv2.convexHull(points)          # shape: (M, 1, 2)
 
             # Draw the convex hull polygon as a solid filled shape.
             cv2.fillConvexPoly(output, hull, color=255)
