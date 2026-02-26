@@ -19,7 +19,7 @@ paths:
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "260210_Experiment225InVBranchedCortex-1100Pa-0V-0ms-frame0"
+  experiment_id: "260210_GUVs-1100Pa-0V-0ms-frame0"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -49,12 +49,7 @@ experiment_parameters:
 
 guv_settings:
   # Master switch. Set True for GUV experiments.
-  enable: True                   
-
-  # GUVs produce a hollow ring after thresholding; the dark interior is NOT
-  # filled by standard morphological operations. This option fills it using a
-  # flood-fill from the image border, which reliably captures even patchy rings.
-  fill_membrane_holes: True
+  enable: True
 
   # Which frame to display during the threshold-selection step.
   # For GUVs, use an early frame (e.g. 2) where the membrane is still intact
@@ -62,14 +57,19 @@ guv_settings:
   # partially-entered or ruptured GUV, making thresholding unreliable.
   selection_frame_index: 1
 
-  # Closing kernel size used to merge the broken membrane ring fragments into one
-  # connected blob before convex-hull filling. Units are pixels (odd numbers only;
-  # the code auto-corrects even values).
-  # Rule of thumb: set to roughly half the gap width between arc fragments visible
-  # after thresholding.
-  #   Small / dim GUV, narrow gaps  → 8–12
-  #   Large / bright GUV, wide gaps → 15–25
-  guv_close_kernel_px: 9
+  # Controls the sensitivity of the auto-Canny edge detector used for GUV
+  # segmentation. Canny thresholds are derived from the median pixel intensity
+  # of each frame: low = (1 - sigma) * median, high = (1 + sigma) * median.
+  # This means you never need to set absolute threshold values -- the detector
+  # adapts to your illumination automatically.
+  #
+  # Tuning guide:
+  #   0.2 - 0.3  ->  Only the strongest, sharpest membrane edges detected.
+  #                  Use if you are getting false edges from debris or background.
+  #   0.4        ->  Default. Works well for most GUV labelling protocols.
+  #   0.5 - 0.6  ->  Picks up fainter membrane arcs.
+  #                  Use if the GUV membrane is dim or the mask has gaps.
+  canny_sigma: 0.4
 
 # ===================================================================
 # --- 4. PHYSICS MODEL ---
@@ -170,7 +170,7 @@ rupture_detection:
 
   # --- DATA CLEANING & SAFETY NETS ---
   exclude_early_fraction: 0.03  
-  absolute_intensity_threshold: 5   # [Was 8] Catch cells already ruptured at entry
+  absolute_intensity_threshold: 8   # [Was 8] Catch cells already ruptured at entry
   max_baseline_sigma: 1.0           # Prevent entry noise from blinding the detector
 
   # Outlier Removal
@@ -255,8 +255,6 @@ image_processing:
   wall_clip_margin: 0.25           # Ignore top/bottom 75% of the ROI.
   clahe_clip_limit: 2.0            # Contrast enhancement strength.
   clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
-  canny_low_threshold: 50          # Edge detection sensitivity (Lower limit).
-  canny_high_threshold: 150        # Edge detection sensitivity (Upper limit).
   gaussian_kernel_size: [3, 3]     # Blur amount to reduce noise before detection.
   # fill_membrane_holes has moved to the guv_settings section above.
 

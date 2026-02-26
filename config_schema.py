@@ -274,28 +274,31 @@ class RuptureDetectionConfig(BaseModel):
 
 class GuvSettings(BaseModel):
     """Settings that apply specifically to GUV (Giant Unilamellar Vesicle) experiments.
-    
-    Set enable=True to activate all GUV-specific behaviour. The individual
-    sub-flags can be turned off independently if needed.
+
+    Set enable=True to activate GUV mode. Segmentation uses edge-gradient
+    (Canny) detection rather than intensity thresholding, which produces
+    consistent masks across frames even when absolute pixel intensity drifts.
     """
-    guv_close_kernel_px: int = Field(default=15, ge=3, description="Kernel size to merge GUV ring fragments (odd numbers; auto-corrected if even)")
-    
     enable: bool = Field(default=False, description="Master switch for GUV mode.")
-    fill_membrane_holes: bool = Field(
-        default=True,
-        description=(
-            "Fill the hollow lumen of GUVs after thresholding using a flood-fill "
-            "from the image border. More reliable than morphological closing for "
-            "patchy or uneven membrane signals."
-        )
-    )
+
     selection_frame_index: int = Field(
         default=2,
         ge=0,
         description=(
-            "Frame used during the interactive threshold-selection step. "
-            "Early frames (e.g. 2) show an intact spherical GUV; mid-video "
-            "frames often show a deformed or ruptured one."
+            "Frame shown during the interactive threshold-selection GUI step. "
+            "Use an early frame (e.g. 2) where the membrane is still intact "
+            "and spherical."
+        )
+    )
+
+    canny_sigma: float = Field(
+        default=0.4,
+        ge=0.05,
+        le=1.0,
+        description=(
+            "Width of the auto-Canny band around the per-frame median intensity. "
+            "low = (1 - sigma) * median, high = (1 + sigma) * median. "
+            "Increase (0.5-0.6) for dim membranes; decrease (0.2-0.3) to suppress debris edges."
         )
     )
 
@@ -326,8 +329,6 @@ class ImageProcessingConstants(BaseModel):
     wall_clip_margin: float = Field(default=0.40, ge=0.0, lt=0.5)
     clahe_clip_limit: float = Field(default=2.0, ge=1.0, le=5.0)
     clahe_tile_grid_size: Tuple[int, int] = Field(default=(8, 8))
-    canny_low_threshold: int = Field(default=50)
-    canny_high_threshold: int = Field(default=150)
     gaussian_kernel_size: Tuple[int, int] = Field(default=(3, 3))
     min_area_threshold: int = Field(default=100, ge=1, description="Minimum blob area to track [pixels²]")
     small_object_threshold: int = Field(default=50, ge=1, description="Remove objects smaller than this [pixels²]")
@@ -431,7 +432,7 @@ class MFAConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
         
 # =============================================================================
-# 4. VALIDATION FUNCTION (THIS WAS MISSING)
+# 4. VALIDATION FUNCTION
 # =============================================================================
 
 def validate_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:

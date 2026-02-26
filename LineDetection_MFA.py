@@ -207,25 +207,43 @@ class LineDetectionMFA:
             return self.results
         self.results['pipette_start_x_used'] = pipette_start_x
 
-        # --- Step 2: User sets Protrusion Threshold (Standard Mode) ---
-        # Focus on the protrusion area (clipped walls)
-        logger.info("Step 2: Protrusion Threshold (Wall Clipping Active)")
-        signal, thr_prot = self._interactive_threshold_selection(test_image, pipette_start_x, clip_walls=True)
-        if signal in ('restart', 'stop'):
-            self.results['signal'] = signal
-            return self.results
-        self.results['threshold_prot'] = thr_prot
-        
-        # --- Step 3: Cell Body Threshold  ---
-        # Separate threshold for the body (Full ROI Height)
-        logger.info("Step 3: Cell Body Threshold (Full ROI Height)")
-        signal, thr_body = self._interactive_threshold_selection(test_image, pipette_start_x, clip_walls=False)
-        if signal in ('restart', 'stop'):
-            self.results['signal'] = signal
-            return self.results
-        
-        self.results['threshold_body'] = thr_body    
-                    
+        # --- Steps 2 & 3: Threshold / Canny Sigma Selection ---
+        # GUV mode uses edge-gradient segmentation — a threshold slider is
+        # meaningless. Instead, show a live Canny preview so the user can
+        # verify sigma and confirm before batch processing begins.
+        guv_settings_cfg = self.params.get('guv_settings', {})
+        is_guv = guv_settings_cfg.get('enable', False)
+
+        if is_guv:
+            logger.info("Step 2: GUV Canny Preview (edge sensitivity)")
+            signal, confirmed_sigma = self._interactive_canny_preview(test_image, pipette_start_x)
+            if signal in ('restart', 'stop'):
+                self.results['signal'] = signal
+                return self.results
+            # Write the confirmed sigma back into params so _segment_guv_*
+            # methods pick it up for every frame during batch processing.
+            self.params.setdefault('guv_settings', {})['canny_sigma'] = confirmed_sigma
+            # Threshold values are not used in GUV mode; set neutral placeholders
+            # so downstream code that reads these keys does not crash.
+            self.results['threshold_prot'] = 0
+            self.results['threshold_body'] = 0
+            thr_prot = 0
+        else:
+            # Standard cell mode: two separate threshold steps
+            logger.info("Step 2: Protrusion Threshold (Wall Clipping Active)")
+            signal, thr_prot = self._interactive_threshold_selection(test_image, pipette_start_x, clip_walls=True)
+            if signal in ('restart', 'stop'):
+                self.results['signal'] = signal
+                return self.results
+            self.results['threshold_prot'] = thr_prot
+
+            logger.info("Step 3: Cell Body Threshold (Full ROI Height)")
+            signal, thr_body = self._interactive_threshold_selection(test_image, pipette_start_x, clip_walls=False)
+            if signal in ('restart', 'stop'):
+                self.results['signal'] = signal
+                return self.results
+            self.results['threshold_body'] = thr_body
+
         # --- Step 4: Automated Processing (Protrusion Detection) ---
         # We only process length using the protrusion threshold here
         self._process_all_frames(pipette_start_x, thr_prot)
@@ -317,6 +335,174 @@ class LineDetectionMFA:
         
         cv2.destroyAllWindows()
         return 'stop', None
+
+    def _interactive_canny_preview(self, test_image: np.ndarray, pipette_start_x: int) -> Tuple[str, float]:
+        """
+        GUV-only interactive step: shows a live preview of the edge-based mask
+        so the user can tune canny_sigma before batch processing.
+
+        Layout (same two-panel structure as threshold selection):
+          Left panel  — image with the combined GUV mask (protrusion + body)
+                        overlaid in cyan, plus the pipette line in white.
+          Right panel — a sigma scale bar (0.05 → 1.0) with a draggable marker,
+                        plus the computed low/high Canny values derived from the
+                        current frame's median intensity.
+
+        Controls:
+          Mouse drag on right panel  — adjust sigma continuously
+          W / S                      — +/- 0.05
+          D / A                      — +/- 0.01
+          ENTER                      — confirm and return sigma
+          R                          — restart (re-run pipette positioning)
+          ESC                        — stop
+        """
+        window_name = "GUV Edge Preview (Canny Sigma)"
+        utils.create_centered_window(window_name, self.window_width, self.window_height)
+
+        img_panel_w  = int(self.window_width * 0.55)
+        ctrl_panel_w = int(self.window_width - img_panel_w)
+
+        # Compute the per-image median once so the displayed low/high values
+        # are accurate representations of what the detector will use.
+        img_8bit = utils.normalize_to_8bit(test_image)
+        gray = img_8bit if len(img_8bit.shape) == 2 else cv2.cvtColor(img_8bit, cv2.COLOR_BGR2GRAY)
+        blurred_prev = cv2.GaussianBlur(gray, (5, 5), 1.0)
+        h_img, w_img = blurred_prev.shape
+        margin = int(h_img * self.wall_clip_margin)
+
+        # Use the body region (right of pipette) for median since that is where
+        # most of the GUV signal sits.
+        body_crop = blurred_prev[:, pipette_start_x:]
+        roi_px    = body_crop[margin:h_img - margin, :]
+        valid_px  = roi_px[roi_px > 0]
+        median_val = float(np.median(valid_px)) if valid_px.size > 0 else 64.0
+
+        # Starting sigma: read from config if available, else 0.4
+        initial_sigma = float(self.params.get('guv_settings', {}).get('canny_sigma', 0.4))
+        initial_sigma = max(0.05, min(1.0, initial_sigma))
+
+        SIGMA_MIN = 0.05
+        SIGMA_MAX = 1.0
+
+        state = {'sigma': initial_sigma, 'dragging': False}
+
+        def sigma_mouse_callback(event, x, y, flags, param):
+            bar_x_start = img_panel_w
+            bar_w = ctrl_panel_w
+
+            def update_sigma_from_mouse(mouse_x):
+                rel_x = max(0, mouse_x - bar_x_start)
+                frac  = rel_x / bar_w
+                raw   = SIGMA_MIN + frac * (SIGMA_MAX - SIGMA_MIN)
+                # Snap to nearest 0.01
+                param['sigma'] = round(max(SIGMA_MIN, min(SIGMA_MAX, raw)), 2)
+
+            if event == cv2.EVENT_LBUTTONDOWN:
+                if x >= bar_x_start:
+                    param['dragging'] = True
+                    update_sigma_from_mouse(x)
+            elif event == cv2.EVENT_MOUSEMOVE:
+                if param['dragging']:
+                    update_sigma_from_mouse(x)
+            elif event == cv2.EVENT_LBUTTONUP:
+                param['dragging'] = False
+
+        cv2.setMouseCallback(window_name, sigma_mouse_callback, state)
+
+        while True:
+            sigma = state['sigma']
+
+            # ── Generate live mask ────────────────────────────────────────
+            # Temporarily override the sigma in params so the edge methods
+            # use exactly what is shown on screen.
+            self.params.setdefault('guv_settings', {})['canny_sigma'] = sigma
+            mask_body = self._segment_guv_body_by_edges(test_image, pipette_start_x)
+            mask_prot = self._segment_guv_protrusion_by_edges(test_image, pipette_start_x)
+            combined_mask = cv2.bitwise_or(mask_prot, mask_body)
+
+            # ── Left panel: image + mask overlay ─────────────────────────
+            display_img = self._create_overlay_panel(
+                test_image, combined_mask, pipette_start_x,
+                clip_walls=False,           # show full frame
+                width=img_panel_w, height=self.window_height
+            )
+
+            # ── Right panel: sigma scale bar ──────────────────────────────
+            ctrl = np.zeros((self.window_height, ctrl_panel_w, 3), dtype=np.uint8)
+
+            guide_color = utils.get_ui_color('guide')
+            mask_color  = utils.get_ui_color('mask')
+
+            # Scale bar geometry
+            bar_top    = int(self.window_height * 0.15)
+            bar_bottom = int(self.window_height * 0.85)
+            bar_left   = int(ctrl_panel_w * 0.1)
+            bar_right  = int(ctrl_panel_w * 0.9)
+            bar_h      = bar_bottom - bar_top
+
+            # Background track
+            cv2.rectangle(ctrl, (bar_left, bar_top), (bar_right, bar_bottom), (60, 60, 60), -1)
+
+            # Filled region up to current sigma
+            frac   = (sigma - SIGMA_MIN) / (SIGMA_MAX - SIGMA_MIN)
+            fill_x = bar_left + int(frac * (bar_right - bar_left))
+            cv2.rectangle(ctrl, (bar_left, bar_top), (fill_x, bar_bottom), (50, 100, 50), -1)
+
+            # Marker line
+            cv2.line(ctrl, (fill_x, bar_top - 10), (fill_x, bar_bottom + 10), guide_color, 3)
+
+            # Tick marks at 0.2 intervals
+            for tick_val in [0.2, 0.4, 0.6, 0.8, 1.0]:
+                tick_frac = (tick_val - SIGMA_MIN) / (SIGMA_MAX - SIGMA_MIN)
+                tick_x = bar_left + int(tick_frac * (bar_right - bar_left))
+                cv2.line(ctrl, (tick_x, bar_bottom), (tick_x, bar_bottom + 8), (150, 150, 150), 1)
+                cv2.putText(ctrl, f"{tick_val:.1f}", (tick_x - 10, bar_bottom + 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+
+            # Labels
+            cv2.putText(ctrl, "Canny Sigma", (bar_left, bar_top - 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+
+            # Current sigma value (large)
+            utils.draw_ui_text(ctrl, f"sigma = {sigma:.2f}", (bar_left, bar_top - 50),
+                                scale=0.7, color=guide_color)
+
+            # Derived low/high thresholds
+            canny_low  = max(5,   int((1.0 - sigma) * median_val))
+            canny_high = min(255, int((1.0 + sigma) * median_val))
+            cv2.putText(ctrl, f"low={canny_low}  high={canny_high}  (median={int(median_val)})",
+                        (bar_left, bar_bottom + 45),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160, 160, 160), 1)
+
+            # ── Combine and display ───────────────────────────────────────
+            combined_display = np.hstack((display_img, ctrl))
+
+            utils.add_text_overlay(combined_display, [
+                f"Canny sigma: {sigma:.2f}",
+                "Mouse: Drag bar to adjust",
+                "W/S: +/- 0.05 | A/D: +/- 0.01",
+                "ENTER: Confirm | R: Restart | ESC: Stop"
+            ])
+            cv2.imshow(window_name, combined_display)
+
+            key = cv2.waitKey(30) & 0xFF
+            if key == 13:    # ENTER
+                cv2.destroyAllWindows()
+                return 'confirm', sigma
+            if key == 27:    # ESC
+                cv2.destroyAllWindows()
+                return 'stop', sigma
+            if key in (ord('r'), ord('R')):
+                cv2.destroyAllWindows()
+                return 'restart', sigma
+            if key in (ord('w'), ord('W')):
+                state['sigma'] = round(min(SIGMA_MAX, sigma + 0.05), 2)
+            elif key in (ord('s'), ord('S')):
+                state['sigma'] = round(max(SIGMA_MIN, sigma - 0.05), 2)
+            elif key in (ord('d'), ord('D')):
+                state['sigma'] = round(min(SIGMA_MAX, sigma + 0.01), 2)
+            elif key in (ord('a'), ord('A')):
+                state['sigma'] = round(max(SIGMA_MIN, sigma - 0.01), 2)
 
     def _interactive_threshold_selection(self, test_image: np.ndarray, pipette_start_x: int, clip_walls: bool) -> Tuple[str, Optional[int]]:
         """
@@ -513,9 +699,33 @@ class LineDetectionMFA:
         """
         Creates a binary mask using the user-defined threshold.
         Applies specific cleaning logic based on GUV vs Cell mode.
+
+        In GUV mode, thresholding is not used. The method branches early and
+        calls the edge-based segmentation methods instead. The 'threshold'
+        argument is accepted but ignored in that path.
         """
         guv_settings = self.params.get('guv_settings', {})
         is_guv = guv_settings.get('enable', False)
+
+        # --- GUV EARLY EXIT ---
+        # Threshold-based segmentation cannot reliably fill the hollow GUV
+        # lumen, so we bypass the entire threshold path and delegate to the
+        # edge-gradient methods. pip_x is taken from limit_x_max when
+        # provided (protrusion mode), or from stored results (body mode).
+        if is_guv:
+            if limit_x_max is not None:
+                pip_x = int(limit_x_max)
+            elif hasattr(self, 'results') and 'pipette_start_x_used' in self.results:
+                pip_x = int(self.results['pipette_start_x_used'])
+            elif self.pipette_coords:
+                pip_x = int(self.pipette_coords[0])
+            else:
+                h_img, w_img = utils.normalize_to_8bit(image).shape[:2]
+                pip_x = w_img // 2
+            if clip_walls:
+                return self._segment_guv_protrusion_by_edges(image, pip_x)
+            else:
+                return self._segment_guv_body_by_edges(image, pip_x)
 
         image_8bit = utils.normalize_to_8bit(image)
         
@@ -550,117 +760,188 @@ class LineDetectionMFA:
             safe_limit = max(0, min(w, limit_x_max))
             binary[:, safe_limit:] = 0
             
-        # 4. Mode-Specific Cleaning
-        if is_guv:
-            return self._clean_guv_mask(binary)
-        else:
-            return self._clean_binary_mask(binary)
+        # 4. Mode-Specific Cleaning (Cell mode only — GUV is handled above)
+        return self._clean_binary_mask(binary)
         
-    def _clean_guv_mask(self, binary_mask: np.ndarray) -> np.ndarray:
+    def _segment_guv_body_by_edges(self, image: np.ndarray, pip_x: int) -> np.ndarray:
         """
-        Split-Strategy Cleaning:
-        1. Protrusion (Left): "Seal & Fill". Closes the open 'U' shape to fill the lumen.
-        2. Body (Right): "Solidity & Size". Keeps round objects, ignores aggregates.
+        Edge-gradient-based mask for the GUV body (region right of the pipette entrance).
+
+        Why edges instead of threshold
+        --------------------------------
+        GUVs have a bright membrane ring with a hollow dark interior.
+        A threshold captures only the ring pixels, and morphological closing
+        can only bridge gaps up to the kernel radius — far too small for a
+        GUV lumen that is typically 15–40 px across. Canny edge detection
+        instead captures the membrane boundary as a stable gradient signal.
+        That gradient is consistent frame-to-frame even when absolute pixel
+        intensity drifts, which is the main source of mask inconsistency.
+
+        After detecting edges, we:
+          1. Close small ring gaps with a moderate kernel.
+          2. Identify the best contour: largest area, good solidity, near the
+             pipette entrance.
+          3. Fill the convex hull of that contour → a smooth, solid GUV mask.
+
+        The convex hull step is intentional: for a roughly spherical GUV,
+        the hull equals the true boundary. For a slightly deformed one, the
+        hull gives a clean mask that avoids jagged edge artefacts.
+
+        Returns a full-frame binary mask (uint8, 0/255) with the GUV body
+        region filled.
         """
-        h, w = binary_mask.shape
-        
-        # Determine split point (Pipette Entrance)
-        # Fallback to image center if pipette location is unknown
-        if hasattr(self, 'results') and 'pipette_start_x_used' in self.results:
-             pip_x = int(self.results['pipette_start_x_used'])
-        elif self.pipette_coords:
-             pip_x = int(self.pipette_coords[0])
-        else:
-             pip_x = w // 2
+        img_8bit = utils.normalize_to_8bit(image)
+        gray = img_8bit if len(img_8bit.shape) == 2 else cv2.cvtColor(img_8bit, cv2.COLOR_BGR2GRAY)
 
-        # Safety clamp
-        pip_x = max(2, min(w - 2, pip_x))
+        # Mild Gaussian blur to suppress pixel-level noise while preserving
+        # the strong membrane gradient. We do NOT apply CLAHE here because
+        # CLAHE locally brightens the dark hollow lumen, which can create
+        # false edges inside the GUV interior.
+        blurred = cv2.GaussianBlur(gray, (5, 5), 1.0)
 
-        # --- Split the Mask ---
-        # We process left and right separately to apply different geometric rules.
-        mask_prot = binary_mask[:, :pip_x].copy()
-        mask_body = binary_mask[:, pip_x:].copy()
+        h, w = blurred.shape
+        margin = int(h * self.wall_clip_margin)
 
-        # ==========================================
-        # PART 1: PROTRUSION (The "Finger")
-        # Problem: Often discontinuous "U" shape.
-        # Solution: Morphological connect -> Seal Neck -> Fill.
-        # ==========================================
-        
-        # A. Connect broken lines (favor horizontal connections for the channel)
-        kernel_prot = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
-        mask_prot = cv2.morphologyEx(mask_prot, cv2.MORPH_CLOSE, kernel_prot)
+        # Crop to the body region (right of pipette entrance)
+        body_crop = blurred[:, pip_x:].copy()
+        body_h, body_w = body_crop.shape
 
-        # B. "Seal the Neck"
-        # Draw a vertical line at the right edge (pipette entrance).
-        # This turns the open "U" into a closed "D" so we can fill the center.
-        h_p, w_p = mask_prot.shape
-        cv2.line(mask_prot, (w_p - 1, 0), (w_p - 1, h_p), 255, 1)
+        # ── Auto-Canny ──────────────────────────────────────────────────────
+        # The "sigma trick": derive low and high thresholds from the median
+        # pixel intensity in the body region. This adapts automatically to
+        # varying illumination across experiments, removing the need for
+        # manual threshold tuning.
+        # sigma is read from guv_settings.canny_sigma in config.yaml.
+        roi_pixels = body_crop[margin:body_h - margin, :]
+        valid_pixels = roi_pixels[roi_pixels > 0]
+        median_val = float(np.median(valid_pixels)) if valid_pixels.size > 0 else 64.0
+        sigma = float(self.params.get('guv_settings', {}).get('canny_sigma', 0.4))
+        canny_low  = max(5,   int((1.0 - sigma) * median_val))
+        canny_high = min(255, int((1.0 + sigma) * median_val))
+        edges = cv2.Canny(body_crop, canny_low, canny_high)
 
-        # C. Filter & Fill
-        # We accept lower solidity here because protrusions are elongated.
-        mask_prot = self._keep_largest_contour(mask_prot, min_area=50, fill=True)
+        # Remove edges touching the top/bottom channel walls
+        if margin > 0:
+            edges[:margin, :]         = 0
+            edges[body_h - margin:, :] = 0
 
-        # ==========================================
-        # PART 2: BODY (The "Sphere")
-        # Problem: Bright aggregates (jagged) vs GUV (round).
-        # Solution: Solidity score (Area / ConvexHullArea).
-        # ==========================================
-        
-        # A. Connect fragments (Standard circular close)
-        kernel_body = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        mask_body = cv2.morphologyEx(mask_body, cv2.MORPH_CLOSE, kernel_body)
+        # ── Close ring gaps ──────────────────────────────────────────────────
+        # A GUV membrane can have small discontinuities at the imaging limit.
+        # An elliptical closing kernel bridges these without grossly expanding
+        # the overall ring shape.
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_close)
 
-        # B. Smart Filter (Solidity & Distance)
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_body)
-        best_label = -1
-        max_score = -1.0
-        
-        # Target: roughly the center of the body image (y-axis center)
-        target_y = h // 2
-        
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area < self.min_area_threshold: 
-                continue
-            
-            # Distance from pipette entrance (x=0 in this crop)
-            cx, cy = centroids[i]
-            dist_from_pipette = cx  # smaller is better (closer to entrance)
-            dist_from_center_y = abs(cy - target_y)
+        # ── Pick the best contour ────────────────────────────────────────────
+        contours, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            # Check Solidity (Roundness)
-            component_mask = (labels == i).astype(np.uint8) * 255
-            contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            solidity = 0.0
-            if contours:
-                hull = cv2.convexHull(contours[0])
+        body_mask = np.zeros((body_h, body_w), dtype=np.uint8)
+
+        if contours:
+            best_contour = None
+            best_score   = -1.0
+
+            for c in contours:
+                area = cv2.contourArea(c)
+                if area < self.min_area_threshold:
+                    continue
+
+                # Solidity tells us how round the contour is.
+                # GUVs are round; debris and cell aggregates are jagged.
+                hull      = cv2.convexHull(c)
                 hull_area = cv2.contourArea(hull)
-                if hull_area > 0:
-                    solidity = float(area) / hull_area
+                solidity  = float(area) / hull_area if hull_area > 0 else 0.0
 
-            # Score: Favor Round (Solidity), Large (Area), and Close (Low Dist)
-            # Aggregates have low solidity. Background GUVs have high distance.
-            score = (area * (solidity**3)) / (dist_from_pipette + dist_from_center_y + 10.0)
+                # Centroid location
+                M = cv2.moments(c)
+                if M['m00'] == 0:
+                    continue
+                cx = M['m10'] / M['m00']   # x in body-crop coordinates
+                cy = M['m01'] / M['m00']
 
-            if score > max_score:
-                max_score = score
-                best_label = i
-        
-        # Reconstruct Body Mask
-        mask_body_clean = np.zeros_like(mask_body)
-        if best_label != -1:
-            mask_body_clean[labels == best_label] = 255
-            # Fill the holes (Lumen)
-            contours, _ = cv2.findContours(mask_body_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                 cv2.drawContours(mask_body_clean, contours, -1, 255, thickness=cv2.FILLED)
+                # Score: favour large area, high roundness, proximity to the
+                # pipette entrance (small cx), and vertical centring.
+                dist_penalty = cx + abs(cy - h / 2.0)
+                score = (area * (solidity ** 2)) / (dist_penalty + 10.0)
 
-        # ==========================================
-        # MERGE
-        # ==========================================
-        combined = np.hstack([mask_prot, mask_body_clean])
-        return combined
+                if score > best_score:
+                    best_score   = score
+                    best_contour = c
+
+            if best_contour is not None:
+                # Fill the convex hull of the winning contour.
+                # The outer boundary of the closed edge-ring encloses
+                # the entire GUV (ring + hollow interior), so filling it
+                # produces a solid disk matching the GUV outer diameter.
+                hull = cv2.convexHull(best_contour)
+                cv2.drawContours(body_mask, [hull], -1, 255, cv2.FILLED)
+
+        # ── Rebuild full-frame mask ──────────────────────────────────────────
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+        full_mask[:, pip_x:] = body_mask
+        return full_mask
+
+    def _segment_guv_protrusion_by_edges(self, image: np.ndarray, pip_x: int) -> np.ndarray:
+        """
+        Edge-gradient-based mask for the GUV protrusion (region left of the
+        pipette entrance, i.e. the membrane tongue inside the aspiration channel).
+
+        The protrusion region is spatially constrained by the channel walls, so
+        the problem is simpler than the body. The membrane forms a curved cap
+        that opens to the right at the pipette entrance. We:
+          1. Detect edges via auto-Canny.
+          2. Apply a horizontally-biased closing kernel (channel is wide, not tall).
+          3. Seal the right edge to close the open "C" shape into a "D".
+          4. Fill the largest enclosed contour.
+
+        Returns a full-frame binary mask (uint8, 0/255) with the protrusion
+        region filled.
+        """
+        img_8bit = utils.normalize_to_8bit(image)
+        gray = img_8bit if len(img_8bit.shape) == 2 else cv2.cvtColor(img_8bit, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 1.0)
+
+        h, w = blurred.shape
+        margin = int(h * self.wall_clip_margin)
+
+        # Crop to the protrusion region (left of pipette entrance)
+        prot_crop = blurred[:, :pip_x].copy()
+        prot_h, prot_w = prot_crop.shape
+
+        # ── Auto-Canny (same adaptive logic as the body method) ──────────────
+        roi_pixels  = prot_crop[margin:prot_h - margin, :]
+        valid_pixels = roi_pixels[roi_pixels > 0]
+        median_val  = float(np.median(valid_pixels)) if valid_pixels.size > 0 else 64.0
+        sigma = float(self.params.get('guv_settings', {}).get('canny_sigma', 0.4))
+        canny_low  = max(5,   int((1.0 - sigma) * median_val))
+        canny_high = min(255, int((1.0 + sigma) * median_val))
+        edges = cv2.Canny(prot_crop, canny_low, canny_high)
+
+        # Remove wall-touching edges
+        if margin > 0:
+            edges[:margin, :]          = 0
+            edges[prot_h - margin:, :] = 0
+
+        # ── Close with a horizontally-biased kernel ──────────────────────────
+        # The membrane inside the channel runs primarily left-right, so a
+        # wider-than-tall rectangle bridges horizontal gaps better.
+        kernel_prot = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 3))
+        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_prot)
+
+        # ── Seal the pipette entrance edge ───────────────────────────────────
+        # The protrusion opens to the right at x = pip_x.
+        # Drawing a vertical line at the right edge of this crop closes the
+        # "C" shape into a "D", allowing contour fill to work correctly.
+        cv2.line(closed, (prot_w - 1, 0), (prot_w - 1, prot_h - 1), 255, 2)
+
+        # ── Fill the largest enclosed contour ────────────────────────────────
+        prot_mask = self._keep_largest_contour(closed, min_area=30, fill=True)
+
+        # ── Rebuild full-frame mask ──────────────────────────────────────────
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+        full_mask[:, :pip_x] = prot_mask
+        return full_mask
+
 
     def _keep_largest_contour(self, mask: np.ndarray, min_area: int, fill: bool) -> np.ndarray:
         """Helper to keep only the largest valid object and optionally fill it."""
@@ -890,10 +1171,22 @@ class LineDetectionMFA:
             # fire the default when the key exists but holds None — so we use
             # 'or' to fall back to thr_prot in non-interactive batch mode.
             thr_body = self.results.get('threshold_body') or threshold
-            
-            # A) Generate masks for cell body, protrusion, and total cell
-            _, mask_body_standard = utils.generate_dual_masks(image, pipette_start_x, thr_prot, thr_body, self.params)
-            mask_prot= self._segment_mask(image, threshold, clip_walls=True, limit_x_max=pipette_start_x)
+
+            guv_settings = self.params.get('guv_settings', {})
+            is_guv = guv_settings.get('enable', False)
+
+            # A) Generate masks for cell body, protrusion, and total cell.
+            # GUV mode uses edge-gradient segmentation because threshold-based
+            # methods cannot reliably fill the hollow GUV lumen (the closing
+            # kernel is far smaller than the lumen diameter). Edge detection
+            # captures the membrane boundary as a stable gradient signal that
+            # is consistent across frames even when absolute intensity drifts.
+            if is_guv:
+                mask_body_standard = self._segment_guv_body_by_edges(image, pipette_start_x)
+                mask_prot          = self._segment_guv_protrusion_by_edges(image, pipette_start_x)
+            else:
+                _, mask_body_standard = utils.generate_dual_masks(image, pipette_start_x, thr_prot, thr_body, self.params)
+                mask_prot = self._segment_mask(image, threshold, clip_walls=True, limit_x_max=pipette_start_x)
             mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
             
             # Measure length and area

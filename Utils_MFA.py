@@ -293,7 +293,29 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     mask_prot[:, pip_x:] = 0
     
     # 2. Body Mask (Right of pipette)
-    _, bin_body = cv2.threshold(blurred, threshold_body, 255, cv2.THRESH_BINARY)
+    # In GUV mode the membrane ring brightness fluctuates frame-to-frame, so a
+    # fixed threshold_body systematically clips the dimmer ring arcs and degrades
+    # coverage.  We compute an Otsu threshold on just the body ROI for each frame
+    # and scale it down slightly so the outer ring arcs (which fall below the
+    # Otsu boundary) are still captured.  The blob-selection step in
+    # _clean_guv_mask then discards anything that isn't actually the GUV.
+    # For cells this branch is never entered and behaviour is unchanged.
+    is_guv = guv_settings.get('enable', False)
+    if is_guv:
+        body_roi = blurred[margin:h - margin, pip_x:]
+        if body_roi.size > 0 and cv2.countNonZero(body_roi) > 50:
+            otsu_val, _ = cv2.threshold(body_roi, 0, 255,
+                                        cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Scale factor < 1.0 lowers the threshold so dimmer ring arcs are
+            # included.  Exposed in config as guv_settings → body_threshold_fraction
+            # (default 0.75).  The blob-scoring step handles false inclusions.
+            fraction = guv_settings.get('body_threshold_fraction', 0.75)
+            adaptive_thr = max(int(otsu_val * fraction), 20)
+        else:
+            adaptive_thr = threshold_body   # fallback: ROI is empty or all-black
+        _, bin_body = cv2.threshold(blurred, adaptive_thr, 255, cv2.THRESH_BINARY)
+    else:
+        _, bin_body = cv2.threshold(blurred, threshold_body, 255, cv2.THRESH_BINARY)
     mask_body = _clean_mask_internal(bin_body, fill_holes, pip_x)
     mask_body[:, :pip_x] = 0
     
