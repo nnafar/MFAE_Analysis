@@ -196,12 +196,13 @@ class RuptureDetectionConfig(BaseModel):
     rupture_offset_from_tip_px: int = 10
     rupture_window_width_px: int = 15
     
-    
     entry_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length (um) to mark cell entry")
     exit_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length drop (um) to mark cell exit")
     exit_drop_ratio: float = Field(default=0.2, ge=0.0, le=1.0, description="Fractional drop to mark cell exit")
 
-    absolute_intensity_threshold: float = Field(default=6.5, gt=0.0, description="Absolute intensity signifying instant rupture")
+    doa_retention_ratio: float = Field(default=0.80, ge=0.0, le=10.0, description="Signal stays above 80% of empty trap")
+    doa_solidity_threshold: float = Field(default=0.85, ge=0.0, le=1.0, description="Mask is fragmented")
+
     max_baseline_sigma: float = Field(default=1.0, gt=0.0, description="Cap on baseline variance to prevent blinding")
     min_cusum_baseline_frames: int = Field(default=5, ge=3, description="Min frames required to calculate CUSUM baseline")
     min_intensity_noise_floor: float = Field(default=0.2, gt=0.0, description="Minimum sigma to prevent CUSUM division by zero")
@@ -237,15 +238,8 @@ class RuptureDetectionConfig(BaseModel):
     pulse_context_fold_threshold: float = Field(default=1.3, gt=1.0)
     pulse_context_abs_threshold: float = Field(default=0.5, gt=0.0)
     
-    # DOA and exit guards
-    doa_min_acute_delay_frames: int = Field(default=3, ge=0)
+    # Exit guards
     pulse_exit_blanking_frames: int = Field(default=5, ge=0)
-    
-    # Pre-entry DOA scan
-    pre_entry_scan_frames: int = Field(
-        default=10, ge=1,
-        description="Frames before entry to scan for pre-detection high haze (DOA check)"
-    )
     
     # Anchored drift check
     anchored_baseline_frames: int = Field(

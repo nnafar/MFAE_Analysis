@@ -1464,32 +1464,44 @@ class LineDetectionMFA:
         entry_idx = self.results.get('entry_frame_index', 0)
         exit_idx  = self.results.get('exit_frame_index', len(intensities))
         
-        # Expand the window slightly past the physical exit ---
-        # When a cell pops, it disappears (exit_idx), but the haze flush 
-        # happens at that exact frame or slightly after. 
+        # Expand the window slightly past the physical exit
         analysis_end = min(len(intensities), exit_idx + 3)
         valid_intensities = intensities[entry_idx:analysis_end]
         
         candidates = []
         
-        # Pre-entry DOA check
-        # If the cell ruptured immediately on entry, haze is high from the very first frame,
-        # but protrusion detection may lag, so entry_idx is late.
-        # We catch this by looking at ALL frames BEFORE entry_idx.
-        abs_threshold     = r_params.get('absolute_intensity_threshold', 6.5)
-        pre_entry_window  = r_params.get('pre_entry_scan_frames', 10)
-    
-        if entry_idx > 0:
-            # Take up to `pre_entry_window` frames immediately before entry_idx
-            scan_start = max(0, entry_idx - pre_entry_window)
-            pre_entry_vals = intensities[scan_start:entry_idx]
+        # --- 1. DYNAMIC DOA VERIFICATION ---
+        if entry_idx > 0 and entry_idx < len(intensities):
+            # 1. Establish Empty Trap Baseline
+            empty_trap_vals = intensities[:entry_idx]
+            baseline_empty = float(np.median(empty_trap_vals))
             
-            if len(pre_entry_vals) > 0 and np.median(pre_entry_vals) >= abs_threshold:
-                # High haze was present BEFORE the protrusion was detected.
-                # Mark the very first frame as the rupture event.
-                candidates.append((0, 'DOA: Pre-Entry High Haze'))
+            # 2. Measure Post-Entry Signal
+            entry_scan_end = min(len(intensities), entry_idx + 3)
+            entry_vals = intensities[entry_idx:entry_scan_end]
+            entry_signal = float(np.median(entry_vals)) if len(entry_vals) > 0 else 0.0
+            
+            # 3. Measure Structural Solidity at Entry
+            # Fallback to 1.0 if the index is out of bounds to prevent false positives
+            solidity_list = self.results.get('body_solidity', [])
+            entry_solidity = solidity_list[entry_idx] if entry_idx < len(solidity_list) else 1.0
+            
+            # Parameters
+            retention_threshold = r_params.get('doa_retention_ratio', 0.80) 
+            solidity_threshold = r_params.get('doa_solidity_threshold', 0.85) 
+            
+            # 4. Verify DOA
+            # Clamp the baseline to the established noise floor to prevent noise amplification
+            valid_baseline = max(baseline_empty, self.min_intensity_noise_floor)
+            
+            failed_to_displace = entry_signal >= (valid_baseline * retention_threshold)
+            structurally_compromised = entry_solidity < solidity_threshold
+            
+            # Strict enforcement: Requires both poor fluid displacement and fragmented morphology
+            if failed_to_displace and structurally_compromised:
+                candidates.append((entry_idx, 'DOA: Failed Displacement & Low Solidity'))
         
-        # --- 1. Run temporal event detectors first ---
+        # --- 2. Run temporal event detectors ---
         
         # A. Spike (Transient Burst)
         if self.enable_spike:
@@ -1502,21 +1514,15 @@ class LineDetectionMFA:
             if is_step: candidates.append((entry_idx + step_idx, 'Intensity Step'))
 
         # C. Direct Difference (Catches acute haze jumps smoothed out by CUSUM buffer logic)
-        jump_thresh = self.params.get('rupture_detection', {}).get('sudden_jump_threshold', 1.0)
-        jump_settling = self.params.get('rupture_detection', {}).get('cusum_settling_buffer', 0)
+        jump_thresh = r_params.get('sudden_jump_threshold', 1.0)
+        jump_settling = r_params.get('cusum_settling_buffer', 3) 
 
         if len(valid_intensities) > 1 + jump_settling:
-            # Only look at the trace AFTER the settling period
             scan_region = valid_intensities[jump_settling:]
             diffs = np.diff(scan_region)
             max_diff_idx = np.argmax(diffs)
-            # Use a conservative floor here. This detector finds the single largest
-            # frame-to-frame jump in the entire trace — a low threshold makes it prone
-            # to noise over long recordings. Pulse-context transient bursts are handled
-            # instead by the peak-based check inside _detect_pulse_context_rupture,
-            # which is gated to the pulse frame and therefore far less prone to false positives.
+            
             if diffs[max_diff_idx] > max(jump_thresh, self.min_drift):
-                # Translate the index back into the full valid_intensities coordinate space
                 adjusted_idx = max_diff_idx + jump_settling + 1
                 candidates.append((entry_idx + adjusted_idx, 'Sudden Haze Jump'))
 
@@ -1524,60 +1530,35 @@ class LineDetectionMFA:
         is_cusum, cusum_idx = self._detect_cusum_drift(valid_intensities)
         if is_cusum: candidates.append((entry_idx + cusum_idx, 'Haze Drift'))
         
-        # E. Anchored Drift Check (catches slow monotonic leaks) ──
-        # Rolling CUSUM misses gradual rises because its baseline drifts with the
-        # signal. This detector fixes the baseline to the earliest stable frames
-        # and checks whether any later window rises significantly above it.
-        anchored_len  = self.params.get('rupture_detection', {}).get('anchored_baseline_frames', 5)
-        anchored_fold = self.params.get('rupture_detection', {}).get('anchored_fold_threshold', 1.5)
-        anchored_abs  = self.params.get('rupture_detection', {}).get('anchored_abs_threshold', 1.0)
-        scan_window   = self.params.get('rupture_detection', {}).get('anchored_scan_window', 5)
+        # E. Anchored Drift Check (catches slow monotonic leaks)
+        anchored_len  = r_params.get('anchored_baseline_frames', 5)
+        anchored_fold = r_params.get('anchored_fold_threshold', 1.5)
+        anchored_abs  = r_params.get('anchored_abs_threshold', 1.0)
+        scan_window   = r_params.get('anchored_scan_window', 5)
         
         if len(valid_intensities) > anchored_len + scan_window:
-            # Fixed reference: median of the first `anchored_len` frames
             fixed_baseline = float(np.median(valid_intensities[:anchored_len]))
             
             if fixed_baseline >= self.min_intensity_noise_floor:
-                # Slide a small window across the rest of the trace
                 for j in range(anchored_len, len(valid_intensities) - scan_window + 1):
                     window_median = float(np.median(valid_intensities[j : j + scan_window]))
-                    
                     fold_rise = window_median / fixed_baseline
                     abs_rise  = window_median - fixed_baseline
                     
                     if fold_rise >= anchored_fold and abs_rise >= anchored_abs:
                         candidates.append((entry_idx + j, 'Anchored Haze Rise'))
-                        break   # Stop at the first crossing — earliest onset wins
+                        break 
         
         # F. Pulse Context (Pulse-Induced Rupture)
-        # If dye_uptake is disabled, the key won't exist and this block is skipped.
-        pulse_frame_idx = self.params.get('rupture_detection', {}).get('pulse_frame_idx', None)
+        pulse_frame_idx = r_params.get('pulse_frame_idx', None)
         if pulse_frame_idx is not None:
             is_pulse_rupture, pulse_rupt_idx = self._detect_pulse_context_rupture(
-                intensities,      # Pass the FULL array — pulse_frame_idx is an absolute index
+                intensities,      
                 entry_idx,
                 pulse_frame_idx
             )
             if is_pulse_rupture:
                 candidates.append((pulse_rupt_idx, 'Pulse-Induced Rupture'))
-
-        # --- 2. Evaluate DOA Context ---
-        abs_threshold = self.params.get('rupture_detection', {}).get('absolute_intensity_threshold', 6.5)
-
-        if len(valid_intensities) > 0 and np.median(valid_intensities[:3]) >= abs_threshold:
-            # High initial intensity detected. We need to decide: did this cell rupture
-            # upon entry (DOA), or did it enter intact and rupture later (e.g. at the pulse)?
-            # guard here: only count acute events that occur AFTER a minimum
-            doa_min_delay = self.params.get('rupture_detection', {}).get('doa_min_acute_delay_frames', 3)
-
-            acute_events = [
-                c for c in candidates
-                if c[1] in ('Intensity Spike', 'Intensity Step', 'Sudden Haze Jump', 'Pulse-Induced Rupture')
-                and c[0] >= entry_idx + doa_min_delay   # Must be meaningfully after entry
-            ]
-
-            if not acute_events:
-                candidates.append((entry_idx, 'DOA: Sustained High Haze'))
 
         # --- 3. Arbitrate ---
         # Pick the earliest detected event among valid candidates

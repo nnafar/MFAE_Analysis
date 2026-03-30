@@ -107,15 +107,17 @@ rupture_detection:
   rupture_window_width_px: 5         # Width of the monitoring box [pixels]
   
   # --- TIMING & CELL PRESENCE ---
-  entry_protrusion_threshold_um: 0.5  # Protrusion length marking cell entry (replaces entry_velocity_threshold_px)
+  entry_protrusion_threshold_um: 0.5  # Protrusion length marking cell entry
   exit_protrusion_threshold_um: 0.5   # Absolute length indicating the cell left the trap
   exit_drop_ratio: 0.15               # Fractional drop (85% of its length) from previous frame indicating cell slip
-  cusum_settling_buffer: 10            # [Was 3] Start immediately after entry
+  cusum_settling_buffer: 3            # Start immediately after entry once physics are gated
   min_cusum_baseline_frames: 5        # Keep at 5 for good statistics
-  cusum_baseline_lag: 2               # [Was 3] 2 frames is enough to skip the ramp
+  cusum_baseline_lag: 2               # 2 frames is enough to skip the ramp
 
-  # Pre-entry DOA scan
-  pre_entry_scan_frames: 10
+  # --- DYNAMIC DOA VERIFICATION ---
+  # Identifies cells that enter the trap already ruptured.
+  doa_retention_ratio: 0.80           # Post-entry signal must stay at >= 80% of empty trap baseline
+  doa_solidity_threshold: 0.85        # Structural marker: cell must lack smooth boundaries (Solidity < 0.85)
 
   # --- ALGORITHM TUNING (MULTI-MODE) ---
   
@@ -237,7 +239,7 @@ dye_uptake_parameters:
 # --- 8. ACTIN QUANTIFICATION ---
 # ===================================================================
 actin_parameters:
-  enable: False                      # Set to True to enable, False to skip
+  enable: False                     # Set to True to enable, False to skip
   channel_pattern: "C1"             # Substring to identify actin images
   cortex_thickness_px: 3            # shell depth; 3 px ≈ 1.9 µm
   cortex_cv_threshold: 0.4          # low = cortex, high = patches
