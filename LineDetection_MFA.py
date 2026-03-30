@@ -1306,30 +1306,40 @@ class LineDetectionMFA:
         self.results['entry_frame_index'] = entry_idx
         
         # 2. Exit: Detect cell slip or massive loss after stable period.
-        #
-        # PULSE GUARD: During an electroporation pulse, the electric field can briefly
-        # disrupt the image — either the cell appears to vanish (triggering exit_thresh)
-        # or the length spikes then collapses (triggering exit_ratio). Both are artefacts,
-        # not real exits. We skip the exit check for a short blanking window around the
-        # known pulse frame so these frames cannot cause a false early exit.
         pulse_frame = self.params.get('dye_uptake_parameters', {}).get('pulse_frame', None)
         pulse_blanking = self.params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
 
-        # Build the set of frames to skip (only when a pulse frame is known)
         if pulse_frame is not None:
-            blanked_frames = set(range(pulse_frame - 1, pulse_frame + pulse_blanking + 1))
+            p_idx = int(pulse_frame)
+            blanked_frames = set(range(p_idx - 1, p_idx + pulse_blanking + 1))
         else:
             blanked_frames = set()
 
         exit_idx = len(protrusions)
+        exit_sustained_frames = self.params.get('rupture_detection', {}).get('exit_sustained_frames', 3)
+        consecutive_exits = 0
+        exit_candidate_idx = None
+
         for i in range(entry_idx + 5, len(protrusions)):
             if i in blanked_frames:
-                continue  # Skip — pulse artefact window, not a real exit
+                consecutive_exits = 0  # Reset counter if entering a blanked window
+                continue  
+            
             p = protrusions[i]
             p_prev = protrusions[i-1]
+            
             if p < exit_thresh or (p_prev > 3.0 and p < exit_ratio * p_prev):
-                exit_idx = i
-                break
+                if consecutive_exits == 0:
+                    exit_candidate_idx = i  # Mark the frame where the drop started
+                consecutive_exits += 1
+                
+                if consecutive_exits >= exit_sustained_frames:
+                    exit_idx = exit_candidate_idx
+                    break
+            else:
+                consecutive_exits = 0
+                exit_candidate_idx = None
+                
         self.results['exit_frame_index'] = exit_idx
         
         # Nullify out-of-bounds data physically isolated to the active period
@@ -1471,35 +1481,73 @@ class LineDetectionMFA:
         candidates = []
         
         # --- 1. DYNAMIC DOA VERIFICATION ---
+        # Two independent pattern checks. Pattern A runs regardless of entry position.
+        # Pattern B requires at least one pre-entry frame for a formal comparison.
+        
+        # Pattern A: Post-Entry Haze Collapse
+        # Catches the case where the monitoring window was already bright at entry
+        if entry_idx < len(intensities):
+            # "Early" = first 3 frames at/after entry, before any pressure stabilizes
+            early_end = min(len(intensities), entry_idx + 3)
+            # "Later" = frames 3–10 after entry, once initial transients settle
+            later_end = min(len(intensities), entry_idx + 10)
+        
+            early_haze = intensities[entry_idx : early_end]
+            later_haze = intensities[early_end  : later_end]
+        
+            if len(early_haze) >= 1 and len(later_haze) >= 3:
+                early_mean = float(np.mean(early_haze))
+                later_mean = float(np.mean(later_haze))
+        
+                # Config knobs — add these to config.yaml under rupture_detection
+                elevated_entry_factor = r_params.get('doa_elevated_entry_factor', 6.0)
+                collapse_ratio        = r_params.get('doa_haze_collapse_ratio',  0.4)
+        
+                # Condition 1: the channel was unusually bright at entry
+                #   (elevated_entry_factor times the noise floor, e.g. >6 a.u. if floor=1.0)
+                # Condition 2: the signal then dropped by more than 60%
+                #   (0.4 means later_mean must be < 40% of early_mean)
+                haze_was_elevated = early_mean > (self.min_intensity_noise_floor * elevated_entry_factor)
+                haze_then_collapsed = later_mean < (early_mean * collapse_ratio)
+        
+                if haze_was_elevated and haze_then_collapsed:
+                    logger.debug(
+                        f"DOA Pattern A: haze collapsed from {early_mean:.1f} → {later_mean:.1f} "
+                        f"at entry frame {entry_idx}"
+                    )
+                    candidates.append((entry_idx, 'DOA: Post-Entry Haze Collapse'))
+       
+        # Pattern B: Pre-Entry Baseline Contamination
+        # Requires at least one pre-entry frame to establish an empty-trap baseline.
         if entry_idx > 0 and entry_idx < len(intensities):
-            # 1. Establish Empty Trap Baseline
             empty_trap_vals = intensities[:entry_idx]
-            baseline_empty = float(np.median(empty_trap_vals))
-            
-            # 2. Measure Post-Entry Signal
+            baseline_empty  = float(np.median(empty_trap_vals))
+        
             entry_scan_end = min(len(intensities), entry_idx + 3)
-            entry_vals = intensities[entry_idx:entry_scan_end]
-            entry_signal = float(np.median(entry_vals)) if len(entry_vals) > 0 else 0.0
-            
-            # 3. Measure Structural Solidity at Entry
-            # Fallback to 1.0 if the index is out of bounds to prevent false positives
-            solidity_list = self.results.get('body_solidity', [])
+            entry_vals     = intensities[entry_idx : entry_scan_end]
+            entry_signal   = float(np.median(entry_vals)) if len(entry_vals) > 0 else 0.0
+        
+            solidity_list  = self.results.get('body_solidity', [])
             entry_solidity = solidity_list[entry_idx] if entry_idx < len(solidity_list) else 1.0
-            
-            # Parameters
-            retention_threshold = r_params.get('doa_retention_ratio', 0.80) 
-            solidity_threshold = r_params.get('doa_solidity_threshold', 0.85) 
-            
-            # 4. Verify DOA
-            # Clamp the baseline to the established noise floor to prevent noise amplification
-            valid_baseline = max(baseline_empty, self.min_intensity_noise_floor)
-            
-            failed_to_displace = entry_signal >= (valid_baseline * retention_threshold)
+        
+            retention_threshold  = r_params.get('doa_retention_ratio', 0.80)
+            solidity_threshold   = r_params.get('doa_solidity_threshold', 0.85)
+            valid_baseline       = max(baseline_empty, self.min_intensity_noise_floor)
+        
+            # Original: signal stays high after entry (cell never displaced fluid)
+            failed_to_displace      = entry_signal >= (valid_baseline * retention_threshold)
             structurally_compromised = entry_solidity < solidity_threshold
-            
-            # Strict enforcement: Requires both poor fluid displacement and fragmented morphology
+        
             if failed_to_displace and structurally_compromised:
                 candidates.append((entry_idx, 'DOA: Failed Displacement & Low Solidity'))
+        
+            # Variant: baseline was elevated, then signal DROPPED after entry
+            elevated_baseline_factor = r_params.get('doa_elevated_baseline_factor', 6.0)
+            drop_ratio               = r_params.get('doa_channel_drop_ratio', 0.6)
+        
+            if (baseline_empty > self.min_intensity_noise_floor * elevated_baseline_factor and
+                    entry_signal < baseline_empty * drop_ratio):
+                candidates.append((entry_idx, 'DOA: Pre-Contaminated Channel'))
         
         # --- 2. Run temporal event detectors ---
         
@@ -1559,6 +1607,56 @@ class LineDetectionMFA:
             )
             if is_pulse_rupture:
                 candidates.append((pulse_rupt_idx, 'Pulse-Induced Rupture'))
+
+        # --- 2.5 LENGTH-DROP VETO 
+        # A true membrane rupture causes the cell to lose volume, so protrusion length
+        # should DROP at or after the candidate frame. Gradual dye uptake (successful
+        # electroporation) keeps the cell intact, so length stays flat or grows.
+        # This veto removes candidates that don't match the expected length signature.
+        
+        use_length_veto   = r_params.get('enable_length_veto', True)
+        veto_window       = r_params.get('length_veto_window', 10)     # frames each side to average
+        veto_drop_ratio   = r_params.get('rupture_length_drop_ratio', 0.90)  # post/pre < 0.90 = 10% drop
+        
+        if use_length_veto and candidates:
+            lengths_px = self.results.get('protrusion_lengths_px', [])
+            vetted = []
+        
+            for (c_idx, c_reason) in candidates:
+                # DOA events are always kept — they bypass the length check
+                if 'DOA' in c_reason:
+                    vetted.append((c_idx, c_reason))
+                    continue
+        
+                # Gather pre- and post-candidate length values, skipping NaNs
+                # (NaNs are placed outside [entry_idx, exit_idx] in _process_all_frames)
+                pre_slice  = lengths_px[max(0, c_idx - veto_window) : c_idx]
+                post_slice = lengths_px[c_idx : min(len(lengths_px), c_idx + veto_window)]
+        
+                pre_vals  = [v for v in pre_slice  if v is not None and not (isinstance(v, float) and np.isnan(v))]
+                post_vals = [v for v in post_slice if v is not None and not (isinstance(v, float) and np.isnan(v))]
+        
+                # If there's not enough data to judge, allow the candidate through
+                if len(pre_vals) < 3 or len(post_vals) < 3:
+                    vetted.append((c_idx, c_reason))
+                    continue
+        
+                pre_mean  = float(np.mean(pre_vals))
+                post_mean = float(np.mean(post_vals))
+        
+                # "Dropping" = post is at least 10% lower than pre
+                length_is_dropping = (pre_mean > 0) and (post_mean / pre_mean < veto_drop_ratio)
+        
+                if length_is_dropping:
+                    vetted.append((c_idx, c_reason))
+                else:
+                    logger.debug(
+                        f"Length-veto: removed '{c_reason}' at frame {c_idx} "
+                        f"(pre={pre_mean:.1f}px, post={post_mean:.1f}px, "
+                        f"ratio={post_mean/pre_mean:.2f}, threshold={veto_drop_ratio})"
+                    )
+        
+            candidates = vetted
 
         # --- 3. Arbitrate ---
         # Pick the earliest detected event among valid candidates

@@ -199,6 +199,7 @@ class RuptureDetectionConfig(BaseModel):
     entry_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length (um) to mark cell entry")
     exit_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length drop (um) to mark cell exit")
     exit_drop_ratio: float = Field(default=0.2, ge=0.0, le=1.0, description="Fractional drop to mark cell exit")
+    exit_sustained_frames: int = Field(default=3, ge=1, description="Consecutive frames the length must remain dropped to trigger exit")
 
     doa_retention_ratio: float = Field(default=0.80, ge=0.0, le=10.0, description="Signal stays above 80% of empty trap")
     doa_solidity_threshold: float = Field(default=0.85, ge=0.0, le=1.0, description="Mask is fragmented")

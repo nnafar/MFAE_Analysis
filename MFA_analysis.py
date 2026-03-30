@@ -103,7 +103,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         # --- Inject pulse frame index so the rupture detector can use it ---
         dye_params_pre = params.get('dye_uptake_parameters', {})
         if dye_params_pre.get('enable', False):
-            pulse_frame_0based = dye_params_pre.get('pulse_index', 9)
+            pulse_frame_0based = max(0, int(dye_params_pre.get('pulse_frame', 10)) - 1)
             # setdefault creates the 'rupture_detection' dict if it doesn't already exist
             params.setdefault('rupture_detection', {})['pulse_frame_idx'] = pulse_frame_0based
 
@@ -135,11 +135,15 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         # or None if no pulse was applied.  We store this in trap_data so aggregate
         # plots can split metrics into pre- and post-pulse windows.
         pulse_idx_for_data = None
-        if pulse_time is not None:
-            p_frame = dye_params.get('pulse_frame', 10)
-            _candidate = p_frame - 1          # Convert 1-based frame number → 0-based index
-            if 0 < _candidate < len(time_data):
-                pulse_idx_for_data = _candidate
+        pulse_frame = dye_params.get('dye_uptake_parameters', {}).get('pulse_frame', None)
+        pulse_blanking = dye_params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
+
+        # Build the set of frames to skip (only when a pulse frame is known)
+        if pulse_frame is not None:
+            p_idx = int(pulse_frame)
+            blanked_frames = set(range(p_idx - 1, p_idx + pulse_blanking + 1))
+        else:
+            blanked_frames = set()
 
         trap_data = {
             'trap_index': trap_index,
@@ -261,10 +265,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
 
                     # Post-pulse: frames pulse_idx → end.
                     # Time is re-zeroed to the pulse moment so the model sees t=0 at the pulse.
-                    # Length is offset by L at the pulse so the model starts from ~0 deformation,
-                    # satisfying the physical assumption of deforming from rest under constant pressure.
-                    # The extracted E and η are therefore "post-pulse apparent parameters" and can be
-                    # directly compared to the pre-pulse values.
+                    # Length is offset by L at the pulse so the model starts from ~0 deformation.
                     try:
                         t_post = t_pts[pulse_idx:] - t_pts[pulse_idx]
                         l_post = l_pts[pulse_idx:] - l_pts[pulse_idx]

@@ -13,7 +13,7 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment5-100V-5ms-frame10"
+  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment3-100V-5ms-frame10"
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
@@ -109,15 +109,51 @@ rupture_detection:
   # --- TIMING & CELL PRESENCE ---
   entry_protrusion_threshold_um: 0.5  # Protrusion length marking cell entry
   exit_protrusion_threshold_um: 0.5   # Absolute length indicating the cell left the trap
-  exit_drop_ratio: 0.15               # Fractional drop (85% of its length) from previous frame indicating cell slip
+  exit_drop_ratio: 0.05               # Fractional drop (95% of its length) from previous frame indicating cell slip
+  exit_sustained_frames: 3            # Number of consecutive frames the length must remain dropped
   cusum_settling_buffer: 3            # Start immediately after entry once physics are gated
   min_cusum_baseline_frames: 5        # Keep at 5 for good statistics
   cusum_baseline_lag: 2               # 2 frames is enough to skip the ramp
 
   # --- DYNAMIC DOA VERIFICATION ---
-  # Identifies cells that enter the trap already ruptured.
+  # Identifies cells that enter the trap already dead or ruptured.
+  # The pipeline runs two independent pattern checks — both are described below.
+
+  # Pattern B (original): Cell enters but fails to displace fluid AND has poor morphology.
   doa_retention_ratio: 0.80           # Post-entry signal must stay at >= 80% of empty trap baseline
   doa_solidity_threshold: 0.85        # Structural marker: cell must lack smooth boundaries (Solidity < 0.85)
+
+  # Pattern A: Post-Entry Haze Collapse.
+  # Catches the case where the monitoring window was already bright at entry
+  # (dead/leaky cell upstream), then the signal DROPPED after the cell entered.
+  # This is the opposite of a rupture signal (Trap 1 is the canonical example).
+  # It fires even when entry_idx = 0, covering cases the original check misses.
+  #
+  # Trigger conditions (both must be true):
+  #   1. Entry haze was unusually bright:
+  #      early_mean > noise_floor * doa_elevated_entry_factor
+  #   2. Signal then collapsed in the next 3-10 frames:
+  #      later_mean < early_mean * doa_haze_collapse_ratio
+  #
+  # Tuning guide:
+  #   doa_elevated_entry_factor — raise (e.g. 8.0) if clean channels occasionally
+  #     have entry spikes that falsely look bright. Lower (e.g. 4.0) for dimmer imaging.
+  #   doa_haze_collapse_ratio — raise toward 0.6 if the collapse is partial;
+  #     lower toward 0.25 if you want only strong collapses to trigger.
+  doa_elevated_entry_factor: 6.0      # Entry haze must exceed noise_floor * this factor
+  doa_haze_collapse_ratio: 0.4        # Later haze must drop below this fraction of entry haze
+
+  # Pattern B Variant: Pre-Contaminated Channel.
+  # When the entire pre-entry baseline is elevated (contamination upstream),
+  # and the signal then drops once the cell properly seals the pipette entrance.
+  # Requires at least one pre-entry frame; acts as a complement to Pattern A.
+  #
+  # Tuning guide:
+  #   doa_elevated_baseline_factor — same logic as doa_elevated_entry_factor above.
+  #   doa_channel_drop_ratio — raise toward 0.8 if cells produce only a modest
+  #     drop on entry. Lower toward 0.4 for channels with strong contamination signal.
+  doa_elevated_baseline_factor: 6.0   # Empty baseline must exceed noise_floor * this factor
+  doa_channel_drop_ratio: 0.6         # Entry signal must be below this fraction of the elevated baseline
 
   # --- ALGORITHM TUNING (MULTI-MODE) ---
   
@@ -147,6 +183,43 @@ rupture_detection:
   anchored_fold_threshold: 2.5      # [Was 1.5] (require 150% rise, not 50%)
   anchored_abs_threshold: 3.0       # [Was 1] (require 3 a.u. absolute rise too)
   anchored_scan_window: 7           # [Was 5] (require the rise to be sustained over more frames)
+
+  # --- LENGTH-DROP VETO ---
+  # A true membrane rupture causes volume loss, so protrusion length must DROP
+  # at or after the rupture candidate frame. Gradual dye uptake (successful
+  # electroporation) keeps the cell intact, so length stays flat or grows.
+  # This veto removes candidates that don't show the expected length signature,
+  # eliminating false positives from slow dye accumulation (Traps 2 and 4).
+  #
+  # DOA candidates are always exempted from this veto — their classification
+  # is structural, not based on acute length change.
+  #
+  # Tuning guide:
+  #   enable_length_veto — set False only if you need to debug veto behaviour
+  #     or are running an experiment where length data is unreliable.
+  #   length_veto_window — increase (e.g. 15) if frame-to-frame length noise
+  #     is high (smoothing is off). Decrease (e.g. 5) if ruptures are fast.
+  #   rupture_length_drop_ratio — the post/pre length ratio below which an
+  #     event is considered a genuine rupture. 0.90 means the protrusion must
+  #     be at least 10% shorter after the event. Raise toward 0.95 if you are
+  #     missing slow retractions; lower toward 0.85 for stricter filtering.
+  enable_length_veto: True
+  length_veto_window: 10             # Frames each side of candidate to average
+  rupture_length_drop_ratio: 0.90    # post/pre ratio threshold; below this = real rupture
+
+  # Haze-bypass exception: if the haze jump at the candidate frame is large enough
+  # on its own, the length-drop veto is skipped. This handles cases where aspiration
+  # pressure keeps the protrusion extended even after genuine rupture (Trap 7 pattern).
+  # Both thresholds must be satisfied simultaneously to prevent noisy small jumps from
+  # exploiting this bypass.
+  #
+  # Tuning guide:
+  #   veto_bypass_fold_threshold — lower toward 1.5 if genuine ruptures have modest
+  #     haze jumps. Raising toward 2.5 makes the bypass harder to trigger.
+  #   veto_bypass_abs_threshold  — raise if background noise produces fold-ratio hits
+  #     on very dim channels (the absolute check filters those out).
+  veto_bypass_fold_threshold: 2.0    # Haze must at least double (post/pre >= 2.0)
+  veto_bypass_abs_threshold: 5.0     # And rise by at least 5 a.u. in absolute terms
 
   # --- PULSE CONTEXT DETECTION (Electroporation Ruptures) ---
   #    Compares intensity in a window before vs. after the known pulse frame.
@@ -260,6 +333,12 @@ image_processing:
   gaussian_kernel_size: [3, 3]     # Blur amount to reduce noise before detection.
   # fill_membrane_holes has moved to the guv_settings section above.
 
+  # Passing-cell rejection: body blobs whose centroid is further than this many
+  # pixels from the pipette entrance are treated as passing cells and ignored.
+  # Increase if your trapped cells sit unusually far into the pocket (large cells).
+  # Decrease if passing-cell contamination still appears in the mask.
+  max_body_centroid_dist_px: 60
+
 kymograph_parameters:
   default_kymograph_width_px: 100  # Width of the generated space-time image.
   default_line_width_px: 10        # Thickness of the slice taken for the kymograph.
@@ -300,6 +379,3 @@ validation_parameters:
     E: [100.0, 50000.0]            # [Pa]
     eta1: [500.0, 100000.0]        # [Pa·s]
     eta2: [1000.0, 200000.0]       # [Pa·s]
-
-
-    
