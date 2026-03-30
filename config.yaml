@@ -13,13 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260325_CytoDExperiment272-0V-0ms-frame0"
+  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260325_CytoDExperiment274-0V-0ms-frame0"
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "Testing" #"260325_CytoDExperiment272-1100Pa-0V-0ms-frame0"
+  experiment_id: "260325_CytoDExperiment274-1100Pa-0V-0ms-frame0"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -107,7 +107,7 @@ rupture_detection:
   rupture_window_width_px: 5         # Width of the monitoring box [pixels]
   
   # --- TIMING & CELL PRESENCE ---
-  entry_protrusion_threshold_um: 1.0  # Protrusion length marking cell entry
+  entry_protrusion_threshold_um: 5.0  # Protrusion length marking cell entry
   exit_protrusion_threshold_um: 0.5   # Absolute length indicating the cell left the trap
   exit_drop_ratio: 0.05               # Fractional drop (95% of its length) from previous frame indicating cell slip
   exit_sustained_frames: 3            # Number of consecutive frames the length must remain dropped
@@ -291,7 +291,7 @@ workflow_settings:
   
   # Setup Screen: Which part of the video to show during setup? (0.5 = Middle of video).
   # This is ignored when guv_settings.enable is True (guv_settings.selection_frame_index is used instead).
-  selection_frame_fraction: 0.5
+  selection_frame_fraction: 0.3
 
 # ===================================================================
 # --- 7. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
@@ -338,6 +338,15 @@ image_processing:
   # Increase if your trapped cells sit unusually far into the pocket (large cells).
   # Decrease if passing-cell contamination still appears in the mask.
   max_body_centroid_dist_px: 20
+
+  # Threshold preview CLAHE:
+  # The pipeline always applies CLAHE before thresholding internally. When this
+  # flag is True (recommended), the interactive histogram shown during manual
+  # threshold selection is also computed on the CLAHE-enhanced image, so what
+  # you see matches what the algorithm actually processes. This fixes a mismatch
+  # that made threshold tuning unreliable for dim or unevenly-lit cells.
+  # Set to False only if you want to see the raw signal for comparison.
+  threshold_preview_clahe: true
 
 kymograph_parameters:
   default_kymograph_width_px: 100  # Width of the generated space-time image.

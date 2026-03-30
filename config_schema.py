@@ -327,6 +327,17 @@ class ImageProcessingConstants(BaseModel):
     gaussian_kernel_size: Tuple[int, int] = Field(default=(3, 3))
     min_area_threshold: int = Field(default=100, ge=1, description="Minimum blob area to track [pixels²]")
     small_object_threshold: int = Field(default=50, ge=1, description="Remove objects smaller than this [pixels²]")
+    max_body_centroid_dist_px: int = Field(default=20, ge=1, description="Max distance from pipette entrance for a body blob centroid [pixels]")
+    threshold_preview_clahe: bool = Field(
+        default=True,
+        description=(
+            "Apply CLAHE to the threshold-selection histogram preview. "
+            "When True, the histogram shown during manual threshold adjustment "
+            "matches the CLAHE-enhanced image that _segment_mask actually processes, "
+            "so the threshold you pick is calibrated against the correct signal. "
+            "Set to False only for diagnostic comparison of raw vs enhanced histograms."
+        )
+    )
 
     @field_validator('clahe_tile_grid_size')
     @classmethod

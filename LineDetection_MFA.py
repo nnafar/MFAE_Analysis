@@ -558,13 +558,24 @@ class LineDetectionMFA:
         Includes mouse interaction for dragging the threshold line.
         """
         test_image_8bit = utils.normalize_to_8bit(test_image)
-        
-        # Apply CLAHE to normalize uneven illumination
-        # clipLimit controls how aggressively contrast is enhanced.
-        # tileGridSize divides the image into tiles; smaller = more local adaptation.
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        test_image_8bit = clahe.apply(test_image_8bit)
-        
+
+        # --- Align preview with pipeline processing ---
+        # _segment_mask always applies CLAHE before thresholding. Without this
+        # block, the histogram shown here is computed from the raw 8-bit image,
+        # so the threshold the user picks is calibrated against signal that the
+        # pipeline never actually sees. Applying the same CLAHE here fixes that
+        # mismatch and makes the histogram a true representation of what gets
+        # thresholded — especially helpful for dim or unevenly-lit cells where
+        # the raw histogram has a wide, flat cell peak that gives Otsu a poor
+        # starting guess.
+        image_params = self.params.get('image_processing', {})
+        if image_params.get('threshold_preview_clahe', True):
+            _clahe_preview = cv2.createCLAHE(
+                clipLimit=image_params.get('clahe_clip_limit', 2.0),
+                tileGridSize=tuple(image_params.get('clahe_tile_grid_size', (8, 8)))
+            )
+            test_image_8bit = _clahe_preview.apply(test_image_8bit)
+
         h, w = test_image_8bit.shape[:2]
         
         # 1. Determine ROI for statistics/histogram based on mode
