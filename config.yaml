@@ -13,13 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260128_Experiment3-100V-5ms-frame10"
+  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260325_CytoDExperiment272-0V-0ms-frame0"
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "Test"
+  experiment_id: "Testing" #"260325_CytoDExperiment272-1100Pa-0V-0ms-frame0"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -107,7 +107,7 @@ rupture_detection:
   rupture_window_width_px: 5         # Width of the monitoring box [pixels]
   
   # --- TIMING & CELL PRESENCE ---
-  entry_protrusion_threshold_um: 0.5  # Protrusion length marking cell entry
+  entry_protrusion_threshold_um: 1.0  # Protrusion length marking cell entry
   exit_protrusion_threshold_um: 0.5   # Absolute length indicating the cell left the trap
   exit_drop_ratio: 0.05               # Fractional drop (95% of its length) from previous frame indicating cell slip
   exit_sustained_frames: 3            # Number of consecutive frames the length must remain dropped
@@ -298,11 +298,11 @@ workflow_settings:
 # ===================================================================
 dye_uptake_parameters:
   enable: True
-  has_pulse: True                   # Set to False for control experiments without electroporation.
+  has_pulse: False                   # Set to False for control experiments without electroporation.
   
   # File Naming: Strings used to identify which image is which channel.
   membrane_channel_pattern: "C1"    # e.g., Membrane label
-  dye_channel_pattern: "C2"         # e.g., Fluorescence / TRITC/ PI dye
+  dye_channel_pattern: "C2"         # e.g., PI dye
   
   # Timing: When did you shock the cell?
   pulse_frame: 10                   # The exact frame number of the electric pulse.
@@ -328,16 +328,16 @@ image_processing:
   min_area_threshold: 100          # Minimum cell area to track [pixels²]
   small_object_threshold: 50       # Remove objects smaller than this [pixels²]
   wall_clip_margin: 0.25           # Ignore top/bottom 75% of the ROI.
-  clahe_clip_limit: 1.0            # Contrast enhancement strength.
-  clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
-  gaussian_kernel_size: [3, 3]     # Blur amount to reduce noise before detection.
+  clahe_clip_limit: 3.0            # [Was 1] Contrast enhancement strength.
+  clahe_tile_grid_size: [16, 16]   # [8, 8] Grid size for contrast adjustment.
+  gaussian_kernel_size: [5, 5]     # [Was 3,3] Blur amount to reduce noise before detection.
   # fill_membrane_holes has moved to the guv_settings section above.
 
   # Passing-cell rejection: body blobs whose centroid is further than this many
   # pixels from the pipette entrance are treated as passing cells and ignored.
   # Increase if your trapped cells sit unusually far into the pocket (large cells).
   # Decrease if passing-cell contamination still appears in the mask.
-  max_body_centroid_dist_px: 60
+  max_body_centroid_dist_px: 20
 
 kymograph_parameters:
   default_kymograph_width_px: 100  # Width of the generated space-time image.

@@ -151,7 +151,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Heterogeneity.png")
         plt.close(fig_het)
 
-    # --- E. Kymograph & Diffusion (Existing logic) ---
+    # --- E. Kymograph & Diffusion ---
     profiles = results['spatial_profiles']
     if profiles:
         # Kymograph
@@ -166,7 +166,11 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         
         im = ax.imshow(kymo, aspect='auto', extent=extent, cmap=mfa_cmap, interpolation='nearest')
         ax.axvline(0, color=colors['pulse'], linestyle='--', linewidth=1, label='Pipette Entrance')
-        ax.axhline(pulse_time, color='white', linestyle='--', linewidth=1, label='Pulse')
+        
+        dye_params = params.get('dye_uptake_parameters', {})
+        if dye_params.get('has_pulse', True) and pulse_time is not None:
+            ax.axhline(pulse_time, color='white', linestyle='--', linewidth=1, label='Pulse')
+        
         plt.colorbar(im, ax=ax, label="Intensity")
         ax.set_xlabel("Position relative to channel entrance (µm)")
         ax.set_ylabel("Time (s)")
@@ -359,13 +363,10 @@ def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Pat
     
     t = np.array(results.get('time_s', []))
     if len(t) == 0: return
-
-    # Extract pulse time for plotting vertical markerss
-    dye_params = params.get('dye_uptake_parameters', {})
     
     # Check both enable AND has_pulse
-    dye_enabled = dye_params.get('enable', False)
-    has_pulse = dye_enabled and dye_params.get('has_pulse', True)
+    dye_params = params.get('dye_uptake_parameters', {})
+    has_pulse = dye_params.get('has_pulse', True)
     
     pulse_idx = dye_params.get('pulse_index', 9)
     pulse_time = t[pulse_idx] if (has_pulse and 0 <= pulse_idx < len(t)) else None
@@ -446,9 +447,10 @@ def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Pat
 
     # Shared pulse / rupture lines
     for ax in axes:
-        if pulse_time is not None:
+        if has_pulse and pulse_time is not None:
             ax.axvline(pulse_time, color=colors['pulse'], linestyle=':',
                        linewidth=2, label='Pulse Applied')
+                   
         if rupture_time is not None:
             ax.axvline(rupture_time, color=colors['rupture'], linestyle='--',
                        linewidth=2, label='Rupture Detected')

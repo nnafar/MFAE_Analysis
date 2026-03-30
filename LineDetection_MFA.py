@@ -95,9 +95,15 @@ class LineDetectionMFA:
             'signal': 'stop',               # Flow control signal (confirm/restart/stop)
             'protrusion_lengths_px': [],    # Raw length data in pixels
             'protrusion_lengths_um': [],    # Converted length in microns
-            'protrusion_area_um2': [],      # Protrusion Area
-            'body_area_um2': [],            # Body Area
-            'total_area_um2': [],           # Total cell area
+            'protrusion_area_um2': [],      # Protrusion Area  (count_px × sf²)
+            'body_area_um2': [],            # Body Area        (count_px × sf²)
+            'total_area_um2': [],           # Total cell area  (count_px × sf²)
+            'linear_size_prot_um': [],      # sqrt(count_px) × sf  [μm]
+            'linear_size_body_um': [],      # sqrt(count_px) × sf  [μm]
+            'linear_size_total_um': [],     # sqrt(count_px) × sf  [μm]
+            'volume_prot_um3': [],          # (count_px × sf²)^1.5  [μm³]
+            'volume_body_um3': [],          # (count_px × sf²)^1.5  [μm³]
+            'volume_total_um3': [],         # (count_px × sf²)^1.5  [μm³]
             'body_solidity': [],            # Cell body solidity
             'entry_frame_index': None,      # Cell enters trap
             'exit_frame_index': None,       # Cell Exit Handling
@@ -552,6 +558,13 @@ class LineDetectionMFA:
         Includes mouse interaction for dragging the threshold line.
         """
         test_image_8bit = utils.normalize_to_8bit(test_image)
+        
+        # Apply CLAHE to normalize uneven illumination
+        # clipLimit controls how aggressively contrast is enhanced.
+        # tileGridSize divides the image into tiles; smaller = more local adaptation.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        test_image_8bit = clahe.apply(test_image_8bit)
+        
         h, w = test_image_8bit.shape[:2]
         
         # 1. Determine ROI for statistics/histogram based on mode
@@ -1262,7 +1275,13 @@ class LineDetectionMFA:
                 protrusion_px_list.append(0); downstream_int_list.append(0)
                 self.results['protrusion_area_um2'].append(0.0)
                 self.results['body_area_um2'].append(0.0)
-                self.results['total_area_um2'].append(0.0)    
+                self.results['total_area_um2'].append(0.0)
+                self.results['linear_size_prot_um'].append(0.0)
+                self.results['linear_size_body_um'].append(0.0)
+                self.results['linear_size_total_um'].append(0.0)
+                self.results['volume_prot_um3'].append(0.0)
+                self.results['volume_body_um3'].append(0.0)
+                self.results['volume_total_um3'].append(0.0)
                 self.results['body_solidity'].append(0.0)     
                 self.results['debug_images'].append(None)
                 self.results['detection_confidence'].append(0.0)
@@ -1301,10 +1320,19 @@ class LineDetectionMFA:
             protrusion_px_list.append(protrusion_len_px)
             
             # Measure Morphology (Total Area & Body Solidity) using the un-erased body mask
-            a_prot, a_body, a_tot, solidity = self._calculate_morphology(mask_prot, mask_body_standard, mask_total)
+            (a_prot, a_body, a_tot,
+             ls_prot, ls_body, ls_tot,
+             vol_prot, vol_body, vol_tot,
+             solidity) = self._calculate_morphology(mask_prot, mask_body_standard, mask_total)
             self.results['protrusion_area_um2'].append(a_prot)
             self.results['body_area_um2'].append(a_body)
             self.results['total_area_um2'].append(a_tot)
+            self.results['linear_size_prot_um'].append(ls_prot)
+            self.results['linear_size_body_um'].append(ls_body)
+            self.results['linear_size_total_um'].append(ls_tot)
+            self.results['volume_prot_um3'].append(vol_prot)
+            self.results['volume_body_um3'].append(vol_body)
+            self.results['volume_total_um3'].append(vol_tot)
             self.results['body_solidity'].append(solidity)
             
             # Measure Rupture Intensity
@@ -1467,35 +1495,64 @@ class LineDetectionMFA:
         self.results['signal'] = signal
         return self.results    
     
-    def _calculate_morphology(self, mask_prot: np.ndarray, mask_body: np.ndarray, mask_total: np.ndarray) -> Tuple[float, float, float, float]:
-        """Calculates areas and strictly isolates solidity to the cell body."""
+    def _calculate_morphology(self, mask_prot: np.ndarray, mask_body: np.ndarray, mask_total: np.ndarray) -> Tuple[float, float, float, float, float, float, float, float, float, float]:
+        """
+        Calculates per-frame morphological measurements and body solidity.
+
+        All size metrics derive from the same pixel count (countNonZero) so that
+        UptakeQuantification — which receives the same masks via frame_masks — can
+        reproduce identical values by applying the same formulas to its own counts.
+
+        Formulas (sf = scale_factor in μm/px):
+            area       (μm²) = count_px × sf²
+            linear_size (μm) = sqrt(count_px) × sf   [= sqrt(area)]
+            volume     (μm³) = (count_px × sf²)^1.5  [= area^1.5]
+        """
         scale_factor = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         sf2 = scale_factor ** 2
-        
-        # 1. Individual Areas
-        prot_area = cv2.countNonZero(mask_prot) * sf2
-        body_area = cv2.countNonZero(mask_body) * sf2
-        total_area = cv2.countNonZero(mask_total) * sf2
-        
-        # 2. Body Solidity
-        # Performed specifically on the cell body to bypass empty spatial defects surrounding protrusions
+
+        # --- Pixel counts ---
+        n_prot  = cv2.countNonZero(mask_prot)
+        n_body  = cv2.countNonZero(mask_body)
+        n_total = cv2.countNonZero(mask_total)
+
+        # --- Area (μm²): count_px × sf² ---
+        prot_area  = n_prot  * sf2
+        body_area  = n_body  * sf2
+        total_area = n_total * sf2
+
+        # --- Linear size (μm): sqrt(count_px) × sf ---
+        linear_prot  = np.sqrt(n_prot)  * scale_factor
+        linear_body  = np.sqrt(n_body)  * scale_factor
+        linear_total = np.sqrt(n_total) * scale_factor
+
+        # --- Volume proxy (μm³): (count_px × sf²)^1.5 = area^1.5 ---
+        vol_prot  = prot_area  ** 1.5
+        vol_body  = body_area  ** 1.5
+        vol_total = total_area ** 1.5
+
+        # --- Body solidity ---
+        # Computed on the cell body only to avoid artifacts from the protrusion cutout.
         mask_body_u8 = mask_body.astype(np.uint8)
         contours, _ = cv2.findContours(mask_body_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
+
         solidity = 0.0
         if contours:
             cnt = max(contours, key=cv2.contourArea)
             area_px = cv2.contourArea(cnt)
             if area_px == 0:
                 area_px = cv2.countNonZero(mask_body_u8)
-                
-            if len(cnt) >= 3: 
+
+            if len(cnt) >= 3:
                 hull = cv2.convexHull(cnt)
                 hull_area = cv2.contourArea(hull)
                 if hull_area > 0:
                     solidity = float(area_px) / hull_area
-                    
-        return prot_area, body_area, total_area, solidity
+
+        return (prot_area, body_area, total_area,
+                linear_prot, linear_body, linear_total,
+                vol_prot, vol_body, vol_total,
+                solidity)
 
     # =========================================================================
     #                       RUPTURE DETECTION LOGIC
@@ -1916,8 +1973,16 @@ class LineDetectionMFA:
             'Time_s': time_points,
             'Protrusion_Length_px': self.results['protrusion_lengths_px'],
             'Protrusion_Length_um': self.results['protrusion_lengths_um'],
-            'Total_Area_um2': self.results['total_area_um2'],    
-            'Body_Solidity': self.results['body_solidity'],      
+            'Protrusion_Area_um2': self.results['protrusion_area_um2'],
+            'Body_Area_um2': self.results['body_area_um2'],
+            'Total_Area_um2': self.results['total_area_um2'],
+            'Linear_Size_Prot_um': self.results['linear_size_prot_um'],
+            'Linear_Size_Body_um': self.results['linear_size_body_um'],
+            'Linear_Size_Total_um': self.results['linear_size_total_um'],
+            'Volume_Prot_um3': self.results['volume_prot_um3'],
+            'Volume_Body_um3': self.results['volume_body_um3'],
+            'Volume_Total_um3': self.results['volume_total_um3'],
+            'Body_Solidity': self.results['body_solidity'],
             'Downstream_Intensity': self.results['downstream_intensities'],
             'Detection_Confidence': self.results['detection_confidence']
         })
