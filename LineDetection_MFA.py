@@ -1057,33 +1057,68 @@ class LineDetectionMFA:
         return output
 
     def _keep_closest_blob(self, binary_mask: np.ndarray, pipette_x: int, is_protrusion: bool) -> np.ndarray:
-        """Filters the binary mask to retain only the blob closest to the pipette entrance."""
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
+        """Retains only the blob that belongs to the cell being tracked.
+
+        For the protrusion (left of pipette):
+            Keeps the blob whose right edge is closest to pipette_x.
+            No centroid guard needed — there is nothing to the left of the pipette
+            except the cell tip and occasional debris, which is already filtered by
+            min_area_threshold.
+
+        For the body (right of pipette):
+            Keeps the closest blob by left-edge proximity, BUT only among blobs
+            whose centroid lies within max_body_centroid_dist_px of pipette_x.
+
+            Why this matters: when a second cell passes through the pocket behind
+            the trapped cell, both can appear in the body ROI. The original code
+            compared only edge distances, so a large passing cell whose left edge
+            happened to sit close to pipette_x could "win" over the correct cell,
+            or — worse — the two cells merge into one connected component through
+            thresholding, making the blob filter useless. The centroid guard rejects
+            blobs whose mass is far downstream, which is always the case for passing
+            cells even when their left edge grazes the pipette entrance region.
+
+        The centroid threshold is read from image_processing.max_body_centroid_dist_px
+        (default 60 px). Increase it if legitimate cells sit far into the pocket;
+        decrease it if passing-cell contamination persists.
+        """
+        # connectedComponentsWithStats returns centroids as (cx, cy) in image coordinates.
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_mask)
         out = np.zeros_like(binary_mask)
 
         if num_labels <= 1:
             return out
 
-        min_dist = float('inf')
-        best_label = 1
+        max_body_centroid_dist = self.params.get('image_processing', {}).get(
+            'max_body_centroid_dist_px', 60
+        )
+
+        min_dist   = float('inf')
+        best_label = -1
 
         for i in range(1, num_labels):
             if stats[i, cv2.CC_STAT_AREA] < self.min_area_threshold:
                 continue
 
-            # Protrusion is left of pipette (compare right edge of blob)
-            # Body is right of pipette (compare left edge of blob)
             if is_protrusion:
+                # Right edge of the blob — should be flush against the pipette entrance.
                 edge_x = stats[i, cv2.CC_STAT_LEFT] + stats[i, cv2.CC_STAT_WIDTH]
             else:
+                # Left edge of the blob — again should be near the pipette entrance.
                 edge_x = stats[i, cv2.CC_STAT_LEFT]
+
+                # Centroid guard: blobs whose centre of mass is far to the right are
+                # passing cells, not the trapped cell. Reject them before comparing edges.
+                centroid_x = centroids[i][0]
+                if abs(centroid_x - pipette_x) > max_body_centroid_dist:
+                    continue
 
             dist = abs(pipette_x - edge_x)
             if dist < min_dist:
-                min_dist = dist
+                min_dist   = dist
                 best_label = i
 
-        if min_dist != float('inf'):
+        if best_label != -1:
             out[labels == best_label] = 255
 
         return out
@@ -1481,73 +1516,35 @@ class LineDetectionMFA:
         candidates = []
         
         # --- 1. DYNAMIC DOA VERIFICATION ---
-        # Two independent pattern checks. Pattern A runs regardless of entry position.
-        # Pattern B requires at least one pre-entry frame for a formal comparison.
-        
-        # Pattern A: Post-Entry Haze Collapse
-        # Catches the case where the monitoring window was already bright at entry
-        if entry_idx < len(intensities):
-            # "Early" = first 3 frames at/after entry, before any pressure stabilizes
-            early_end = min(len(intensities), entry_idx + 3)
-            # "Later" = frames 3–10 after entry, once initial transients settle
-            later_end = min(len(intensities), entry_idx + 10)
-        
-            early_haze = intensities[entry_idx : early_end]
-            later_haze = intensities[early_end  : later_end]
-        
-            if len(early_haze) >= 1 and len(later_haze) >= 3:
-                early_mean = float(np.mean(early_haze))
-                later_mean = float(np.mean(later_haze))
-        
-                # Config knobs — add these to config.yaml under rupture_detection
-                elevated_entry_factor = r_params.get('doa_elevated_entry_factor', 6.0)
-                collapse_ratio        = r_params.get('doa_haze_collapse_ratio',  0.4)
-        
-                # Condition 1: the channel was unusually bright at entry
-                #   (elevated_entry_factor times the noise floor, e.g. >6 a.u. if floor=1.0)
-                # Condition 2: the signal then dropped by more than 60%
-                #   (0.4 means later_mean must be < 40% of early_mean)
-                haze_was_elevated = early_mean > (self.min_intensity_noise_floor * elevated_entry_factor)
-                haze_then_collapsed = later_mean < (early_mean * collapse_ratio)
-        
-                if haze_was_elevated and haze_then_collapsed:
-                    logger.debug(
-                        f"DOA Pattern A: haze collapsed from {early_mean:.1f} → {later_mean:.1f} "
-                        f"at entry frame {entry_idx}"
-                    )
-                    candidates.append((entry_idx, 'DOA: Post-Entry Haze Collapse'))
-       
-        # Pattern B: Pre-Entry Baseline Contamination
-        # Requires at least one pre-entry frame to establish an empty-trap baseline.
         if entry_idx > 0 and entry_idx < len(intensities):
+            # 1. Establish Empty Trap Baseline
             empty_trap_vals = intensities[:entry_idx]
-            baseline_empty  = float(np.median(empty_trap_vals))
-        
+            baseline_empty = float(np.median(empty_trap_vals))
+            
+            # 2. Measure Post-Entry Signal
             entry_scan_end = min(len(intensities), entry_idx + 3)
-            entry_vals     = intensities[entry_idx : entry_scan_end]
-            entry_signal   = float(np.median(entry_vals)) if len(entry_vals) > 0 else 0.0
-        
-            solidity_list  = self.results.get('body_solidity', [])
+            entry_vals = intensities[entry_idx:entry_scan_end]
+            entry_signal = float(np.median(entry_vals)) if len(entry_vals) > 0 else 0.0
+            
+            # 3. Measure Structural Solidity at Entry
+            # Fallback to 1.0 if the index is out of bounds to prevent false positives
+            solidity_list = self.results.get('body_solidity', [])
             entry_solidity = solidity_list[entry_idx] if entry_idx < len(solidity_list) else 1.0
-        
-            retention_threshold  = r_params.get('doa_retention_ratio', 0.80)
-            solidity_threshold   = r_params.get('doa_solidity_threshold', 0.85)
-            valid_baseline       = max(baseline_empty, self.min_intensity_noise_floor)
-        
-            # Original: signal stays high after entry (cell never displaced fluid)
-            failed_to_displace      = entry_signal >= (valid_baseline * retention_threshold)
+            
+            # Parameters
+            retention_threshold = r_params.get('doa_retention_ratio', 0.80) 
+            solidity_threshold = r_params.get('doa_solidity_threshold', 0.85) 
+            
+            # 4. Verify DOA
+            # Clamp the baseline to the established noise floor to prevent noise amplification
+            valid_baseline = max(baseline_empty, self.min_intensity_noise_floor)
+            
+            failed_to_displace = entry_signal >= (valid_baseline * retention_threshold)
             structurally_compromised = entry_solidity < solidity_threshold
-        
+            
+            # Strict enforcement: Requires both poor fluid displacement and fragmented morphology
             if failed_to_displace and structurally_compromised:
                 candidates.append((entry_idx, 'DOA: Failed Displacement & Low Solidity'))
-        
-            # Variant: baseline was elevated, then signal DROPPED after entry
-            elevated_baseline_factor = r_params.get('doa_elevated_baseline_factor', 6.0)
-            drop_ratio               = r_params.get('doa_channel_drop_ratio', 0.6)
-        
-            if (baseline_empty > self.min_intensity_noise_floor * elevated_baseline_factor and
-                    entry_signal < baseline_empty * drop_ratio):
-                candidates.append((entry_idx, 'DOA: Pre-Contaminated Channel'))
         
         # --- 2. Run temporal event detectors ---
         
@@ -1608,54 +1605,89 @@ class LineDetectionMFA:
             if is_pulse_rupture:
                 candidates.append((pulse_rupt_idx, 'Pulse-Induced Rupture'))
 
-        # --- 2.5 LENGTH-DROP VETO 
-        # A true membrane rupture causes the cell to lose volume, so protrusion length
-        # should DROP at or after the candidate frame. Gradual dye uptake (successful
-        # electroporation) keeps the cell intact, so length stays flat or grows.
-        # This veto removes candidates that don't match the expected length signature.
-        
-        use_length_veto   = r_params.get('enable_length_veto', True)
-        veto_window       = r_params.get('length_veto_window', 10)     # frames each side to average
-        veto_drop_ratio   = r_params.get('rupture_length_drop_ratio', 0.90)  # post/pre < 0.90 = 10% drop
-        
+        # --- 2.5 LENGTH-DROP VETO ---
+        # A true membrane rupture causes volume loss, so protrusion length must DROP at or
+        # after the candidate frame. Gradual dye uptake (successful electroporation) keeps
+        # the cell intact, so length stays flat or grows — those candidates are removed here.
+        #
+        # DOA candidates are always exempt: their classification is structural, not based
+        # on acute length change.
+        #
+        # Exception — haze bypass: if the haze jump itself is large enough to be
+        # unambiguous (e.g. Trap 7, where aspiration pressure prevents retraction even
+        # after genuine rupture), the veto is skipped for that candidate regardless of
+        # what the length does. Both a fold threshold and an absolute threshold must be
+        # met to bypass, so small noisy jumps cannot exploit this path.
+
+        use_length_veto    = r_params.get('enable_length_veto', True)
+        veto_window        = r_params.get('length_veto_window', 10)
+        veto_drop_ratio    = r_params.get('rupture_length_drop_ratio', 0.90)
+        bypass_fold        = r_params.get('veto_bypass_fold_threshold', 2.0)
+        bypass_abs         = r_params.get('veto_bypass_abs_threshold', 5.0)
+
         if use_length_veto and candidates:
             lengths_px = self.results.get('protrusion_lengths_px', [])
             vetted = []
-        
+
             for (c_idx, c_reason) in candidates:
-                # DOA events are always kept — they bypass the length check
+
+                # DOA candidates always pass through — no length check needed.
                 if 'DOA' in c_reason:
                     vetted.append((c_idx, c_reason))
                     continue
-        
-                # Gather pre- and post-candidate length values, skipping NaNs
-                # (NaNs are placed outside [entry_idx, exit_idx] in _process_all_frames)
+
+                # ── Haze bypass ──────────────────────────────────────────────
+                # If the haze jumped by a large enough fold AND absolute amount
+                # around this candidate, we treat it as an unambiguous rupture
+                # and skip the length check entirely.
+                haze_pre_slice  = intensities[max(0, c_idx - 5) : c_idx]
+                haze_post_slice = intensities[c_idx : min(len(intensities), c_idx + 5)]
+
+                if len(haze_pre_slice) >= 2 and len(haze_post_slice) >= 2:
+                    h_pre  = float(np.median(haze_pre_slice))
+                    h_post = float(np.median(haze_post_slice))
+
+                    if (h_pre > 0 and
+                            h_post / h_pre >= bypass_fold and
+                            h_post - h_pre >= bypass_abs):
+                        vetted.append((c_idx, c_reason))
+                        logger.debug(
+                            f"Length-veto bypass: '{c_reason}' at frame {c_idx} "
+                            f"(haze fold={h_post/h_pre:.2f}, abs rise={h_post-h_pre:.1f})"
+                        )
+                        continue
+
+                # ── Length check ─────────────────────────────────────────────
+                # Average the protrusion length in a window before and after the
+                # candidate, skipping NaN values (which mark out-of-bounds frames).
                 pre_slice  = lengths_px[max(0, c_idx - veto_window) : c_idx]
                 post_slice = lengths_px[c_idx : min(len(lengths_px), c_idx + veto_window)]
-        
-                pre_vals  = [v for v in pre_slice  if v is not None and not (isinstance(v, float) and np.isnan(v))]
-                post_vals = [v for v in post_slice if v is not None and not (isinstance(v, float) and np.isnan(v))]
-        
-                # If there's not enough data to judge, allow the candidate through
+
+                pre_vals  = [v for v in pre_slice
+                             if v is not None and not (isinstance(v, float) and np.isnan(v))]
+                post_vals = [v for v in post_slice
+                             if v is not None and not (isinstance(v, float) and np.isnan(v))]
+
+                # Not enough data to judge — let the candidate through.
                 if len(pre_vals) < 3 or len(post_vals) < 3:
                     vetted.append((c_idx, c_reason))
                     continue
-        
+
                 pre_mean  = float(np.mean(pre_vals))
                 post_mean = float(np.mean(post_vals))
-        
-                # "Dropping" = post is at least 10% lower than pre
+
+                # "Dropping" = post is at least (1 - veto_drop_ratio) shorter than pre.
                 length_is_dropping = (pre_mean > 0) and (post_mean / pre_mean < veto_drop_ratio)
-        
+
                 if length_is_dropping:
                     vetted.append((c_idx, c_reason))
                 else:
                     logger.debug(
-                        f"Length-veto: removed '{c_reason}' at frame {c_idx} "
+                        f"Length-veto removed '{c_reason}' at frame {c_idx} "
                         f"(pre={pre_mean:.1f}px, post={post_mean:.1f}px, "
                         f"ratio={post_mean/pre_mean:.2f}, threshold={veto_drop_ratio})"
                     )
-        
+
             candidates = vetted
 
         # --- 3. Arbitrate ---
