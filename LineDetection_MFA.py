@@ -140,12 +140,40 @@ class LineDetectionMFA:
         """
         Runs detection without user intervention (Batch Mode).
         Automatically calculates thresholds using Otsu's method on the middle frame.
+        In GUV mode, thresholds are not used; the early selection frame is used instead
+        of the middle frame to ensure the membrane is still intact for pipette-x lookup.
         """
         if not self.roi_images or all(frame is None for frame in self.roi_images):
             self.results['signal'] = 'stop'
             return self.results
 
-        # 1. Select Reference Frame (Middle of sequence is usually best)
+        # --- GUV mode: bypass Otsu entirely and use the configured early frame ---
+        # The middle frame (used for cells) often shows a partially entered or
+        # ruptured GUV, making it useless as a reference. Edge-based segmentation
+        # in _segment_guv_* ignores thresholds, so we store 0 as neutral placeholders.
+        guv_settings_cfg = self.params.get('guv_settings', {})
+        is_guv = guv_settings_cfg.get('enable', False)
+
+        if is_guv:
+            sel_idx = int(guv_settings_cfg.get('selection_frame_index', 1))
+            sel_idx = max(0, min(sel_idx, len(self.roi_images) - 1))
+            ref_image = self.roi_images[sel_idx]
+            if ref_image is None:
+                ref_image = next((f for f in self.roi_images if f is not None), None)
+            if ref_image is None:
+                self.results['signal'] = 'stop'
+                return self.results
+
+            pipette_x = self.pipette_coords[0]
+            pipette_x = max(1, min(ref_image.shape[1] - 1, pipette_x))
+
+            # Neutral placeholder thresholds — not used by GUV segmentation paths.
+            self.results['threshold_prot'] = 0
+            self.results['threshold_body'] = 0
+            logger.debug(f"GUV auto mode: using frame {sel_idx} as reference, thresholds bypassed.")
+            return self.run_detection_with_parameters(pipette_x, 0, threshold_body=0)
+
+        # 1. Select Reference Frame (Middle of sequence is usually best for cells)
         mid_idx = len(self.roi_images) // 2
         ref_image = self.roi_images[mid_idx] if self.roi_images[mid_idx] is not None else self.roi_images[0]
         
@@ -173,8 +201,7 @@ class LineDetectionMFA:
             
         logger.debug(f"Auto-calculated thresholds: Prot={threshold_prot}, Body={threshold_body}")
         
-        self.results['threshold_body'] = threshold_body
-        return self.run_detection_with_parameters(pipette_x, threshold_prot)
+        return self.run_detection_with_parameters(pipette_x, threshold_prot, threshold_body=threshold_body)
 
     def run_detection(self) -> Dict[str, Any]:
         """
@@ -255,14 +282,28 @@ class LineDetectionMFA:
         
         return self.results
 
-    def run_detection_with_parameters(self, pipette_start_x: int, threshold_prot: int) -> Dict[str, Any]:
+    def run_detection_with_parameters(self, pipette_start_x: int, threshold_prot: int, threshold_body: Optional[int] = None) -> Dict[str, Any]:
         """
         Batch Mode. Runs processing without UI using provided params.
-        NOTE: This only runs the length detection using threshold_prot.
+
+        Parameters
+        ----------
+        pipette_start_x : int
+            X-coordinate of the pipette entrance (zero-point for length calculations).
+        threshold_prot : int
+            Intensity threshold for the protrusion region (left of pipette entrance).
+        threshold_body : int, optional
+            Intensity threshold for the cell body region (right of pipette entrance).
+            When None, falls back to threshold_prot so batch processing matches
+            what the interactive two-step setup would have produced.
+            Always 0 in GUV mode (edge-based segmentation ignores this value).
         """
         self.results['pipette_start_x_used'] = pipette_start_x
         self.results['threshold_prot'] = threshold_prot
-        # threshold_body is not used for length detection, so we ignore it here.
+        # Store the body threshold explicitly so _process_all_frames can read it
+        # via self.results['threshold_body'].  Using 'or' here would misfire when
+        # the caller legitimately passes 0 (GUV mode), so we check for None directly.
+        self.results['threshold_body'] = threshold_body if threshold_body is not None else threshold_prot
         
         self._process_all_frames(pipette_start_x, threshold_prot)
         self._generate_comprehensive_results()
@@ -1166,11 +1207,10 @@ class LineDetectionMFA:
             
             # 1. GENERATE MASKS & PROTRUSION DETECTION
             thr_prot = self.results.get('threshold_prot', threshold)
-            # 'threshold_body' is initialised to None and only gets a real
-            # value during interactive runs.  dict.get(key, default) does NOT
-            # fire the default when the key exists but holds None — so we use
-            # 'or' to fall back to thr_prot in non-interactive batch mode.
-            thr_body = self.results.get('threshold_body') or threshold
+            # Use None-safe fallback: dict.get() does not trigger the default when the
+            # key exists but holds None, so we check explicitly instead of using 'or'.
+            _stored_body = self.results.get('threshold_body')
+            thr_body = _stored_body if _stored_body is not None else threshold
 
             guv_settings = self.params.get('guv_settings', {})
             is_guv = guv_settings.get('enable', False)
@@ -1186,7 +1226,7 @@ class LineDetectionMFA:
                 mask_prot          = self._segment_guv_protrusion_by_edges(image, pipette_start_x)
             else:
                 _, mask_body_standard = utils.generate_dual_masks(image, pipette_start_x, thr_prot, thr_body, self.params)
-                mask_prot = self._segment_mask(image, threshold, clip_walls=True, limit_x_max=pipette_start_x)
+                mask_prot = self._segment_mask(image, thr_prot, clip_walls=True, limit_x_max=pipette_start_x)
             mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
             
             # Measure length and area
@@ -1324,7 +1364,7 @@ class LineDetectionMFA:
         cv2.line(debug_img, (pipette_x, 0), (pipette_x, debug_img.shape[0]), c_pip, 1)
         
         # 4. Detected Tip (Medium Red - Secondary)
-        c_tip = utils.get_ui_color('pipette')
+        c_tip = utils.get_ui_color('secondary')
         tip_x = int(pipette_x - protrusion_len)
         cv2.line(debug_img, (tip_x, 0), (tip_x, debug_img.shape[0]), c_tip, 1)
 

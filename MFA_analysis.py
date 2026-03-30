@@ -108,7 +108,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             params.setdefault('rupture_detection', {})['pulse_frame_idx'] = pulse_frame_0based
 
         det_full = LineDetectionMFA(rois, [pip_x, 0], params)
-        det_res = det_full.run_detection_with_parameters(pip_x, thr_prot)
+        det_res = det_full.run_detection_with_parameters(pip_x, thr_prot, threshold_body=config_dict.get('tuned_threshold_body'))
 
         # --- Extract Key Timing Data ---
         rupture_time = None

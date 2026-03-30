@@ -117,6 +117,13 @@ class DyeUptakeAnalyzer:
             mp, mb = self.frame_masks[frame_idx]
             if mp is not None and mb is not None:
                 return mp, mb
+        
+        # Check is_guv before triggering the threshold fallback
+        is_guv = self.params.get('guv_settings', {}).get('enable', False)
+        if is_guv:
+            logger.warning(f"Missing pre-computed masks for GUV at frame {frame_idx}. Skipping frame fallback.")
+            return None, None
+        
         return utils.generate_dual_masks(
             mem_img, self.pipette_x,
             self.threshold_prot, self.threshold_body, self.params

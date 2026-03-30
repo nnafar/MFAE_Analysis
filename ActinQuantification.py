@@ -220,6 +220,9 @@ class ActinAnalyzer:
                 continue
 
             mask_prot, mask_body = self._get_masks(k, mem_img)
+            # Safely skip if masks could not be generated
+            if mask_prot is None or mask_body is None:
+                continue
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
             act_f      = act_img.astype(float)
 
@@ -264,6 +267,10 @@ class ActinAnalyzer:
                 continue
 
             mask_prot, mask_body = self._get_masks(i, mem_img)
+            # Safely log empty frame
+            if mask_prot is None or mask_body is None:
+                self._record_empty() 
+                continue
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
             act_f      = act_img.astype(float)
 
@@ -359,19 +366,18 @@ class ActinAnalyzer:
     def _get_masks(self, frame_idx: int, mem_img: np.ndarray):
         """
         Returns (mask_prot, mask_body) for a given frame.
-
-        Uses the pre-computed masks from LineDetection when available — these
-        are the same masks used for protrusion length, kymograph, and dye uptake,
-        ensuring all metrics refer to identical cell regions.
-
-        Falls back to recomputing via generate_dual_masks() only if no pre-
-        computed masks were provided (e.g. legacy call paths).
         """
         if self.frame_masks and frame_idx < len(self.frame_masks):
             mp, mb = self.frame_masks[frame_idx]
             if mp is not None and mb is not None:
                 return mp, mb
-        # Fallback: recompute (less accurate for protrusion, but safe)
+                
+        # FIX: Check is_guv before triggering the threshold fallback
+        is_guv = self.params.get('guv_settings', {}).get('enable', False)
+        if is_guv:
+            logger.warning(f"Missing pre-computed masks for GUV at frame {frame_idx}. Skipping frame fallback.")
+            return None, None
+            
         return utils.generate_dual_masks(
             mem_img, self.pipette_x,
             self.threshold_prot, self.threshold_body, self.params
