@@ -19,7 +19,7 @@ paths:
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "260210_TRIAL1-1100Pa-100V-5ms-frame10"
+  experiment_id: "Test"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -78,7 +78,7 @@ guv_settings:
 # Controls how we calculate stiffness and viscosity from the cell protrusion length.
 model_parameters:
   # Main Switch: Set to True to calculate Viscoelasticity. Set False for raw length data only.
-  perform_fitting: True 
+  perform_fitting: False 
 
   # Physical dimensions of the microfluidic channel (measured from mask or SEM)
   channel_width_um: 6.7    # [µm]
@@ -110,7 +110,7 @@ rupture_detection:
   entry_protrusion_threshold_um: 0.5  # Protrusion length marking cell entry (replaces entry_velocity_threshold_px)
   exit_protrusion_threshold_um: 0.5   # Absolute length indicating the cell left the trap
   exit_drop_ratio: 0.15               # Fractional drop (85% of its length) from previous frame indicating cell slip
-  cusum_settling_buffer: 0            # [Was 3] Start immediately after entry
+  cusum_settling_buffer: 10            # [Was 3] Start immediately after entry
   min_cusum_baseline_frames: 5        # Keep at 5 for good statistics
   cusum_baseline_lag: 2               # [Was 3] 2 frames is enough to skip the ramp
 
@@ -198,7 +198,7 @@ workflow_settings:
   n_workers: 3    
   
   # Memory: How many frames to keep in RAM (lowering this saves memory but slows processing).               
-  max_cache_size: 50
+  max_cache_size: 25
   
   # Auto-Detection: How far apart are your traps? (1.5 = 1.5x the height of a trap).
   trap_spacing_factor: 1.50
@@ -222,7 +222,7 @@ workflow_settings:
 # --- 7. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
 # ===================================================================
 dye_uptake_parameters:
-  enable: False
+  enable: True
   has_pulse: True                   # Set to False for control experiments without electroporation.
   
   # File Naming: Strings used to identify which image is which channel.
@@ -237,7 +237,7 @@ dye_uptake_parameters:
 # --- 8. ACTIN QUANTIFICATION ---
 # ===================================================================
 actin_parameters:
-  enable: True                      # Set to True to enable, False to skip
+  enable: False                      # Set to True to enable, False to skip
   channel_pattern: "C1"             # Substring to identify actin images
   cortex_thickness_px: 3            # shell depth; 3 px ≈ 1.9 µm
   cortex_cv_threshold: 0.4          # low = cortex, high = patches
@@ -253,7 +253,7 @@ image_processing:
   min_area_threshold: 100          # Minimum cell area to track [pixels²]
   small_object_threshold: 50       # Remove objects smaller than this [pixels²]
   wall_clip_margin: 0.25           # Ignore top/bottom 75% of the ROI.
-  clahe_clip_limit: 2.0            # Contrast enhancement strength.
+  clahe_clip_limit: 1.0            # Contrast enhancement strength.
   clahe_tile_grid_size: [8, 8]     # Grid size for contrast adjustment.
   gaussian_kernel_size: [3, 3]     # Blur amount to reduce noise before detection.
   # fill_membrane_holes has moved to the guv_settings section above.

@@ -1056,6 +1056,38 @@ class LineDetectionMFA:
         output[labels == largest_label] = 255
         return output
 
+    def _keep_closest_blob(self, binary_mask: np.ndarray, pipette_x: int, is_protrusion: bool) -> np.ndarray:
+        """Filters the binary mask to retain only the blob closest to the pipette entrance."""
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
+        out = np.zeros_like(binary_mask)
+
+        if num_labels <= 1:
+            return out
+
+        min_dist = float('inf')
+        best_label = 1
+
+        for i in range(1, num_labels):
+            if stats[i, cv2.CC_STAT_AREA] < self.min_area_threshold:
+                continue
+
+            # Protrusion is left of pipette (compare right edge of blob)
+            # Body is right of pipette (compare left edge of blob)
+            if is_protrusion:
+                edge_x = stats[i, cv2.CC_STAT_LEFT] + stats[i, cv2.CC_STAT_WIDTH]
+            else:
+                edge_x = stats[i, cv2.CC_STAT_LEFT]
+
+            dist = abs(pipette_x - edge_x)
+            if dist < min_dist:
+                min_dist = dist
+                best_label = i
+
+        if min_dist != float('inf'):
+            out[labels == best_label] = 255
+
+        return out
+
     def _fill_convex_hulls(self, binary_mask: np.ndarray) -> np.ndarray:
         """Replace each white blob with its convex hull, painted solid.
 
@@ -1216,17 +1248,17 @@ class LineDetectionMFA:
             is_guv = guv_settings.get('enable', False)
 
             # A) Generate masks for cell body, protrusion, and total cell.
-            # GUV mode uses edge-gradient segmentation because threshold-based
-            # methods cannot reliably fill the hollow GUV lumen (the closing
-            # kernel is far smaller than the lumen diameter). Edge detection
-            # captures the membrane boundary as a stable gradient signal that
-            # is consistent across frames even when absolute intensity drifts.
             if is_guv:
                 mask_body_standard = self._segment_guv_body_by_edges(image, pipette_start_x)
                 mask_prot          = self._segment_guv_protrusion_by_edges(image, pipette_start_x)
             else:
                 _, mask_body_standard = utils.generate_dual_masks(image, pipette_start_x, thr_prot, thr_body, self.params)
                 mask_prot = self._segment_mask(image, thr_prot, clip_walls=True, limit_x_max=pipette_start_x)
+
+            # Filter out debris by strictly keeping the blob nearest the entrance
+            mask_prot = self._keep_closest_blob(mask_prot, pipette_start_x, is_protrusion=True)
+            mask_body_standard = self._keep_closest_blob(mask_body_standard, pipette_start_x, is_protrusion=False)
+
             mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
             
             # Measure length and area

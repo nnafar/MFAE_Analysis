@@ -393,14 +393,14 @@ class DyeUptakeConfig(BaseModel):
     dye_channel_pattern: str = Field(default="C2", description="Substring to identify dye images")
     
     # Analysis parameters
-    pulse_frame: int = Field(default=10, ge=1, description="Frame number where pulse is applied (1-based index)")
+    pulse_frame: float = Field(default=10.0, ge=0.1, le=1000.0, description="Frame number where pulse is applied (1-based index)")
     pulse_index: int = Field(default=9, description="0-based index calculated automatically")
     baseline_frames: int = Field(default=5, ge=1, description="Number of pre-pulse frames to average for baseline")
     
     @field_validator('pulse_index', mode='before')
     @classmethod
     def calculate_pulse_index(cls, v, info) -> int:
-        return max(0, info.data.get('pulse_frame', 10) - 1)
+        return max(0, int(info.data.get('pulse_frame', 10.0)) - 1)
     
 class ActinConfig(BaseModel):
     """Configuration for actin distribution analysis."""
