@@ -49,7 +49,7 @@ class DyeUptakeAnalyzer:
         
         # Extract specific dye parameters from config
         dye_params = params.get('dye_uptake_parameters', {})
-        self.pulse_frame = max(0, dye_params.get('pulse_index', 9))
+        self.pulse_frame = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
         self.baseline_len = dye_params.get('baseline_frames', 5)
         self.scale_factor = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         

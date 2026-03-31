@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Union, Optional, Any
 
-from pydantic import BaseModel, Field, validator, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from pydantic import ConfigDict
 from pydantic import field_validator
 
@@ -399,14 +399,10 @@ class DyeUptakeConfig(BaseModel):
     dye_channel_pattern: str = Field(default="C2", description="Substring to identify dye images")
     
     # Analysis parameters
+    # pulse_frame is 1-based (matches the frame number shown in your imaging software).
+    # To get the 0-based array index, use: max(0, int(pulse_frame) - 1)
     pulse_frame: float = Field(default=10.0, ge=0.1, le=1000.0, description="Frame number where pulse is applied (1-based index)")
-    pulse_index: int = Field(default=9, description="0-based index calculated automatically")
     baseline_frames: int = Field(default=5, ge=1, description="Number of pre-pulse frames to average for baseline")
-    
-    @field_validator('pulse_index', mode='before')
-    @classmethod
-    def calculate_pulse_index(cls, v, info) -> int:
-        return max(0, int(info.data.get('pulse_frame', 10.0)) - 1)
     
 class ActinConfig(BaseModel):
     """Configuration for actin distribution analysis."""
@@ -441,22 +437,20 @@ class MFAConfig(BaseModel):
 # 4. VALIDATION FUNCTION
 # =============================================================================
 
-def validate_config(config_dict: Dict[str, Any]) -> Dict[str, Any]:
+def validate_config(config_dict: Dict[str, Any]) -> 'MFAConfig':
     """
-    Validates the raw dictionary against the MFAConfig schema.
-    Returns the validated configuration as a dictionary (with defaults applied).
+    Validates the raw dictionary from config.yaml against the MFAConfig schema.
+
+    Returns the validated MFAConfig object (not a plain dict), so field types,
+    defaults, and constraints remain accessible throughout the pipeline.
+
+    Workers cannot receive Pydantic objects directly across process boundaries,
+    so MFAAnalysis.__init__ calls .model_dump() once and stores the plain dict
+    as self.params for worker dispatch.  Everything upstream of that boundary
+    should use the typed object.
     """
     try:
-        # Create Pydantic model (performs validation)
-        config_obj = MFAConfig(**config_dict)
-        
-        # Convert back to dictionary for compatibility with existing scripts
-        # Attempt .model_dump() (Pydantic v2) or fallback to .dict() (Pydantic v1)
-        if hasattr(config_obj, 'model_dump'):
-            return config_obj.model_dump()
-        else:
-            return config_obj.dict()
-            
+        return MFAConfig(**config_dict)
     except ValidationError as e:
         logger.error(f"Configuration Validation Failed!\n{e}")
         raise e

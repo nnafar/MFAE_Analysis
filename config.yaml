@@ -19,7 +19,7 @@ paths:
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "260325_CytoDExperiment274-1100Pa-0V-0ms-frame0"
+  experiment_id: "Trial" #"260325_CytoDExperiment274-1100Pa-0V-0ms-frame0"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---

@@ -368,7 +368,7 @@ def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Pat
     dye_params = params.get('dye_uptake_parameters', {})
     has_pulse = dye_params.get('has_pulse', True)
     
-    pulse_idx = dye_params.get('pulse_index', 9)
+    pulse_idx = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
     pulse_time = t[pulse_idx] if (has_pulse and 0 <= pulse_idx < len(t)) else None
 
     colors = utils.MFA_COLORS
@@ -802,10 +802,10 @@ def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[fl
             end_idx = int(valid[-1]) + 1
 
         # Pulse index: where the electroporation pulse was applied (0-based).
-        p_idx = data.get('pulse_idx')    # None when no pulse
+        pulse_idx = data.get('pulse_idx')    # None when no pulse
         has_pulse = (
-            p_idx is not None
-            and start_idx < p_idx < end_idx   # must fall inside the valid aspiration window
+            pulse_idx is not None
+            and start_idx < pulse_idx < end_idx   # must fall inside the valid aspiration window
         )
 
         entry = {
@@ -815,20 +815,20 @@ def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[fl
 
         if has_pulse:
             # --- Pre-pulse window: start → pulse ---
-            entry['pre_prot']  = _norm_delta(a_p, start_idx, p_idx)
-            entry['pre_body']  = _norm_delta(a_b, start_idx, p_idx)
-            entry['pre_tot']   = _norm_delta(a_t, start_idx, p_idx)
+            entry['pre_prot']  = _norm_delta(a_p, start_idx, pulse_idx)
+            entry['pre_body']  = _norm_delta(a_b, start_idx, pulse_idx)
+            entry['pre_tot']   = _norm_delta(a_t, start_idx, pulse_idx)
 
             # --- Post-pulse window: pulse → end, normalized to area AT the pulse ---
             # We shift the baseline to the pulse frame so the post-pulse change is
             # measured relative to the cell's state immediately after the pulse.
-            entry['post_prot'] = _norm_delta(a_p, p_idx, end_idx)
-            entry['post_body'] = _norm_delta(a_b, p_idx, end_idx)
-            entry['post_tot']  = _norm_delta(a_t, p_idx, end_idx)
+            entry['post_prot'] = _norm_delta(a_p, pulse_idx, end_idx)
+            entry['post_body'] = _norm_delta(a_b, pulse_idx, end_idx)
+            entry['post_tot']  = _norm_delta(a_t, pulse_idx, end_idx)
 
             # Solidity statistics per phase
-            sol_pre  = sol[start_idx:p_idx]
-            sol_post = sol[p_idx:end_idx]
+            sol_pre  = sol[start_idx:pulse_idx]
+            sol_post = sol[pulse_idx:end_idx]
             entry['sol_pre_mean']  = float(np.nanmean(sol_pre))  if len(sol_pre)  > 0 else np.nan
             entry['sol_pre_std']   = float(np.nanstd(sol_pre))   if len(sol_pre)  > 1 else 0.0
             entry['sol_post_mean'] = float(np.nanmean(sol_post)) if len(sol_post) > 0 else np.nan
@@ -1027,10 +1027,10 @@ def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Pa
     pulse_time = None
     dye_params = params.get('dye_uptake_parameters', {})
     if dye_params.get('enable', False):
-        p_idx = dye_params.get('pulse_index', 9)
+        pulse_idx = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
         t_first = valid_results[0]['data']['time']
-        if 0 <= p_idx < len(t_first):
-            pulse_time = t_first[p_idx]
+        if 0 <= pulse_idx < len(t_first):
+            pulse_time = t_first[pulse_idx]
     
     def _plot_aggregated_3panel(metric_suffix: str, title: str, ylabel: str, filename_suffix: str):
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5), sharey=True)

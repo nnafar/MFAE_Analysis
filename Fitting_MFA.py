@@ -289,29 +289,43 @@ class FittingMFA:
     def _fit_with_multi_start(self, func, t, l, bounds, maxfev=2000, n_starts=7):
         """
         Multi-Start Levenberg-Marquardt.
+    
+        Uses log-uniform sampling when all lower bounds are strictly positive,
+        because viscoelastic parameters (E, eta1, eta2) span multiple orders of
+        magnitude. 
+    
+        Falls back to plain uniform sampling for models whose bounds include zero
+        or negative values (e.g., the Linear model).
         """
         best_r2 = -np.inf
         best_p = None
-        lower, upper = bounds 
-        
+        lower, upper = bounds
+    
         # Sanitize bounds for the random generator to prevent np.inf crashes
         safe_lower = np.clip(lower, -1e6, 1e6)
         safe_upper = np.clip(upper, -1e6, 1e6)
-        
+    
+        # Decide sampling strategy once, before the loop
+        use_log_uniform = np.all(np.array(safe_lower) > 0)
+    
         for _ in range(n_starts):
-            # Generate a random initial guess within the sanitized bounds
-            guess = np.random.uniform(safe_lower, safe_upper)
+            if use_log_uniform:
+                # Equal probability per decade — much better exploration of
+                # wide positive ranges like [100, 500_000]
+                log_lo = np.log(np.array(safe_lower, dtype=float))
+                log_hi = np.log(np.array(safe_upper, dtype=float))
+                guess = np.exp(np.random.uniform(log_lo, log_hi))
+            else:
+                # Fallback: plain uniform (required when bounds span zero)
+                guess = np.random.uniform(safe_lower, safe_upper)
             try:
-                # Use the fast local optimizer (curve_fit)
                 popt, _ = curve_fit(func, t, l, p0=guess, bounds=bounds, maxfev=maxfev)
-                
-                # Calculate R-squared to evaluate this specific start
                 r2 = self._calculate_r_squared(l, func(t, *popt))
                 if r2 > best_r2:
                     best_r2, best_p = r2, popt
-            except Exception: 
+            except Exception:
                 continue
-                
+    
         return best_p, best_r2
 
     def _perform_multi_model_fitting(self) -> None:

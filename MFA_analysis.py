@@ -86,12 +86,18 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         }
         cropper = CropImage(crop_params)
         cropper.rotation_angle = config_dict['rotation_angle']
-        cropper.all_trap_rois = [None] * (trap_index + 1)
+        # Allocate enough slots for the full trap count, not just up to this trap's index.
+        n_slots = max(
+            params.get('experiment_parameters', {}).get('max_traps', trap_index + 1),
+            trap_index + 1
+        )
+        cropper.all_trap_rois = [None] * n_slots
         cropper.all_trap_rois[trap_index] = config_dict['roi_coords']
         
         # 3. Extract Trap-Specific ROIs (Direct slice from shared memory)
         num_frames = config_dict['shape'][0]
         rois = []
+        
         for j in range(num_frames):
             # Slicing from mmap; rotation is already handled in the shared memory stack
             rois.append(utils.crop_single_trap(all_frames[j], config_dict['roi_coords'], 0.0))
@@ -123,40 +129,45 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         pulse_time = None
         dye_params = params.get('dye_uptake_parameters', {})
         if dye_params.get('enable', False) and dye_params.get('has_pulse', True):
-            p_idx = dye_params.get('pulse_index', 9)
+            # pulse_frame is 1-based (matches the imaging software frame counter).
+            p_idx = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
             if 0 <= p_idx < len(time_data):
                 pulse_time = time_data[p_idx]
         
         # 5. Data Safety Check
         if not (det_res and det_res['protrusion_lengths_um'] and any(p > 0 for p in det_res['protrusion_lengths_um'])):
             return {'trap_index': trap_index, 'status': 'no_detection'}
+        
+        # --- Build the pulse-window frame set ---
+        # Used to annotate exported CSVs with an Is_Pulse_Window flag.
+        pulse_frame_val = dye_params.get('pulse_frame', None)
+        pulse_blanking   = params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
 
-        # Compute pulse_idx (0-based array position of the electroporation pulse frame),
-        # or None if no pulse was applied.  We store this in trap_data so aggregate
-        # plots can split metrics into pre- and post-pulse windows.
-        pulse_idx_for_data = None
-        pulse_frame = dye_params.get('pulse_frame', None)
-        pulse_blanking = params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
-
-        # Build the set of frames to skip (only when a pulse frame is known)
-        if pulse_frame is not None:
-            p_idx = int(pulse_frame)
-            blanked_frames = set(range(p_idx - 1, p_idx + pulse_blanking + 1))
+        if pulse_frame_val is not None:
+            pf = int(pulse_frame_val)
+            # One frame before the pulse through the blanking window after it.
+            blanked_frames: set = set(range(pf - 1, pf + pulse_blanking + 1))
         else:
             blanked_frames = set()
+        
+        # pulse_idx_for_data: 0-based index stored in trap_data for aggregate plots
+        # that split metrics at the pulse boundary.
+        pulse_idx_for_data = (max(0, int(pulse_frame_val) - 1)
+                              if pulse_frame_val is not None else None)
 
         trap_data = {
-            'trap_index': trap_index,
-            'time': time_data,
-            'protrusions': det_res['protrusion_lengths_um'],
-            'pip': pip_x,
-            'thr': thr_prot,
-            'rupture_idx': rupture_idx,
-            'pulse_idx': pulse_idx_for_data,   # None when no pulse was applied
-            'area': det_full.results.get('total_area_um2', []),    
-            'area_prot': det_full.results.get('protrusion_area_um2', []),
-            'area_body': det_full.results.get('body_area_um2', []),       
-            'solidity': det_full.results.get('body_solidity', [])
+            'trap_index':    trap_index,
+            'time':          time_data,
+            'protrusions':   det_res['protrusion_lengths_um'],
+            'pip':           pip_x,
+            'thr':           thr_prot,
+            'rupture_idx':   rupture_idx,
+            'pulse_idx':     pulse_idx_for_data,
+            'is_pulse_window': [i in blanked_frames for i in range(len(time_data))],
+            'area':          det_full.results.get('total_area_um2', []),
+            'area_prot':     det_full.results.get('protrusion_area_um2', []),
+            'area_body':     det_full.results.get('body_area_um2', []),
+            'solidity':      det_full.results.get('body_solidity', [])
         }
 
         # Export Raw CSV and Plot Trace.
@@ -189,95 +200,78 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 worker_logger.warning(f"Trap {trap_index+1}: Kymograph generation failed.", exc_info=True)
 
         # 7. Viscoelastic Fitting
+        # Default: protrusion was detected but fitting was not performed.
+        # Updated to 'success' or 'fit_failed' below depending on outcome.
+        fit_status = 'detection_only'
         trap_fit_rows = []
+        
         if params.get('model_parameters', {}).get('perform_fitting', True):
-            try:
-                dirs['fitting'].mkdir(parents=True, exist_ok=True)
+            if pulse_time is not None:
+                # The Jeffreys / Burgers / Kelvin-Voigt models all assume the cell is
+                # incompressible.  Electroporation causes osmotic swelling (volume increase),
+                # which violates that assumption.  Fitted E and η values from a pulsed
+                # experiment are not physically interpretable, so we skip fitting rather
+                # than silently produce misleading numbers.
+                worker_logger.info(
+                    f"Trap {trap_index+1}: Viscoelastic fitting skipped — "
+                    f"electroporation pulse applied; incompressibility assumption violated."
+                )
+            else:
+                try:
+                    dirs['fitting'].mkdir(parents=True, exist_ok=True)
+        
+                    r_eff    = compute_reff(params['model_parameters']['channel_width_um'],
+                                            params['model_parameters']['channel_height_um'],
+                                            params['model_parameters']['fstar'])
+                    t_pts    = np.array(time_data[:rupture_idx+1]) if rupture_idx is not None else np.array(time_data)
+                    l_pts    = np.array(det_res['protrusion_lengths_um'][:rupture_idx+1]) if rupture_idx is not None else np.array(det_res['protrusion_lengths_um'])
+                    delta_p  = params['experiment_parameters']['constant_pressure']
+                    fit_run_params = {**params, **params.get('fitting_parameters', {})}
+        
+                    def _run_fitter(t, l, phase, rupture_det, rupt_time):
+                        fitter = FittingMFA(t, l, r_eff, delta_p,
+                                            rupture_detected=rupture_det,
+                                            rupture_time=rupt_time,
+                                            phase=phase)
+                        fitter.run(params=fit_run_params)
+                        return fitter
+        
+                    def _collect_rows(fitter, phase_label):
+                        rows = []
+                        if fitter.best_fit_model_name:
+                            for model_name, res_fit in fitter.fit_results.items():
+                                rows.append({
+                                    'Trap_Number': trap_index + 1,
+                                    'Phase':       phase_label,
+                                    'Model_Name':  model_name,
+                                    'R_Squared':   res_fit['r_squared'],
+                                    'AIC':         res_fit['aic'],
+                                    'N_Params':    res_fit['n_params'],
+                                    'Is_Best_Fit': model_name == fitter.best_fit_model_name
+                                })
+                        return rows
+        
+                    # Full trace — only run for non-pulsed experiments
+                    fitter_full = _run_fitter(t_pts, l_pts, 'full',
+                                              rupture_det=(rupture_idx is not None),
+                                              rupt_time=rupture_time)
+                    trap_fit_rows.extend(_collect_rows(fitter_full, 'full'))
+        
+                    if fitter_full.best_fit_model_name:
+                        try:
+                            plotter = Plotting_MFA.MFAPlotter(fitter_full, params=params)
+                            plotter.create_analysis_plot(
+                                trap_index + 1,
+                                dirs['fitting'] / f"trap_{trap_index+1:02d}_analysis_plot.png"
+                            )
+                        except Exception:                          # ← this was missing
+                            worker_logger.warning(f"Trap {trap_index+1}: Fit plot failed.", exc_info=True)
 
-                r_eff = compute_reff(params['model_parameters']['channel_width_um'],
-                                     params['model_parameters']['channel_height_um'],
-                                     params['model_parameters']['fstar'])
-                t_pts = np.array(time_data[:rupture_idx+1]) if rupture_idx is not None else np.array(time_data)
-                l_pts = np.array(det_res['protrusion_lengths_um'][:rupture_idx+1]) if rupture_idx is not None else np.array(det_res['protrusion_lengths_um'])
-                delta_p = params['experiment_parameters']['constant_pressure']
-                fit_run_params = {**params, **params.get('fitting_parameters', {})}
+                    fit_status = 'success'
 
-                # --- Determine pulse index (1-indexed frame number → 0-indexed array position) ---
-                pulse_idx = None
-                if pulse_time is not None:
-                    p_frame = params.get('dye_uptake_parameters', {}).get('pulse_frame', 10)
-                    # Clamp to the available range after any rupture truncation
-                    pulse_idx = min(p_frame - 1, len(t_pts) - 1)
-                    if pulse_idx <= 0:
-                        pulse_idx = None  # Pulse at or before frame 1: no usable pre-pulse window
-
-                def _run_fitter(t, l, phase, rupture_det, rupt_time):
-                    """Instantiate, run, and return a FittingMFA for one time window."""
-                    fitter = FittingMFA(t, l, r_eff, delta_p,
-                                        rupture_detected=rupture_det,
-                                        rupture_time=rupt_time,
-                                        phase=phase)
-                    fitter.run(params=fit_run_params)
-                    return fitter
-
-                def _collect_rows(fitter, phase_label):
-                    """Convert a fitted FittingMFA into summary rows for the CSV."""
-                    rows = []
-                    if fitter.best_fit_model_name:
-                        for model_name, res_fit in fitter.fit_results.items():
-                            rows.append({
-                                'Trap_Number': trap_index + 1,
-                                'Phase': phase_label,
-                                'Model_Name': model_name,
-                                'R_Squared': res_fit['r_squared'],
-                                'AIC': res_fit['aic'],
-                                'N_Params': res_fit['n_params'],
-                                'Is_Best_Fit': model_name == fitter.best_fit_model_name
-                            })
-                    return rows
-
-                # --- Phase A: Full trace (always run, preserves backward compatibility) ---
-                fitter_full = _run_fitter(t_pts, l_pts, 'full',
-                                          rupture_det=(rupture_idx is not None),
-                                          rupt_time=rupture_time)
-                trap_fit_rows.extend(_collect_rows(fitter_full, 'full'))
-
-                # Use the full-trace fitter for the analysis plot (most complete view)
-                if fitter_full.best_fit_model_name:
-                    try:
-                        plotter = Plotting_MFA.MFAPlotter(fitter_full, params=params)
-                        plotter.create_analysis_plot(trap_index + 1, dirs['fitting'] / f"trap_{trap_index+1:02d}_analysis_plot.png")
-                    except Exception:
-                        worker_logger.warning(f"Trap {trap_index+1}: Fit plot failed.", exc_info=True)
-
-                # --- Phases B & C: Pre- and post-pulse (only when a pulse was applied) ---
-                if pulse_idx is not None:
-                    # Pre-pulse: frames 0 → pulse_idx (exclusive).
-                    # Standard time and lengths — this is normal baseline aspiration.
-                    try:
-                        t_pre = t_pts[:pulse_idx]
-                        l_pre = l_pts[:pulse_idx]
-                        fitter_pre = _run_fitter(t_pre, l_pre, 'pre_pulse',
-                                                  rupture_det=False, rupt_time=None)
-                        trap_fit_rows.extend(_collect_rows(fitter_pre, 'pre_pulse'))
-                    except Exception:
-                        worker_logger.warning(f"Trap {trap_index+1}: Pre-pulse fitting failed.", exc_info=True)
-
-                    # Post-pulse: frames pulse_idx → end.
-                    # Time is re-zeroed to the pulse moment so the model sees t=0 at the pulse.
-                    # Length is offset by L at the pulse so the model starts from ~0 deformation.
-                    try:
-                        t_post = t_pts[pulse_idx:] - t_pts[pulse_idx]
-                        l_post = l_pts[pulse_idx:] - l_pts[pulse_idx]
-                        fitter_post = _run_fitter(t_post, l_post, 'post_pulse',
-                                                   rupture_det=(rupture_idx is not None),
-                                                   rupt_time=(rupture_time - t_pts[pulse_idx]) if rupture_time is not None else None)
-                        trap_fit_rows.extend(_collect_rows(fitter_post, 'post_pulse'))
-                    except Exception:
-                        worker_logger.warning(f"Trap {trap_index+1}: Post-pulse fitting failed.", exc_info=True)
-
-            except Exception:
-                worker_logger.warning(f"Trap {trap_index+1}: Fitting failed.", exc_info=True)
+                except Exception:
+                    fit_status = 'fit_failed'
+                    worker_logger.warning(f"Trap {trap_index+1}: Fitting failed.", exc_info=True)
 
         # 8. Dye Uptake Analysis
         dye_results = None
@@ -331,10 +325,10 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 
         return {
             'trap_index': trap_index,
-            'status': 'success',
-            'data': trap_data,
-            'fit_rows': trap_fit_rows,
-            'dye_data': dye_results
+            'status':     fit_status,   # 'success' | 'detection_only' | 'fit_failed'
+            'data':       trap_data,
+            'fit_rows':   trap_fit_rows,
+            'dye_data':   dye_results
         }
             
     except Exception:
@@ -347,12 +341,11 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             if mmap_obj is not None:
                 try:
                     mmap_obj.flush()
-                    # Force OS-level lock release for Windows
                     if hasattr(mmap_obj, '_mmap') and mmap_obj._mmap is not None:
                         mmap_obj._mmap.close()
-                    del mmap_obj
-                except Exception: 
+                except Exception:
                     pass
+        del all_frames, all_dye_frames, all_actin_frames
         gc.collect()
 
 class MFAAnalysis:
@@ -360,12 +353,23 @@ class MFAAnalysis:
     Manages the end-to-end analysis workflow for an MFA experiment.
     """
 
-    def __init__(self, path: Path, experiment_id: str, params: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, path: Path, experiment_id: str,
+                 params: Optional[Union['MFAConfig', Dict[str, Any]]] = None) -> None:
         if not path.exists():
             raise FileNotFoundError(f"The specified data path does not exist: {path}")
         self.path = path
         self.experiment_id = experiment_id
-        self.params = params or {}
+        
+        # Accept a validated MFAConfig object (typed) or a plain dict (backward compat).
+        if hasattr(params, 'model_dump'):
+            self.config: Optional[MFAConfig] = params
+            self.params: Dict[str, Any] = params.model_dump()
+        elif hasattr(params, 'dict'):
+            self.config = params
+            self.params = params.dict()
+        else:
+            self.config = None
+            self.params = params or {}
         
         # Cleanup orphaned temp folders from previous aborted or crashed runs to prevent disk bloat
         self.cleanup_orphaned_temp_dirs()
@@ -672,6 +676,7 @@ class MFAAnalysis:
     def _aggregate_and_export_results(self, all_results: List[Dict[str, Any]]) -> None:
         """Combines results from all workers into Summary CSVs."""
         self._save_consolidated_protrusions_long(all_results)
+        self._save_consolidated_protrusions_wide(all_results)
         
         all_fits_data = []
         for res in all_results:
@@ -784,19 +789,22 @@ def main() -> bool:
     args = parser.parse_args()
     config_path = Path(args.config_path)
 
+    raw_config = {}
+    
     try:
         with open(config_path, 'r') as f: raw_config = yaml.safe_load(f)
     except Exception as e:
         logger.error(f"Error parsing config: {e}"); return False
 
+    config = None                            
     try: 
-        params = validate_config(raw_config)
+        config = validate_config(raw_config)
     except ValidationError as e:
         logger.error(f"Invalid configuration: {e}"); return False
     
     analysis = None
     try:
-        analysis = MFAAnalysis(Path(params['paths']['data_folder']), params['paths']['experiment_id'], params)
+        analysis = MFAAnalysis(config.paths.data_folder, str(config.paths.experiment_id), config)
         success = analysis.run_analysis()
         return success
     except KeyboardInterrupt:

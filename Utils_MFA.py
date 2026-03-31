@@ -180,6 +180,9 @@ def get_time_colormap(n_steps: int) -> List[Tuple[float, float, float, float]]:
         MFA_COLORS['light_red'], MFA_COLORS['medium_red'], MFA_COLORS['dark_red']
     ]
     cmap = mpl.colors.LinearSegmentedColormap.from_list("mfa_full_gradient", colors)
+    
+    if n_steps == 1:
+        return [cmap(0.5)]
     return [cmap(i / (n_steps - 1)) for i in range(n_steps)]
 
 def get_mfa_continuous_cmap() -> mpl.colors.LinearSegmentedColormap:
