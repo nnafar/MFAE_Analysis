@@ -135,8 +135,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         # or None if no pulse was applied.  We store this in trap_data so aggregate
         # plots can split metrics into pre- and post-pulse windows.
         pulse_idx_for_data = None
-        pulse_frame = dye_params.get('dye_uptake_parameters', {}).get('pulse_frame', None)
-        pulse_blanking = dye_params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
+        pulse_frame = dye_params.get('pulse_frame', None)
+        pulse_blanking = params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
 
         # Build the set of frames to skip (only when a pulse frame is known)
         if pulse_frame is not None:
