@@ -1,5 +1,15 @@
-For the batch analysis, your folders like this:
+For the batch analysis, name your data folders like the following:
 
-Electroporated: YYMMDD_ExperimentID-1100Pa-100V-5ms-frame10
+Date_CellType_Treatment_ExperimentNumber-Pressure[Pa]-Voltage[V]-PulseDuration[ms|us|s]-Pulseframe
 
-Aspiration: YYMMDD_ExperimentID-1100Pa-0V-0ms-frame0
+For cells that are eltroporated, the data folder name should be formatted as:
+
+```
+YYMMDD_MDAMB231_Control_Experiment271-1100Pa-100V-5ms-frame10
+```
+
+For cells that are just aspirated (no electrporation), the data folder name should be formatted as:
+
+```
+YYMMDD_MDAMB231_Control_Experiment271-1100Pa-0V-0ms-frame0
+```
