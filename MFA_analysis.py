@@ -285,6 +285,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params, frame_masks=det_res.get('frame_masks', []), start_idx=det_res.get('entry_frame_index', 0))
                 dye_results = uptake_analyzer.run(time_data)
                 uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
+                uptake_analyzer.plot_size_uptake_relationship(trap_index + 1, dirs['dye'])
                 
                 # Pass pulse_time down to the updated plotter
                 Plotting_MFA.plot_dye_uptake_dashboard(dye_results, trap_index + 1, dirs['dye'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time)
@@ -447,6 +448,84 @@ class MFAAnalysis:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
                     
 
+
+    # =========================================================================
+    # SESSION CACHE  (save/load interactive-setup results between runs)
+    # =========================================================================
+
+    def _save_session_cache(self, trap_configs: List[Dict[str, Any]]) -> None:
+        """
+        Writes a JSON file to the output folder that captures every value that
+        was set interactively in Phase 1:
+
+          - rotation_angle
+          - per-trap ROI coordinates, pipette X, and detection thresholds
+          - the list of source membrane TIF files (used for an integrity check
+            when the cache is reloaded)
+
+        The file is human-readable and can be edited by hand if you want to
+        adjust a threshold or ROI without rerunning the GUI.
+        """
+        import json
+
+        # roi_coords are tuples/lists of 4 ints: (x, y, width, height).
+        # json.dump cannot handle numpy integers, so cast everything explicitly.
+        cache = {
+            'experiment_id':  self.experiment_id,
+            'rotation_angle': float(self.cropper.rotation_angle),
+            'trap_configs': [
+                {
+                    'trap_index': int(cfg['trap_index']),
+                    'roi_coords': [int(v) for v in self.cropper.all_trap_rois[cfg['trap_index']]],
+                    'pip':        float(cfg['pip']),
+                    'thr_prot':   float(cfg['thr_prot']),
+                    'thr_body':   float(cfg['thr_body']),
+                }
+                for cfg in trap_configs
+            ],
+            # Store the source-file list so we can warn the user if the data
+            # folder has changed since the cache was written.
+            'source_files': [str(p) for p in self.file_reader.tif_files],
+        }
+
+        cache_path = self.results_dir / 'session_cache.json'
+        with open(cache_path, 'w') as fh:
+            json.dump(cache, fh, indent=2)
+        logger.info(f"Session cache saved → {cache_path.name}")
+
+    def _load_session_cache(self) -> Optional[Dict[str, Any]]:
+        """
+        Reads session_cache.json from the output folder, if it exists.
+
+        Returns the parsed dictionary, or None when no cache file is present.
+        Emits a warning (but does not abort) when the cached source-file list
+        differs from the files currently found by the file reader — this happens
+        when the data folder is reorganised after the original run.
+        """
+        import json
+
+        cache_path = self.results_dir / 'session_cache.json'
+        if not cache_path.exists():
+            return None
+
+        with open(cache_path, 'r') as fh:
+            cache = json.load(fh)
+
+        # Integrity check: compare the membrane TIF list recorded at save time
+        # with the one the file reader discovered right now.
+        cached_files  = set(cache.get('source_files', []))
+        current_files = set(str(p) for p in self.file_reader.tif_files)
+        if cached_files != current_files:
+            logger.warning(
+                "Session cache was created with a different set of source files.\n"
+                "  Cached :  %d file(s)\n"
+                "  Current:  %d file(s)\n"
+                "Proceeding with cached setup — verify results carefully.",
+                len(cached_files), len(current_files),
+            )
+
+        return cache
+
     def run_analysis(self) -> bool:
         """
         Main execution method.
@@ -461,39 +540,88 @@ class MFAAnalysis:
                 self.params.get('workflow_settings', {}).get('max_cache_size', 50))
          
             trap_configs = []
-            
+
             # --- Phase 1: Interactive Setup (Geometry) ---
-            while True:
+            # If session_cache.json exists in the output folder, Phase 1 is
+            # skipped automatically and the pipeline jumps to Phase 2.
+            # Delete session_cache.json to force a fresh interactive setup.
+            logger.info("\n== PHASE 1: INTERACTIVE TRAP SETUP ==")
+            existing_cache = self._load_session_cache()
+
+            if existing_cache is not None:
+                # ── Restore cropper state from cache ──────────────────────────
+                # Rebuild a minimal CropImage so that the rest of the pipeline
+                # (which reads self.cropper.rotation_angle and
+                # self.cropper.all_trap_rois) behaves identically to a live run.
                 crop_gui_params = {
                     **self.params.get('experiment_parameters', {}),
                     **self.params.get('workflow_settings', {}),
                     **self.params.get('image_processing', {}),
-                    # Pass the full guv_settings dict so CropImage can apply the
-                    # correct frame index for GUV experiments.
                     'guv_settings': self.params.get('guv_settings', {}),
                 }
                 self.cropper = CropImage(crop_gui_params)
                 self.cropper.max_traps = self.params.get('experiment_parameters', {}).get('max_traps', 20)
-                
-                logger.info("\n== PHASE 1: INTERACTIVE TRAP SETUP ==")
-                
-                setup_signal = self.cropper.run(self.file_reader)
-                if setup_signal in ('stop', 'restart'):
-                     if setup_signal == 'stop': return False
-                     continue
-                
-                # --- Phase 1b: Per-Trap Parameter Tuning ---
-                setup_signal, trap_configs = self._collect_interactive_parameters()
-                
-                if setup_signal in ('stop', 'restart'):
-                     if setup_signal == 'stop': return False
-                     continue
-                if setup_signal == 'confirm': break
+                self.cropper.rotation_angle = existing_cache['rotation_angle']
+                self.cropper.file_reader = self.file_reader  # needed by save_trap_map
+
+                # Allocate the ROI list and fill in only the cached traps.
+                n_slots = max(
+                    self.params.get('experiment_parameters', {}).get('max_traps', 20),
+                    max(c['trap_index'] for c in existing_cache['trap_configs']) + 1,
+                )
+                self.cropper.all_trap_rois = [None] * n_slots
+                for cfg in existing_cache['trap_configs']:
+                    # roi_coords was serialised as a plain list; restore as tuple
+                    # so it matches what the live GUI produces.
+                    self.cropper.all_trap_rois[cfg['trap_index']] = tuple(cfg['roi_coords'])
+
+                trap_configs = [
+                    {
+                        'trap_index': int(cfg['trap_index']),
+                        'pip':        int(cfg['pip']),   # JSON deserialises ints as float; cast back
+                        'thr_prot':   int(cfg['thr_prot']),
+                        'thr_body':   int(cfg['thr_body']),
+                    }
+                    for cfg in existing_cache['trap_configs']
+                ]
+                logger.info(
+                    f"Session cache loaded: {len(trap_configs)} trap(s), "
+                    f"rotation = {existing_cache['rotation_angle']:.2f}°"
+                )
+
+            else:
+                # ── Normal interactive Phase 1 ─────────────────────────────────
+                while True:
+                    crop_gui_params = {
+                        **self.params.get('experiment_parameters', {}),
+                        **self.params.get('workflow_settings', {}),
+                        **self.params.get('image_processing', {}),
+                        'guv_settings': self.params.get('guv_settings', {}),
+                    }
+                    self.cropper = CropImage(crop_gui_params)
+                    self.cropper.max_traps = self.params.get('experiment_parameters', {}).get('max_traps', 20)
+
+                    setup_signal = self.cropper.run(self.file_reader)
+                    if setup_signal in ('stop', 'restart'):
+                        if setup_signal == 'stop': return False
+                        continue
+
+                    # --- Phase 1b: Per-Trap Parameter Tuning ---
+                    setup_signal, trap_configs = self._collect_interactive_parameters()
+
+                    if setup_signal in ('stop', 'restart'):
+                        if setup_signal == 'stop': return False
+                        continue
+                    if setup_signal == 'confirm': break
+
+                # Save everything that was just configured so the next run
+                # skips Phase 1 automatically.
+                self._save_session_cache(trap_configs)
 
             if not trap_configs:
                 logger.info("No traps selected.")
                 return True
-                
+
             if self.cropper: self.cropper.save_trap_map(self.results_dir)
 
             # --- Phase 2: Parallel Processing ---
@@ -591,7 +719,21 @@ class MFAAnalysis:
             img = self.file_reader.read_img(f)
             if rotation_angle != 0:
                 img = utils.rotate_image(img, rotation_angle)
-            fp[i] = img if img is not None else np.zeros_like(first_img)
+            # Guard against two failure modes:
+            #   1. img is None  — complete read failure (e.g. missing file).
+            #   2. img has the wrong shape — partial/corrupt read where OpenCV
+            #      returns a small array instead of the expected frame size.
+            # In both cases we substitute a zero frame so the stack stays
+            # consistent and downstream code can handle the gap gracefully.
+            if img is None or img.shape[:2] != (h, w):
+                if img is not None:
+                    logger.warning(
+                        f"{tag} frame {i} ({f.name}): unexpected shape "
+                        f"{img.shape[:2]} (expected {(h, w)}) — substituting zeros."
+                    )
+                fp[i] = np.zeros(shape[1:], dtype=dtype)
+            else:
+                fp[i] = img
         
         fp.flush()
         

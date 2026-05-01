@@ -77,7 +77,7 @@ class ActinAnalyzer:
         # Falls back to recomputing via generate_dual_masks() if not provided
         # (e.g. when called from older code paths).
         self.frame_masks = frame_masks or []
-        self.start_idx = start_idx
+        self.start_idx = int(start_idx)
 
         # Pull sub-sections once so callers don't repeat .get() chains.
         exp_p   = params.get('experiment_parameters', {})
@@ -87,10 +87,10 @@ class ActinAnalyzer:
         self.scale_factor = exp_p.get('scale_factor', 0.629)
 
         # Number of frames before the pulse used to compute I_0.
-        self.baseline_len = dye_p.get('baseline_frames', 5)
+        self.baseline_len = int(dye_p.get('baseline_frames', 5))
 
         # Pulse frame (0-based index).  Mirrors how DyeUptakeAnalyzer reads it.
-        self.pulse_frame = max(0, dye_p.get('pulse_frame', 10) - 1)
+        self.pulse_frame = int(max(0, dye_p.get('pulse_frame', 10) - 1))
 
         # ---- Cortex parameters ----
         # How many pixels to erode inward when drawing the cortex shell.

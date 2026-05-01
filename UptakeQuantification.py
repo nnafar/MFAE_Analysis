@@ -16,6 +16,12 @@ import Utils_MFA as utils
 
 logger = logging.getLogger(__name__)
 
+# NumPy 2.0 moved RankWarning into np.exceptions; fall back for older versions.
+try:
+    _NP_RANK_WARNING = np.exceptions.RankWarning
+except AttributeError:
+    _NP_RANK_WARNING = np.RankWarning
+
 class DyeUptakeAnalyzer:
     """
     Analyzes fluorescence intensity within the mechanically trapped cell.
@@ -445,48 +451,109 @@ class DyeUptakeAnalyzer:
 
     def plot_size_uptake_relationship(self, trap_idx: int, output_dir: Path):
         """
-        Diagnostic plot: uptake vs. linear size (sqrt(count_px) × sf) per region.
-        Fits a power law in log-log space to report the scaling exponent.
-        Exponent ≈ 3 → uptake tracks volume; ≈ 2 → area; ≈ 1 → linear.
+        Diagnostic 4-panel figure: uptake vs. cell size for Protrusion and Cell Body.
+
+        Layout (2 rows × 2 columns):
+            Row 0 — uptake vs. L  (linear size, μm)    [sqrt(count_px) × sf]
+            Row 1 — uptake vs. L² (area, μm²)          [count_px × sf²]
+
+        Each panel overlays a power-law fit (log-log regression) and colour-codes
+        points by frame index so temporal drift is visible.
+
         Call after run().
         """
         import warnings
 
-        size_prot   = np.array(self.results['linear_size_prot_um'], dtype=float)
-        size_body   = np.array(self.results['linear_size_body_um'], dtype=float)
-        uptake_prot = np.array(self.results['uptake_protrusion'],   dtype=float)
-        uptake_body = np.array(self.results['uptake_cell_body'],    dtype=float)
+        # ------------------------------------------------------------------
+        # Pull the three size arrays and the two uptake arrays from results.
+        # ------------------------------------------------------------------
+        # L  = linear size (μm)  — already stored from LineDetection
+        lin_prot = np.array(self.results['linear_size_prot_um'], dtype=float)
+        lin_body = np.array(self.results['linear_size_body_um'], dtype=float)
 
-        def fit_power_law(sizes, uptakes):
-            valid = (sizes > 0) & (uptakes > 0)
+        # L² = area (μm²)  — also stored; equals count_px × sf²
+        area_prot = np.array(self.results['area_protrusion_um2'], dtype=float)
+        area_body = np.array(self.results['area_cell_body_um2'],  dtype=float)
+
+        # Raw (background-subtracted) uptake intensity per region
+        uptake_prot = np.array(self.results['uptake_protrusion'], dtype=float)
+        uptake_body = np.array(self.results['uptake_cell_body'],  dtype=float)
+
+        # ------------------------------------------------------------------
+        # Helper: fit a power law  y = A · x^n  by linear regression in
+        # log-log space.  Returns (exponent, prefactor, boolean mask of
+        # valid (positive) points).  Requires at least 5 valid frames.
+        # ------------------------------------------------------------------
+        def fit_power_law(x_arr, y_arr):
+            """
+            x_arr, y_arr — 1-D numpy arrays of the same length.
+            Returns (exponent, prefactor A, valid_mask).
+            exponent and A are None when the fit cannot be computed.
+            """
+            valid = (x_arr > 0) & (y_arr > 0)
             if valid.sum() < 5:
                 return None, None, valid
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore", np.RankWarning)
-                coeffs = np.polyfit(np.log(sizes[valid]), np.log(uptakes[valid]), deg=1)
+                warnings.simplefilter("ignore", _NP_RANK_WARNING)
+                # np.polyfit on log-transformed data gives a straight line:
+                #   log(y) = n·log(x) + log(A)
+                # So coeffs[0] = n  and  exp(coeffs[1]) = A.
+                coeffs = np.polyfit(np.log(x_arr[valid]), np.log(y_arr[valid]), deg=1)
             return coeffs[0], np.exp(coeffs[1]), valid
 
-        exp_prot, A_prot, valid_prot = fit_power_law(size_prot, uptake_prot)
-        exp_body, A_body, valid_body = fit_power_law(size_body, uptake_body)
+        # ------------------------------------------------------------------
+        # Run fits for all four panels upfront so we can log them together.
+        # ------------------------------------------------------------------
+        # (row, col) → (sizes, uptakes, x_label, row_title)
+        panel_data = {
+            (0, 0): (lin_prot,  uptake_prot, "Linear size  L  [μm]",  "Protrusion"),
+            (0, 1): (lin_body,  uptake_body, "Linear size  L  [μm]",  "Cell Body"),
+            (1, 0): (area_prot, uptake_prot, "Area  L²  [μm²]",       "Protrusion"),
+            (1, 1): (area_body, uptake_body, "Area  L²  [μm²]",       "Cell Body"),
+        }
 
-        fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-        fig.suptitle(f"Trap {trap_idx:02d} — Uptake vs. Linear Size", fontsize=12)
+        fits = {}  # (row, col) → (exp, A, valid_mask)
+        for key, (x_arr, y_arr, _, _) in panel_data.items():
+            fits[key] = fit_power_law(x_arr, y_arr)
 
-        for ax, sizes, uptakes, valid, exp, A, label in [
-            (axes[0], size_prot, uptake_prot, valid_prot, exp_prot, A_prot, "Protrusion"),
-            (axes[1], size_body, uptake_body, valid_body, exp_body, A_body, "Cell Body"),
-        ]:
-            sc = ax.scatter(sizes, uptakes, c=np.arange(len(sizes)),
-                            cmap='viridis', s=18, alpha=0.7, zorder=3)
+        # ------------------------------------------------------------------
+        # Build the figure.
+        # ------------------------------------------------------------------
+        fig, axes = plt.subplots(2, 2, figsize=(11, 9))
+        fig.suptitle(f"Trap {trap_idx:02d} — Uptake vs. Cell Size  (L and L²)", fontsize=13)
+
+        # Row labels on the left side so it's clear which metric each row uses
+        row_labels = ["vs. Linear Size  (L)", "vs. Area  (L²)"]
+        for row_idx, label in enumerate(row_labels):
+            axes[row_idx, 0].set_ylabel(f"Uptake intensity [a.u.]\n{label}", fontsize=9)
+
+        for (row, col), (x_arr, y_arr, x_label, region_label) in panel_data.items():
+            ax = axes[row, col]
+            exp, A, valid = fits[(row, col)]
+
+            # Scatter: colour = frame index so you can see whether the
+            # size–uptake relationship is consistent across time or drifts.
+            n_frames = len(x_arr)
+            sc = ax.scatter(
+                x_arr, y_arr,
+                c=np.arange(n_frames), cmap='viridis',
+                s=18, alpha=0.7, zorder=3,
+            )
             plt.colorbar(sc, ax=ax, label="Frame index")
+
+            # Power-law fit line
             if exp is not None:
-                x_line = np.linspace(sizes[valid].min(), sizes[valid].max(), 200)
-                ax.plot(x_line, A * x_line ** exp, color='tomato', lw=1.8,
-                        label=f"Fit: uptake ∝ size^{exp:.2f}")
+                x_line = np.linspace(x_arr[valid].min(), x_arr[valid].max(), 200)
+                ax.plot(
+                    x_line, A * x_line ** exp,
+                    color='tomato', lw=1.8,
+                    label=f"Fit: uptake ~ size^{exp:.2f}",
+                )
                 ax.legend(fontsize=8)
-            ax.set_xlabel("Linear size  \u221a(count_px) \u00d7 sf  [\u03bcm]")
-            ax.set_ylabel("Uptake intensity [a.u.]")
-            ax.set_title(f"{label}" + (f"\nexponent = {exp:.2f}" if exp is not None else "\n(fit failed)"))
+
+            ax.set_xlabel(x_label, fontsize=9)
+            title_suffix = f"\nexponent = {exp:.2f}" if exp is not None else "\n(fit failed)"
+            ax.set_title(f"{region_label}{title_suffix}", fontsize=10)
             ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
@@ -497,14 +564,21 @@ class DyeUptakeAnalyzer:
         plt.close(fig)
         logger.info(f"Saved size-uptake diagnostic: {save_path.name}")
 
-        for exp, label in [(exp_prot, "Protrusion"), (exp_body, "Cell Body")]:
+        # ------------------------------------------------------------------
+        # Log a human-readable interpretation of each exponent.
+        # ------------------------------------------------------------------
+        for (row, col), (exp, _, _) in fits.items():
+            _, _, _, region_label = panel_data[(row, col)]
+            size_label = "L" if row == 0 else "L²"
             if exp is not None:
-                interp = ("≈ volume (x³)" if abs(exp - 3) < 0.5 else
-                          "≈ area (x²)"   if abs(exp - 2) < 0.5 else
-                          "≈ linear (x¹)" if abs(exp - 1) < 0.5 else "unclear — check plot")
-                logger.info(f"  {label}: exponent = {exp:.2f}  → {interp}")
+                interp = (
+                    "≈ area (x²)"   if abs(exp - 2) < 0.5 else
+                    "≈ linear (x¹)" if abs(exp - 1) < 0.5 else
+                    "unclear — check plot"
+                )
+                logger.info(f"  {region_label} vs {size_label}: exponent = {exp:.2f}  → {interp}")
             else:
-                logger.info(f"  {label}: fit failed (too few valid frames)")
+                logger.info(f"  {region_label} vs {size_label}: fit failed (too few valid frames)")
 
     def compute_volume_correction(self):
         """

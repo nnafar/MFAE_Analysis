@@ -13,13 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: "M:\\tnw\\bn\\gk\\NN\\2_Data-Analysis\\MFAE\\260325_CytoDExperiment274-0V-0ms-frame0"
+  data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10'
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
-  # Electroporated: YYMMDD_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
-  # Aspirated Only: YYMMDD_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "Trial" #"260325_CytoDExperiment274-1100Pa-0V-0ms-frame0"
+  # Electroporated: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
+  # Aspirated Only: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-0V-0ms-frame0
+  experiment_id: "260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -298,7 +298,7 @@ workflow_settings:
 # ===================================================================
 dye_uptake_parameters:
   enable: True
-  has_pulse: False                   # Set to False for control experiments without electroporation.
+  has_pulse: True                   # Set to False for control experiments without electroporation.
   
   # File Naming: Strings used to identify which image is which channel.
   membrane_channel_pattern: "C1"    # e.g., Membrane label
@@ -312,7 +312,7 @@ dye_uptake_parameters:
 # --- 8. ACTIN QUANTIFICATION ---
 # ===================================================================
 actin_parameters:
-  enable: False                     # Set to True to enable, False to skip
+  enable: True                      # Set to True to enable, False to skip
   channel_pattern: "C1"             # Substring to identify actin images
   cortex_thickness_px: 3            # shell depth; 3 px ≈ 1.9 µm
   cortex_cv_threshold: 0.4          # low = cortex, high = patches

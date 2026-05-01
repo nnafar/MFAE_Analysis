@@ -39,7 +39,8 @@ class ExperimentMetadata:
     date: str
     cell_type: str       # ExperimentID1 — e.g. "MDAMB231"
     treatment: str       # ExperimentID2 — e.g. "Control", "CytoD"
-    experiment_number: str # ExperimentID3 — e.g. "Experiment275"
+    device: str          # Experiment ID3 - e.g. "Device1"
+    experiment_number: str # ExperimentID4 — e.g. "Experiment275"
     pressure: int        # e.g. 1100  (from 1100Pa)
     voltage: int         # e.g. 100
     duration: float      # NORMALIZED TO MS (for sorting / physics)
@@ -74,22 +75,13 @@ class BulkDataLoader:
     """
     
     # EXPECTED PATTERN:
-    # Format: YYMMDD_CellType_Treatment_ExpNumber-xxxxxPa-xxxxV-xxxxms-framexxxx
-    #
-    # NAMING CONSTRAINTS (enforced by regex):
-    #   - CellType, Treatment, and ExpNumber must NOT contain underscores or
-    #     hyphens.  E.g. use "CytoD" not "Cyto-D", "MDAMB231" not "MDA-MB-231".
-    #   - Duration unit must be one of: ms, us, µs, μs, s (case-insensitive).
-    #   - Voltage=0, Duration=0, Frame=0 encodes aspiration-only controls.
-    #
-    # FIX #5: Added \u03bc (Greek small letter mu) alongside µ (micro sign).
-    #         Windows Explorer sometimes substitutes one for the other.
+    # Format: YYMMDD_CellType_Treatment_DeviceNumber_ExpNumber-xxxxxPa-xxxxV-xxxxms-framexxxx
     FOLDER_PATTERN = re.compile(
-        r"(\d{6})_([^_\-]+)_([^_\-]+)_([^_\-]+)"  # date _ cell _ treatment _ expnum
-        r"[-_](\d+)Pa"                              # -xxxxxPa
-        r"[-_](\d+)V"                               # -xxxxV
-        r"[-_](\d+)(ms|us|µs|\u03bcs|s)"            # -xxxxms (or us/µs/μs/s)
-        r"[-_]frame(\d+)",                           # -framexxxx
+        r"(\d{6})_([^_\-]+)_([^_\-]+)_([^_\-]+)_([^_\-]+)"
+        r"[-_](\d+)Pa"
+        r"[-_](\d+)V"
+        r"[-_](\d+)(ms|us|µs|s)"
+        r"[-_]frame(\d+)",
         re.IGNORECASE
     )
 
@@ -142,12 +134,13 @@ class BulkDataLoader:
             date_str        = match.group(1)
             cell_type       = match.group(2)   # e.g. "MDAMB231"
             treatment       = match.group(3)   # e.g. "Control", "CytoD"
-            experiment_num  = match.group(4)   # e.g. "Experiment275"
-            pressure        = int(match.group(5))
-            volts           = int(match.group(6))
-            raw_val         = float(match.group(7))
-            unit            = match.group(8).lower()
-            frame           = int(match.group(9))
+            device         = match.group(4)    # e.g. "Device1"
+            experiment_num  = match.group(5)   # e.g. "Experiment275"
+            pressure        = int(match.group(6))
+            volts           = int(match.group(7))
+            raw_val         = float(match.group(8))
+            unit            = match.group(9).lower()
+            frame           = int(match.group(10))
 
             # Normalise any mu variant to "us" for consistent handling.
             if unit in ['µs', '\u03bcs']:
