@@ -278,7 +278,14 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
         return np.zeros((h, w), dtype=np.uint8), np.zeros((h, w), dtype=np.uint8)
 
     margin_fraction = img_params.get('wall_clip_margin', 0.25)
-    fill_holes = guv_settings.get('fill_membrane_holes', True)
+
+    # fill_membrane_holes is a GUV-specific technique: it fills the hollow
+    # interior of a vesicle membrane ring using convex hulls.  For regular cells,
+    # applying convex hulls replaces the actual (possibly irregular/concave) cell
+    # boundary with a smoothed bounding polygon — exactly what causes the mask to
+    # not follow the cell contour.  Default is False so this never fires unless
+    # the config explicitly sets it, which only makes sense in GUV mode.
+    fill_holes = guv_settings.get('fill_membrane_holes', False)
     
     clahe = cv2.createCLAHE(clipLimit=img_params.get('clahe_clip_limit', 2.0), tileGridSize=(8,8))
     enhanced = clahe.apply(gray)

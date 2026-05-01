@@ -1085,62 +1085,91 @@ class LineDetectionMFA:
 
         For the protrusion (left of pipette):
             Keeps the blob whose right edge is closest to pipette_x.
-            No centroid guard needed — there is nothing to the left of the pipette
-            except the cell tip and occasional debris, which is already filtered by
-            min_area_threshold.
+            No further guard needed — debris is already removed by min_area_threshold.
 
         For the body (right of pipette):
-            Keeps the closest blob by left-edge proximity, BUT only among blobs
-            whose centroid lies within max_body_centroid_dist_px of pipette_x.
+            Uses a two-pass entrance-proximity strategy.
 
-            Why this matters: when a second cell passes through the pocket behind
-            the trapped cell, both can appear in the body ROI. The original code
-            compared only edge distances, so a large passing cell whose left edge
-            happened to sit close to pipette_x could "win" over the correct cell,
-            or — worse — the two cells merge into one connected component through
-            thresholding, making the blob filter useless. The centroid guard rejects
-            blobs whose mass is far downstream, which is always the case for passing
-            cells even when their left edge grazes the pipette entrance region.
+            Physical basis:
+                generate_dual_masks zeros every pixel left of pipette_x, so every
+                blob in the body mask starts at x >= pipette_x.  The trapped cell is
+                held against the pipette entrance by aspiration pressure, so its left
+                edge is always within a few pixels of pipette_x (0–3 px typically, up
+                to ~5 px after morphological processing).  A passing cell behind it
+                is spatially separated by at least one full cell diameter — at 20×
+                that is ≥ 30 px, at 10× ≥ 16 px.
 
-        The centroid threshold is read from image_processing.max_body_centroid_dist_px
-        (default 60 px). Increase it if legitimate cells sit far into the pocket;
-        decrease it if passing-cell contamination persists.
+            Pass 1 (preferred):
+                Keep the largest-area blob whose left-edge bounding box is within
+                max_body_entrance_gap_px of pipette_x.  Because the gap threshold
+                represents a physical distance in the microfluidic device geometry —
+                not a cell-size property — the same value works regardless of
+                objective.  8 px (~2.5 µm at 20×, ~5 µm at 10×) is always much
+                smaller than one cell diameter, yet always larger than the maximum
+                morphological erosion at the left edge.
+
+            Pass 2 (fallback):
+                If no blob passes Pass 1 (e.g. cell not yet fully seated at entry),
+                fall back to the nearest-left-edge blob so the mask is never empty.
+
+            Why this is better than the centroid-distance approach:
+                Centroid distance is proportional to cell size.  Any threshold in
+                pixels needs manual re-tuning when the objective changes (cell appears
+                larger → centroid further from entrance → needs a bigger threshold).
+                max_body_entrance_gap_px is a device constant and never needs changing.
         """
-        # connectedComponentsWithStats returns centroids as (cx, cy) in image coordinates.
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_mask)
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
         out = np.zeros_like(binary_mask)
 
         if num_labels <= 1:
             return out
 
-        max_body_centroid_dist = self.params.get('image_processing', {}).get(
-            'max_body_centroid_dist_px', 60
+        # The entrance gap tolerance is a device-geometry constant, not a cell-size
+        # parameter.  Default 8 px survives morphological erosion at the left edge
+        # and is always far smaller than a passing cell's separation distance.
+        max_entrance_gap = self.params.get('image_processing', {}).get(
+            'max_body_entrance_gap_px', 8
         )
 
-        min_dist   = float('inf')
-        best_label = -1
-
-        for i in range(1, num_labels):
-            if stats[i, cv2.CC_STAT_AREA] < self.min_area_threshold:
-                continue
-
-            if is_protrusion:
-                # Right edge of the blob — should be flush against the pipette entrance.
-                edge_x = stats[i, cv2.CC_STAT_LEFT] + stats[i, cv2.CC_STAT_WIDTH]
-            else:
-                # Left edge of the blob — again should be near the pipette entrance.
-                edge_x = stats[i, cv2.CC_STAT_LEFT]
-
-                # Centroid guard: blobs whose centre of mass is far to the right are
-                # passing cells, not the trapped cell. Reject them before comparing edges.
-                centroid_x = centroids[i][0]
-                if abs(centroid_x - pipette_x) > max_body_centroid_dist:
+        if is_protrusion:
+            # ── Protrusion: right edge closest to pipette_x ───────────────────
+            min_dist   = float('inf')
+            best_label = -1
+            for i in range(1, num_labels):
+                if stats[i, cv2.CC_STAT_AREA] < self.min_area_threshold:
                     continue
+                edge_x = stats[i, cv2.CC_STAT_LEFT] + stats[i, cv2.CC_STAT_WIDTH]
+                dist = abs(pipette_x - edge_x)
+                if dist < min_dist:
+                    min_dist   = dist
+                    best_label = i
 
-            dist = abs(pipette_x - edge_x)
-            if dist < min_dist:
-                min_dist   = dist
-                best_label = i
+        else:
+            # ── Body pass 1: largest blob touching the entrance ───────────────
+            best_label = -1
+            best_area  = -1
+            for i in range(1, num_labels):
+                if stats[i, cv2.CC_STAT_AREA] < self.min_area_threshold:
+                    continue
+                edge_x = stats[i, cv2.CC_STAT_LEFT]
+                if abs(edge_x - pipette_x) > max_entrance_gap:
+                    continue          # not at the entrance → passing cell or debris
+                area = stats[i, cv2.CC_STAT_AREA]
+                if area > best_area:
+                    best_area  = area
+                    best_label = i
+
+            # ── Body pass 2: fallback when nothing touches the entrance ───────
+            if best_label == -1:
+                min_dist = float('inf')
+                for i in range(1, num_labels):
+                    if stats[i, cv2.CC_STAT_AREA] < self.min_area_threshold:
+                        continue
+                    edge_x = stats[i, cv2.CC_STAT_LEFT]
+                    dist = abs(pipette_x - edge_x)
+                    if dist < min_dist:
+                        min_dist   = dist
+                        best_label = i
 
         if best_label != -1:
             out[labels == best_label] = 255
@@ -1280,7 +1309,23 @@ class LineDetectionMFA:
         scale_factor = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         protrusion_px_list = []
         downstream_int_list = []
-        
+
+        # Small causal buffer used to compute a running median of protrusion length
+        # specifically for positioning the haze monitoring window.
+        #
+        # Why do this at all?
+        # tip_x = pipette_start_x - protrusion_len_px.  When smoothing is off,
+        # the raw per-frame length can jump ±1–2 px from noise alone (visible as
+        # the zig-zag in the length trace).  Because the haze window is anchored
+        # to tip_x, those jumps physically move the sampling region each frame,
+        # creating artificial intensity spikes that corrupt rupture detection.
+        # A 3-frame causal running median damps that jitter without introducing
+        # a lag that would matter for detection (rupture events are at least
+        # 2–3 frames wide).  The stored protrusion_lengths_px is still the raw
+        # unsmoothed value — this buffer only affects where the haze box sits.
+        _tip_buf: List[float] = []
+        _TIP_BUF_N = 3
+
         for i, image in enumerate(self.roi_images):
             if image is None:
                 protrusion_px_list.append(0); downstream_int_list.append(0)
@@ -1347,7 +1392,13 @@ class LineDetectionMFA:
             self.results['body_solidity'].append(solidity)
             
             # Measure Rupture Intensity
-            tip_x = pipette_start_x - protrusion_len_px
+            # Use a 3-frame running median of protrusion length to position the
+            # haze window, instead of the raw (noisy) per-frame value.
+            # See the _tip_buf initialisation above for a full explanation.
+            _tip_buf.append(protrusion_len_px)
+            if len(_tip_buf) > _TIP_BUF_N:
+                _tip_buf.pop(0)
+            tip_x = pipette_start_x - float(np.median(_tip_buf))
             downstream_int_list.append(self._measure_downstream_intensity(gray_image, tip_x, pipette_start_x))
             
             # 3. DEBUG VISUALIZATION
@@ -1663,7 +1714,17 @@ class LineDetectionMFA:
                         break 
         
         # F. Pulse Context (Pulse-Induced Rupture)
-        pulse_frame_idx = r_params.get('pulse_frame_idx', None)
+        # Primary source: an explicit 'pulse_frame_idx' key under rupture_detection
+        # (allows per-trap overrides in edge cases).
+        # Fallback: dye_uptake_parameters.pulse_frame — the normal place where the
+        # experiment-level pulse frame is stored.  The original code only checked
+        # the primary source, so this detector silently never fired for any
+        # standard experiment configured via the dye_uptake block.
+        pulse_frame_idx = r_params.get('pulse_frame_idx')
+        if pulse_frame_idx is None:
+            _dup = self.params.get('dye_uptake_parameters', {})
+            if _dup.get('enable', False) and _dup.get('has_pulse', False):
+                pulse_frame_idx = _dup.get('pulse_frame')
         if pulse_frame_idx is not None:
             is_pulse_rupture, pulse_rupt_idx = self._detect_pulse_context_rupture(
                 intensities,      
@@ -1692,22 +1753,42 @@ class LineDetectionMFA:
         veto_drop_ratio    = r_params.get('rupture_length_drop_ratio', 0.90)
         bypass_fold        = r_params.get('veto_bypass_fold_threshold', 2.0)
         bypass_abs         = r_params.get('veto_bypass_abs_threshold', 5.0)
+        global_bypass_fold = r_params.get('veto_global_bypass_fold_threshold', 1.7)
+        global_bypass_abs  = r_params.get('veto_global_bypass_abs_threshold', 3.0)
 
         if use_length_veto and candidates:
             lengths_px = self.results.get('protrusion_lengths_px', [])
+
+            # Fixed early-entry haze baseline for the global bypass check.
+            # Using the first 5 frames of valid_intensities (post-entry) avoids
+            # contamination from the empty-trap period before the cell arrived.
+            _bn = min(5, len(valid_intensities))
+            global_baseline_haze = float(np.median(valid_intensities[:_bn])) if _bn > 0 else 0.0
+
             vetted = []
 
             for (c_idx, c_reason) in candidates:
 
-                # DOA candidates always pass through — no length check needed.
+                # --- Unconditional bypasses ---
+
+                # DOA candidates are structural classifications — no length check.
                 if 'DOA' in c_reason:
                     vetted.append((c_idx, c_reason))
                     continue
 
-                # ── Haze bypass ──────────────────────────────────────────────
-                # If the haze jumped by a large enough fold AND absolute amount
-                # around this candidate, we treat it as an unambiguous rupture
-                # and skip the length check entirely.
+                # Pulse-Induced candidates fire at a KNOWN event time (the pulse
+                # frame).  A haze increase right after a pulse is reliable evidence
+                # of membrane disruption regardless of what length does.  EP events
+                # show a haze rise with STABLE or RISING length — the veto would
+                # incorrectly remove all of them.
+                if 'Pulse-Induced' in c_reason:
+                    vetted.append((c_idx, c_reason))
+                    logger.debug(
+                        f"Length-veto bypassed for Pulse-Induced candidate at frame {c_idx}"
+                    )
+                    continue
+
+                # --- Haze-based bypasses ---
                 haze_pre_slice  = intensities[max(0, c_idx - 5) : c_idx]
                 haze_post_slice = intensities[c_idx : min(len(intensities), c_idx + 5)]
 
@@ -1715,13 +1796,33 @@ class LineDetectionMFA:
                     h_pre  = float(np.median(haze_pre_slice))
                     h_post = float(np.median(haze_post_slice))
 
+                    # Local bypass: large SUDDEN haze jump (fold and abs both high
+                    # relative to the frames immediately surrounding this candidate).
+                    # Handles cases where aspiration pressure keeps length extended
+                    # despite genuine rupture.
                     if (h_pre > 0 and
                             h_post / h_pre >= bypass_fold and
                             h_post - h_pre >= bypass_abs):
                         vetted.append((c_idx, c_reason))
                         logger.debug(
-                            f"Length-veto bypass: '{c_reason}' at frame {c_idx} "
+                            f"Length-veto bypass (local): '{c_reason}' at frame {c_idx} "
                             f"(haze fold={h_post/h_pre:.2f}, abs rise={h_post-h_pre:.1f})"
+                        )
+                        continue
+
+                    # Global bypass: large TOTAL haze rise relative to the fixed
+                    # early-entry baseline.  Catches slow EP-type rises where the
+                    # local fold is small even when the cumulative change is large
+                    # (e.g. Trap 7: haze doubles over 30 s but any 10-frame window
+                    # shows only a modest slope).
+                    if (global_baseline_haze > 0 and
+                            h_post / global_baseline_haze >= global_bypass_fold and
+                            h_post - global_baseline_haze >= global_bypass_abs):
+                        vetted.append((c_idx, c_reason))
+                        logger.debug(
+                            f"Length-veto bypass (global): '{c_reason}' at frame {c_idx} "
+                            f"(haze vs baseline fold={h_post/global_baseline_haze:.2f}, "
+                            f"abs rise={h_post-global_baseline_haze:.1f})"
                         )
                         continue
 

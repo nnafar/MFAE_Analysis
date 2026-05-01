@@ -327,7 +327,19 @@ class ImageProcessingConstants(BaseModel):
     gaussian_kernel_size: Tuple[int, int] = Field(default=(3, 3))
     min_area_threshold: int = Field(default=100, ge=1, description="Minimum blob area to track [pixels²]")
     small_object_threshold: int = Field(default=50, ge=1, description="Remove objects smaller than this [pixels²]")
-    max_body_centroid_dist_px: int = Field(default=20, ge=1, description="Max distance from pipette entrance for a body blob centroid [pixels]")
+    max_body_entrance_gap_px: int = Field(
+        default=8,
+        ge=1,
+        le=30,
+        description=(
+            "Maximum left-edge gap (pixels) between a body blob and the pipette entrance "
+            "for the blob to be considered the trapped cell. "
+            "The trapped cell is always pressed flush against the entrance by aspiration "
+            "pressure, so its left edge sits within a few pixels of pipette_x. "
+            "A passing cell is separated by at least one full cell diameter. "
+            "8 px (~2.5 µm at 20×, ~5 µm at 10×) works at any objective without tuning."
+        )
+    )
     threshold_preview_clahe: bool = Field(
         default=True,
         description=(
