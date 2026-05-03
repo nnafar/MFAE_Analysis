@@ -39,7 +39,7 @@ class ExperimentMetadata:
     date: str
     cell_type: str       # ExperimentID1 — e.g. "MDAMB231"
     treatment: str       # ExperimentID2 — e.g. "Control", "CytoD"
-    device: str          # Experiment ID3 - e.g. "Device1"
+    chip: str          # Experiment ID3 - e.g. "Chip1"
     experiment_number: str # ExperimentID4 — e.g. "Experiment275"
     pressure: int        # e.g. 1100  (from 1100Pa)
     voltage: int         # e.g. 100
@@ -75,7 +75,7 @@ class BulkDataLoader:
     """
     
     # EXPECTED PATTERN:
-    # Format: YYMMDD_CellType_Treatment_DeviceNumber_ExpNumber-xxxxxPa-xxxxV-xxxxms-framexxxx
+    # Format: YYMMDD_CellType_Treatment_ChipNumber_ExpNumber-xxxxxPa-xxxxV-xxxxms-framexxxx
     FOLDER_PATTERN = re.compile(
         r"(\d{6})_([^_\-]+)_([^_\-]+)_([^_\-]+)_([^_\-]+)"
         r"[-_](\d+)Pa"
@@ -134,7 +134,7 @@ class BulkDataLoader:
             date_str        = match.group(1)
             cell_type       = match.group(2)   # e.g. "MDAMB231"
             treatment       = match.group(3)   # e.g. "Control", "CytoD"
-            device         = match.group(4)    # e.g. "Device1"
+            chip            = match.group(4)    # e.g. "Chip1"
             experiment_num  = match.group(5)   # e.g. "Experiment275"
             pressure        = int(match.group(6))
             volts           = int(match.group(7))
