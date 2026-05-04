@@ -197,6 +197,9 @@ class RuptureDetectionConfig(BaseModel):
     rupture_window_width_px: int = 15
     
     entry_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length (um) to mark cell entry")
+    entry_max_prot_fraction: float = Field(default=0.9, gt=0.0, le=1.0, description="Protrusion above channel_length_um * this fraction is treated as clamped/invalid (debris filter)")
+    entry_body_area_min_um2: float = Field(default=10.0, ge=0.0, description="Noise-floor body area (um2); only rejects image artefacts, not small cells")
+    entry_confirmed_frames: int = Field(default=3, ge=1, description="Consecutive frames all entry conditions must hold before entry is confirmed; blocks transient contacts")
     exit_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length drop (um) to mark cell exit")
     exit_drop_ratio: float = Field(default=0.2, ge=0.0, le=1.0, description="Fractional drop to mark cell exit")
     exit_sustained_frames: int = Field(default=3, ge=1, description="Consecutive frames the length must remain dropped to trigger exit")

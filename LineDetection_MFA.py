@@ -106,6 +106,7 @@ class LineDetectionMFA:
             'volume_total_um3': [],         # (count_px × sf²)^1.5  [μm³]
             'body_solidity': [],            # Cell body solidity
             'entry_frame_index': None,      # Cell enters trap
+            'entry_confirmed': True,        # False when protrusion never sustained a valid window
             'exit_frame_index': None,       # Cell Exit Handling
             # Rupture Detection
             'downstream_intensities': [],   # Brightness values inside the pipette (for rupture)'
@@ -1418,17 +1419,116 @@ class LineDetectionMFA:
         
         # --- ENTRY AND EXIT SYNCHRONIZATION ---
         protrusions = self.results['protrusion_lengths_um']
-        entry_thresh = self.params.get('rupture_detection', {}).get('entry_protrusion_threshold_um', 0.5)
-        exit_thresh = self.params.get('rupture_detection', {}).get('exit_protrusion_threshold_um', 0.5)
-        exit_ratio = self.params.get('rupture_detection', {}).get('exit_drop_ratio', 0.2)
-        
-        # 1. Entry: Target the frame prior to initial detection spike
+        _r_params_entry = self.params.get('rupture_detection', {})
+        entry_thresh = _r_params_entry.get('entry_protrusion_threshold_um', 0.5)
+        exit_thresh  = _r_params_entry.get('exit_protrusion_threshold_um', 0.5)
+        exit_ratio   = _r_params_entry.get('exit_drop_ratio', 0.2)
+
+        # -----------------------------------------------------------------
+        # Entry guard: two conditions that are BOTH cell-size-independent.
+        #
+        # CONDITION 1 — protrusion is NOT clamped at the ROI boundary.
+        #   When the protrusion tip is at or beyond the far end of the
+        #   protrusion ROI, the measurement simply reports "ROI width" as
+        #   the length.  Debris that occupies the full channel (seen in
+        #   traps #5, #6, #10, #11 as a flat line at 40 µm) produces this
+        #   clamped reading continuously, whereas a real protrusion is
+        #   always well inside the ROI (5–15 µm for typical cells).
+        #   The ceiling is derived from the configured channel length so
+        #   that it adapts automatically if you change the device geometry.
+        channel_len_um = self.params.get('model_parameters', {}).get('channel_length_um', 40.0)
+        # A safety margin of 10 % gives tolerance for sub-pixel rounding.
+        # Any protrusion ≥ this value is treated as "tracking failed / clamped".
+        max_valid_prot_um = channel_len_um * _r_params_entry.get('entry_max_prot_fraction', 0.9)
+
+        # CONDITION 2 — a cell body is present at the entrance.
+        #   This gates out the minority case where short debris or a cell
+        #   fragment happens to produce a non-clamped protrusion reading
+        #   without an actual cell sitting at the entrance.
+        #   The threshold here is intentionally LOW — it is NOT a cell-size
+        #   discriminator.  It is only a noise floor: a segmented object
+        #   occupying fewer than ~10 µm² is likely an image artefact, not
+        #   a cell body (even the smallest mammalian cells exceed 30 µm²).
+        #   Cell size variation is irrelevant because any real body, large
+        #   or small, vastly exceeds this floor.
+        entry_body_noise_floor_um2 = _r_params_entry.get('entry_body_area_min_um2', 10.0)
+        body_areas = self.results.get('body_area_um2', [])
+
+        # CONDITION 3 — entry must be SUSTAINED for N consecutive frames.
+        #
+        #   A cell briefly touching the entrance (transient contact, pre-entry
+        #   debris, passing cell) can pass conditions 1 and 2 for 1–2 frames
+        #   before the protrusion collapses back to 0.  A cell that genuinely
+        #   seats itself takes several frames to decelerate and stabilise.
+        #   Requiring N consecutive valid frames filters these brief contacts
+        #   without imposing any cell-size dependency.
+        entry_sustained_n = _r_params_entry.get('entry_confirmed_frames', 3)
+
+        # 1. Entry: first run of N consecutive frames satisfying ALL conditions.
+        #    first_candidate tracks the start of the current valid run so we can
+        #    step back one frame once confirmation is reached, keeping the last
+        #    empty-channel frame inside the pre-entry haze baseline.
         entry_idx = 0
+        entry_confirmed = False
+        consecutive_valid = 0
+        first_candidate = None
+
         for i, p in enumerate(protrusions):
-            if p > entry_thresh:
-                entry_idx = max(0, i - 1)
-                break
+            # --- Check all conditions ---
+            valid = True
+
+            if p <= entry_thresh:
+                valid = False
+
+            elif p >= max_valid_prot_um:
+                valid = False   # clamped — still inside debris / channel-filling object
+
+            else:
+                body_a = body_areas[i] if i < len(body_areas) else 0.0
+                if isinstance(body_a, float) and np.isnan(body_a):
+                    body_a = 0.0
+                if body_a < entry_body_noise_floor_um2:
+                    valid = False   # no body signal — no cell at the entrance
+
+            # --- Count run / reset ---
+            if valid:
+                if consecutive_valid == 0:
+                    first_candidate = i      # remember where this run started
+                consecutive_valid += 1
+                if consecutive_valid >= entry_sustained_n:
+                    # Confirmed.  Step back to one frame before the run started.
+                    entry_idx = max(0, first_candidate - 1)
+                    entry_confirmed = True
+                    break
+            else:
+                consecutive_valid = 0
+                first_candidate = None
+
+        # --- FAILURE MODE: loop exhausted without finding a valid entry ---
+        #
+        #   This happens when the protrusion is clamped at the ROI boundary for
+        #   the entire recording (e.g. a very stiff or large cell that fills the
+        #   channel from the start, or a cell that was never properly aspirated).
+        #
+        #   Defaulting silently to entry_idx = 0 is worse than no result because
+        #   the rupture detectors then scan the full trace from frame 0 and almost
+        #   always fire a false positive.  Instead, flag the trap so downstream
+        #   code can exclude it from analysis, and keep entry_idx = 0 as a safe
+        #   placeholder (it is never used for analysis when the flag is set).
+        if not entry_confirmed:
+            logger.warning(
+                "Entry not confirmed for this trap: protrusion was either always "
+                "clamped at the ROI boundary or never sustained a valid tracking "
+                "window for %d consecutive frames.  Rupture detection will be "
+                "disabled and this trap will be flagged as indeterminate.",
+                entry_sustained_n,
+            )
+            self.results['rupture_detected']    = False
+            self.results['rupture_frame_index'] = None
+            self.results['rupture_reason']      = 'Entry indeterminate: no sustained valid protrusion found'
+
         self.results['entry_frame_index'] = entry_idx
+        self.results['entry_confirmed']   = entry_confirmed
         
         # 2. Exit: Detect cell slip or massive loss after stable period.
         pulse_frame = self.params.get('dye_uptake_parameters', {}).get('pulse_frame', None)
@@ -1624,7 +1724,15 @@ class LineDetectionMFA:
         """Runs multiple detectors strictly inside the validated cell-presence bounds."""
         intensities = self.results['downstream_intensities']
         r_params    = self.params.get('rupture_detection', {})
-        
+
+        # Skip all rupture analysis if entry was never confirmed.
+        # The flag is set by _process_all_frames when the sustained-entry loop
+        # exhausted without finding a valid run (e.g. protrusion always clamped).
+        # Running detectors from frame 0 in this situation produces near-certain
+        # false positives and corrupts downstream statistics.
+        if not self.results.get('entry_confirmed', True):
+            return
+
         entry_idx = self.results.get('entry_frame_index', 0)
         exit_idx  = self.results.get('exit_frame_index', len(intensities))
         

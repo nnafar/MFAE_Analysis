@@ -334,7 +334,7 @@ class FileRead():
 
     def create_manual_timestamps(self) -> List[float]:
         """Creates timestamps using a fixed, manually specified interval."""
-        frame_interval = self.params.get('frame_interval', 0.2)
+        frame_interval = self.params.get('experiment_parameters', {}).get('frame_interval', 0.2)
         logger.info(f"Using manual frame interval: {frame_interval} seconds")
         self.metadata_method_used = f"Manual calculation ({frame_interval}s interval)"
         return [i * frame_interval for i in range(len(self.tif_files))]
