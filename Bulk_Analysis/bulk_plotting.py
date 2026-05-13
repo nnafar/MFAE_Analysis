@@ -109,6 +109,83 @@ def interpolate_to_common_time(time_series_list, data_series_list, dt=1.75):
         interpolated_rows.append(f(common_time))
     return common_time, np.array(interpolated_rows)
 
+def _compute_common_uptake_xlim(
+        traps: List[bfh.TrapData],
+        rupture_fraction: float = 0.20,
+        max_pre_s: float = 30.0,
+) -> Tuple[float, float]:
+    """
+    Computes a consistent x-axis range (in pulse-aligned seconds) for uptake
+    multipanel plots so that all panels in a group share the same window.
+
+    Algorithm
+    ---------
+    Post-pulse end (x_max):
+        Collect the maximum aligned time from each trap's uptake array.
+        Discard traces whose post-pulse duration is below
+        ``rupture_fraction * group_median`` (these are truncated recordings
+        that would otherwise impose an unreasonably short window).
+        x_max = minimum of the remaining durations.
+
+    Pre-pulse start (x_min):
+        For EP data, the aligned time starts at a large negative value
+        (aspiration phase before the pulse).  Showing hundreds of seconds of
+        baseline context is uninformative and makes the interesting post-pulse
+        region tiny.  x_min is therefore capped at ``-max_pre_s`` (default
+        -30 s), still showing enough baseline to confirm the pre-pulse signal
+        is flat.
+        For ASP data (time zeroed to cell entry), x_min = 0.
+
+    Parameters
+    ----------
+    traps           : all TrapData objects for one condition group
+    rupture_fraction: fraction of group median below which a trace is
+                      considered too short to contribute to setting x_max
+    max_pre_s       : maximum pre-pulse context to show for EP data [s]
+
+    Returns
+    -------
+    (x_min, x_max) : floats.  Falls back to (0, 1) if no valid data found.
+    """
+    post_durations = []
+    pre_starts     = []
+
+    for trap in traps:
+        ud = trap.uptake_data
+        if 'Time_s' not in ud:
+            continue
+        at = align_time_to_pulse(
+            ud['Time_s'], trap.metadata.pulse_frame,
+            trap.metadata.condition_type)
+        if len(at) < 2:
+            continue
+        t_max = float(np.nanmax(at))
+        t_min = float(np.nanmin(at))
+        if t_max > 0:
+            post_durations.append(t_max)
+        pre_starts.append(t_min)
+
+    # --- x_max: common post-pulse end ---
+    if not post_durations:
+        return 0.0, 1.0
+    median_post = float(np.median(post_durations))
+    threshold   = rupture_fraction * median_post
+    normal      = [d for d in post_durations if d >= threshold]
+    x_max       = float(min(normal)) if normal else float(min(post_durations))
+
+    # --- x_min: pre-pulse context ---
+    # For EP, show a fixed window of at most max_pre_s before the pulse.
+    # Collect the actual median start time so we don't request more data
+    # than any trace actually has (avoids empty whitespace on the left).
+    if pre_starts:
+        median_pre = float(np.median(pre_starts))
+        x_min = max(median_pre, -max_pre_s)
+    else:
+        x_min = 0.0
+
+    return x_min, x_max
+
+
 def _group_by_trap_id(traps: List[bfh.TrapData]) -> Dict[int, List[bfh.TrapData]]:
     grouped = {}
     for t in traps:
@@ -152,53 +229,140 @@ def _safe_max(arr: np.ndarray, default: float = 0.0) -> float:
 # 3. STATISTICAL PLOTS
 # =============================================================================
 
-def plot_max_protrusion_distribution(grouped_data, output_dir: Path):
-    logger.info("Generating Plot: Max Protrusion...")
-    records = []
-    for key in sorted(grouped_data.keys()):
-        traps = grouped_data[key]
-        if not traps: continue
-        cond_label = get_cond_label(traps[0].metadata)
-        for trap in traps:
-            p_data = trap.protrusion_data
-            if 'Protrusion_Length_um' in p_data and len(p_data['Protrusion_Length_um']) > 0:
-                records.append({'Condition': cond_label, 'Max_Length_um': np.max(p_data['Protrusion_Length_um'])})
-    if not records: return
-    df = pd.DataFrame(records)
-    plt.figure(figsize=(12, 7))
-    sns.boxplot(data=df, x='Condition', y='Max_Length_um', color='lightgray')
-    sns.stripplot(data=df, x='Condition', y='Max_Length_um', dodge=True, color='black', alpha=0.5)
-    plt.title("Max Protrusion Length")
-    plt.ylabel("Length (µm)")
-    plt.savefig(output_dir / "Max_Protrusion.png", dpi=SAVE_DPI)
-    plt.close()
-
 def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
-    logger.info("Generating Plot: Per-Trap Protrusion Stability (Max Length)...")
+    import matplotlib.lines as mlines
+    logger.info("Generating Plot: Per-Trap Protrusion Stability (Paired Pre/Post)...")
+    
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        cond_label = get_cond_label(traps[0].metadata)
+        meta = traps[0].metadata
+        cond_label = get_cond_label(meta)
+        is_ep = meta.condition_type == "EP"
         
         records = []
         for trap in sorted(traps, key=lambda t: t.trap_id):
             p_data = trap.protrusion_data
-            if 'Protrusion_Length_um' in p_data and len(p_data['Protrusion_Length_um']) > 0:
-                val = np.max(p_data['Protrusion_Length_um'])
-                records.append({
-                    'Trap': f"T{trap.trap_id}", 
-                    'Max_Length_um': val, 
-                    'ExpID': trap.metadata.experiment_number
-                })
+            if 'Time_s' in p_data and 'Protrusion_Length_um' in p_data:
+                t_raw = p_data['Time_s']
+                l_raw = p_data['Protrusion_Length_um']
+                
+                if len(t_raw) == 0 or len(l_raw) == 0:
+                    continue
+                
+                # Unique identifier to pair pre and post measurements
+                exp_id = trap.metadata.experiment_number
+                
+                if is_ep:
+                    at = align_time_to_pulse(t_raw, trap.metadata.pulse_frame, trap.metadata.condition_type)
+                    pre_mask = at < 0
+                    post_mask = at >= 0
+                    
+                    val_pre = _safe_max(l_raw[pre_mask], default=np.nan) if np.any(pre_mask) else np.nan
+                    val_post = _safe_max(l_raw[post_mask], default=np.nan) if np.any(post_mask) else np.nan
+                    
+                    records.append({
+                        'Trap': f"T{trap.trap_id}",
+                        'Trap_Int': trap.trap_id,
+                        'Exp_ID': exp_id,
+                        'Phase': 'Pre-pulse',
+                        'Length_um': val_pre,
+                        'Linked_Post': val_post
+                    })
+                    records.append({
+                        'Trap': f"T{trap.trap_id}",
+                        'Trap_Int': trap.trap_id,
+                        'Exp_ID': exp_id,
+                        'Phase': 'Post-pulse',
+                        'Length_um': val_post,
+                        'Linked_Pre': val_pre
+                    })
+                else:
+                    val_all = _safe_max(l_raw, default=np.nan)
+                    if pd.notna(val_all):
+                        records.append({
+                            'Trap': f"T{trap.trap_id}",
+                            'Trap_Int': trap.trap_id,
+                            'Exp_ID': exp_id,
+                            'Phase': 'Full Trace',
+                            'Length_um': val_all
+                        })
         
         if not records: continue
         df = pd.DataFrame(records)
+        df = df.dropna(subset=['Length_um'])
+        
+        # Aggregate a 'Global' group to explicitly show the overall size range
+        df_global = df.copy()
+        df_global['Trap'] = 'All Traps'
+        df_global['Trap_Int'] = 999 
+        df_combined = pd.concat([df, df_global], ignore_index=True)
+        
+        trap_order = [f"T{t}" for t in sorted(df['Trap_Int'].unique())] + ['All Traps']
         
         plt.figure(figsize=(16, 7))
-        sns.boxplot(data=df, x='Trap', y='Max_Length_um', color='lightgray', showfliers=False, boxprops=dict(alpha=0.4))
-        sns.stripplot(data=df, x='Trap', y='Max_Length_um', color='black', size=8, jitter=True, edgecolor='black', linewidth=1, alpha=0.6)
         
-        plt.title(f"Protrusion Length Consistency ({cond_label})")
+        if is_ep:
+            palette = {'Pre-pulse': '#ff7f0e', 'Post-pulse': '#9467bd'}
+            
+            # Background boxplots for the distribution ranges
+            sns.boxplot(data=df_combined, x='Trap', y='Length_um', hue='Phase', palette=palette, 
+                        showfliers=False, boxprops=dict(alpha=0.3), order=trap_order)
+            
+            plotted_pairs = set()
+            growth_thresh = 0.5
+            trap_to_x = {t: i for i, t in enumerate(trap_order)}
+            
+            # Manual scatter and paired line plotting
+            for _, row in df_combined.iterrows():
+                x_center = trap_to_x[row['Trap']]
+                is_global = row['Trap'] == 'All Traps'
+                
+                if row['Phase'] == 'Pre-pulse':
+                    x_offset = -0.2
+                    y_val = row['Length_um']
+                    y_linked = row['Linked_Post']
+                    
+                    plt.scatter(x_center + x_offset, y_val, color=palette['Pre-pulse'], 
+                                s=30, edgecolor='k', lw=0.5, zorder=3, alpha=0.8)
+                    
+                    pair_id = f"{row['Trap']}_{row['Exp_ID']}"
+                    if pd.notna(y_linked) and pair_id not in plotted_pairs:
+                        delta = y_linked - y_val
+                        if delta > growth_thresh: color = '#2ca02c' # Green - Grows
+                        elif delta < -growth_thresh: color = '#d62728' # Red - Retracts
+                        else: color = '#7f7f7f' # Gray - Stable
+                        
+                        # Isolate line drawing to individual traps, omit for the global summary
+                        if not is_global:
+                            plt.plot([x_center - 0.2, x_center + 0.2], [y_val, y_linked], 
+                                     color=color, alpha=0.5, lw=1.5, zorder=2)
+                        plotted_pairs.add(pair_id)
+                        
+                elif row['Phase'] == 'Post-pulse':
+                    x_offset = 0.2
+                    plt.scatter(x_center + x_offset, row['Length_um'], color=palette['Post-pulse'], 
+                                s=30, edgecolor='k', lw=0.5, zorder=3, alpha=0.8)
+
+            handles = [
+                mlines.Line2D([], [], color='#ff7f0e', marker='o', lw=0, label='Pre-pulse Max'),
+                mlines.Line2D([], [], color='#9467bd', marker='o', lw=0, label='Post-pulse Max'),
+                mlines.Line2D([], [], color='#2ca02c', lw=2, label=f'Grows (> {growth_thresh} µm)'),
+                mlines.Line2D([], [], color='#7f7f7f', lw=2, label='Stable'),
+                mlines.Line2D([], [], color='#d62728', lw=2, label=f'Retracts (< -{growth_thresh} µm)')
+            ]
+            plt.legend(handles=handles, title='Phase / Behavior', loc='upper right')
+            
+        else:
+            sns.boxplot(data=df_combined, x='Trap', y='Length_um', color='lightgray', 
+                        showfliers=False, boxprops=dict(alpha=0.4), order=trap_order)
+            sns.stripplot(data=df_combined, x='Trap', y='Length_um', color='black', size=6, 
+                          jitter=True, edgecolor='black', linewidth=0.8, alpha=0.9, order=trap_order)
+
+        # Draw visual separator for the global summary column
+        plt.axvline(len(trap_order) - 1.5, color='black', ls='--', lw=1, alpha=0.5)
+
+        plt.title(f"Protrusion Length Dynamics ({cond_label})")
         plt.ylabel("Max Protrusion Length (µm)")
         plt.xlabel("Trap ID")
         plt.xticks(rotation=45)
@@ -214,6 +378,11 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
         traps = grouped_data[key]
         if not traps: continue
         cond_label = get_cond_label(traps[0].metadata)
+
+        # Compute shared x-axis window once — same logic as the other
+        # uptake multipanels.  Replaces the old hardcoded set_xlim(-5, 120).
+        x_min, x_max = _compute_common_uptake_xlim(traps)
+
         trap_groups = _group_by_trap_id(traps)
         sorted_ids = sorted(trap_groups.keys())
         n = len(sorted_ids)
@@ -267,13 +436,17 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
                     'total_std': np.nanstd(tm, axis=0)
                 }
             processed_trap_data[tid] = stats
-            
-            current_max = np.nanmax([
-                np.nanmax(stats['body_mean'] + stats['body_std']),
-                np.nanmax(stats['prot_mean'] + stats['prot_std']),
-                np.nanmax(stats['total_mean'] + stats['total_std'])
-            ])
-            if current_max > global_max_y: global_max_y = current_max
+
+            # Use only signal within the common window for the y-scale so
+            # one long-recording outlier doesn't push the axis out of range.
+            win = (ct >= x_min) & (ct <= x_max)
+            if np.any(win):
+                current_max = np.nanmax([
+                    np.nanmax(stats['body_mean'][win]  + stats['body_std'][win]),
+                    np.nanmax(stats['prot_mean'][win]  + stats['prot_std'][win]),
+                    np.nanmax(stats['total_mean'][win] + stats['total_std'][win])
+                ])
+                if current_max > global_max_y: global_max_y = current_max
 
         y_limit = global_max_y * 1.1 if global_max_y > 0 else 1.0
         fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
@@ -286,7 +459,7 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
             ax = axes[i]
             ax.set_title(f"Trap {tid}", fontsize=10, fontweight='bold')
             ax.set_ylim(-0.1, y_limit)
-            ax.set_xlim(-5, 120)
+            ax.set_xlim(x_min, x_max)
             d = processed_trap_data.get(tid)
             
             if d is not None:
@@ -310,47 +483,6 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
         plt.close()
 
 
-# FIX #8: Refactored to read from mechanics_df instead of recalculating slopes.
-# This eliminates duplication with bulk_mechanics pre/post slope logic.
-def plot_protrusion_recoil_velocity(mechanics_df: pd.DataFrame, output_dir: Path):
-    """
-    Boxplot of pre-pulse vs post-pulse protrusion slope for EP cells.
-    Reads pre-computed slopes from mechanics_results.csv.
-    """
-    logger.info("Generating Plot: Recoil Velocity...")
-
-    df_ep = mechanics_df[mechanics_df['Condition_Type'] == 'EP'].copy()
-    if df_ep.empty:
-        logger.info("  No EP data — skipping recoil velocity plot.")
-        return
-
-    df_ep['Cond'] = df_ep['Condition']
-
-    records = []
-    for _, row in df_ep.iterrows():
-        if pd.notna(row.get('Pre_Pulse_Slope')):
-            records.append({'Condition': row['Cond'], 'Slope': row['Pre_Pulse_Slope'], 'Period': 'Pre-Pulse'})
-        if pd.notna(row.get('Post_Pulse_Slope')):
-            records.append({'Condition': row['Cond'], 'Slope': row['Post_Pulse_Slope'], 'Period': 'Post-Pulse'})
-
-    if not records: return
-    df = pd.DataFrame(records)
-    plt.figure(figsize=(12, 7))
-    sns.boxplot(data=df, x='Condition', y='Slope', hue='Period', palette="viridis")
-    plt.axhline(0, c='k', ls=':')
-    plt.title("Protrusion Velocity")
-    plt.ylabel("Slope [µm/s]")
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    plt.savefig(output_dir / "Protrusion_Recoil_Velocity.png", dpi=SAVE_DPI)
-    plt.close()
-
-
-# FIX #3: Rewritten to use bm.fit_exponential_uptake() — the same function
-# that produces the tau values in mechanics_results.csv.  The old version
-# used a local fit_uptake_curve() helper that did NOT subtract a pre-pulse
-# baseline and handled pulse_frame differently, causing the annotated tau
-# values on this plot to disagree with the stored CSV values.
 def plot_uptake_exponential_fit(grouped_data, output_dir: Path):
     import bulk_mechanics as bm
 
@@ -393,75 +525,102 @@ def plot_uptake_exponential_fit(grouped_data, output_dir: Path):
     plt.savefig(output_dir / "Uptake_Exponential_TimeConstant.png", dpi=SAVE_DPI)
     plt.close()
 
-def plot_correlation_length_vs_uptake(grouped_data, output_dir: Path):
-    """FIX #4: Uses _safe_max() to handle empty arrays without crashing."""
-    logger.info("Generating Plot: Correlation...")
-    records = []
-    for key in sorted(grouped_data.keys()):
-        traps = grouped_data[key]
-        if not traps: continue
-        cond_label = get_cond_label(traps[0].metadata)
-        for trap in traps:
-            ml = _safe_max(trap.protrusion_data.get('Protrusion_Length_um', np.array([])))
-            # Try Total first, fall back to Body
-            total_arr = trap.uptake_data.get('Total_Normalized_dF_F0', np.array([]))
-            body_arr  = trap.uptake_data.get('Body_Normalized_dF_F0', np.array([]))
-            mu = _safe_max(total_arr) if len(total_arr) > 0 else _safe_max(body_arr)
-            records.append({'Condition': cond_label, 'Max_Length_um': ml, 'Max_Uptake': mu})
-    if not records: return
-    df = pd.DataFrame(records)
-    plt.figure(figsize=(10, 8))
-    sns.scatterplot(data=df, x='Max_Length_um', y='Max_Uptake', hue='Condition', s=100, alpha=0.8)
-    plt.title("Correlation: Length vs Uptake")
-    plt.xlabel("Max Protrusion Length (µm)")
-    plt.ylabel("Max Uptake (dF/F₀)")
-    plt.tight_layout()
-    plt.savefig(output_dir / "Correlation_Length_vs_Uptake.png", dpi=SAVE_DPI)
-    plt.close()
-
 def plot_per_trap_uptake_distribution(grouped_data, output_dir: Path):
-    logger.info("Generating Plot: Body vs Protrusion Uptake (Max per Exp)...")
+    """
+    Per-trap boxplot of the fitted exponential amplitude A (ADU) for each
+    region (Body, Protrusion, Total).
+
+    Uses absolute intensity (Body_Intensity / Protrusion_Intensity /
+    Total_Intensity) and the fitted amplitude A from fit_exponential_uptake(),
+    matching what is stored in the mechanics CSV.  This avoids the noise
+    sensitivity of a raw nanmax and keeps the plot consistent with the CSV.
+    """
+    import bulk_mechanics as bm
+
+    logger.info("Generating Plot: Body vs Protrusion Uptake Amplitude (ADU) per Trap...")
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
-        if not traps: continue
+        if not traps:
+            continue
         cond_label = get_cond_label(traps[0].metadata)
-        
+
         records = []
         for trap in sorted(traps, key=lambda t: t.trap_id):
             ud = trap.uptake_data
-            if 'Time_s' in ud:
-                at = align_time_to_pulse(ud['Time_s'], trap.metadata.pulse_frame, trap.metadata.condition_type)
-                mask = at > 0
-                if not np.any(mask): continue
-                
-                def get_max(col_name):
-                    if col_name in ud and len(ud[col_name]) > 0:
-                        valid_data = ud[col_name][mask]
-                        if len(valid_data) > 0: return float(np.nanmax(valid_data))
-                    return None
+            if 'Time_s' not in ud:
+                continue
 
-                val_b = get_max('Body_Normalized_dF_F0')
-                if val_b is not None: records.append({'Trap': f"T{trap.trap_id}", 'Max_I': val_b, 'Region': 'Body'})
-                val_p = get_max('Protrusion_Normalized_dF_F0')
-                if val_p is not None: records.append({'Trap': f"T{trap.trap_id}", 'Max_I': val_p, 'Region': 'Protrusion'})
-                val_t = get_max('Total_Normalized_dF_F0')
-                if val_t is not None: records.append({'Trap': f"T{trap.trap_id}", 'Max_I': val_t, 'Region': 'Total'})
+            # pulse_frame is only meaningful for EP cells; for ASP use 0
+            pf = (trap.metadata.pulse_frame
+                  if trap.metadata.condition_type == "EP"
+                  else 0)
 
-        if not records: continue
+            # Map each region label to its absolute-intensity column name
+            region_cols = [
+                ('Body',       'Body_Intensity'),
+                ('Protrusion', 'Protrusion_Intensity'),
+                ('Total',      'Total_Intensity'),
+            ]
+
+            for region_name, col_name in region_cols:
+                if col_name not in ud or len(ud[col_name]) == 0:
+                    continue
+
+                # Fit A*(1 - exp(-t/tau)) to the absolute signal.
+                # fit_exponential_uptake subtracts the pre-pulse baseline
+                # internally, so we pass the raw absolute array directly.
+                fit = bm.fit_exponential_uptake(
+                    ud['Time_s'], ud[col_name], pulse_frame=pf
+                )
+
+                # Only keep the amplitude if the fit converged
+                if fit['A'] is not None:
+                    records.append({
+                        'Trap'   : f"T{trap.trap_id}",
+                        'Amp_A'  : fit['A'],
+                        'Region' : region_name,
+                    })
+
+        if not records:
+            continue
+
         df = pd.DataFrame(records)
-        
+        df['Trap'] = df['Trap'].astype('category')
+
+        # Floor at 1 ADU so that near-zero fits don't break the log scale.
+        # Values below 1 ADU are indistinguishable from baseline noise anyway.
+        df['Amp_A'] = df['Amp_A'].clip(lower=1.0)
+
+        # Sort trap labels strictly by integer value (T2, T3, … T18)
+        trap_order = sorted(df['Trap'].unique(), key=lambda x: int(x[1:]))
+
         plt.figure(figsize=(16, 7))
-        sns.boxplot(data=df, x='Trap', y='Max_I', hue='Region', palette=PALETTE_REGION, showfliers=False, boxprops=dict(alpha=0.4))
-        sns.stripplot(data=df, x='Trap', y='Max_I', hue='Region', palette=PALETTE_REGION, size=6, jitter=True, dodge=True, edgecolor='black', linewidth=0.8, alpha=0.9)
-        
+        sns.boxplot(
+            data=df, x='Trap', y='Amp_A', hue='Region',
+            palette=PALETTE_REGION,
+            showfliers=False, boxprops=dict(alpha=0.4),
+            order=trap_order,
+        )
+        sns.stripplot(
+            data=df, x='Trap', y='Amp_A', hue='Region',
+            palette=PALETTE_REGION,
+            size=6, jitter=True, dodge=True,
+            edgecolor='black', linewidth=0.8, alpha=0.9,
+            order=trap_order,
+        )
+
+        plt.yscale('log')
+        plt.ylim(bottom=0.5)
+
         handles, labels = plt.gca().get_legend_handles_labels()
         plt.legend(handles[:3], labels[:3], title='Region', loc='upper right')
-        
-        plt.title(f"Max Uptake Intensity per Experiment - {cond_label}")
-        plt.ylabel("Max Normalized Intensity (dF/F0)")
+
+        plt.title(f"Uptake Amplitude per Trap - {cond_label}")
+        plt.ylabel("Fitted Amplitude A (ADU, absolute intensity)")
         plt.xlabel("Trap ID")
         plt.xticks(rotation=45)
         plt.tight_layout()
+
         save_name = f"Uptake_Dist_BodyVsProt_{cond_label}.png"
         plt.savefig(output_dir / save_name, dpi=SAVE_DPI)
         plt.close()
@@ -482,6 +641,12 @@ def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
         traps = grouped_data[key]
         if not traps: continue
         cond_label = get_cond_label(traps[0].metadata)
+
+        # Compute shared x-axis window once per group so every panel uses
+        # the same time range.  This mirrors the common-duration logic in
+        # bulk_mechanics and prevents long-recording outliers from compressing
+        # all other panels.
+        x_min, x_max = _compute_common_uptake_xlim(traps)
         
         trap_groups = _group_by_trap_id(traps)
         sorted_ids = sorted(trap_groups.keys())
@@ -500,6 +665,7 @@ def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
             ax = axes[i]
             trap_list = trap_groups[tid]
             ax.set_title(f"Trap {tid}", fontsize=10, fontweight='bold')
+            ax.set_xlim(x_min, x_max)
             for trap in trap_list:
                 ud = trap.uptake_data
                 if 'Time_s' not in ud: continue
@@ -592,6 +758,9 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
         traps = grouped_data[key]
         if not traps: continue
         cond_label = get_cond_label(traps[0].metadata)
+
+        # Shared x-axis window for all panels in this group
+        x_min, x_max = _compute_common_uptake_xlim(traps)
         
         trap_groups = _group_by_trap_id(traps)
         sorted_ids = sorted(trap_groups.keys())
@@ -602,10 +771,16 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
         for trap in traps:
             ud = trap.uptake_data
             if 'Time_s' not in ud: continue
+            at = align_time_to_pulse(ud['Time_s'], trap.metadata.pulse_frame,
+                                     trap.metadata.condition_type)
+            # Only consider signal within the common window when setting y-scale
+            win_mask = (at >= x_min) & (at <= x_max)
             for col in ['Body_Normalized_dF_F0', 'Protrusion_Normalized_dF_F0', 'Total_Normalized_dF_F0']:
                 if col in ud and len(ud[col]) > 0:
-                    current_max = np.nanmax(ud[col])
-                    if current_max > global_max_y: global_max_y = current_max
+                    vals = ud[col][win_mask]
+                    if len(vals) > 0:
+                        current_max = np.nanmax(vals)
+                        if current_max > global_max_y: global_max_y = current_max
         
         y_limit = global_max_y * 1.1 if global_max_y > 0 else 1.0
 
@@ -622,6 +797,7 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
             trap_list = trap_groups[tid]
             ax.set_title(f"Trap {tid}", fontsize=10, fontweight='bold')
             ax.set_ylim(-0.1, y_limit)
+            ax.set_xlim(x_min, x_max)
             
             for trap in trap_list:
                 ud = trap.uptake_data
@@ -1131,6 +1307,7 @@ def plot_model_independent_comparison(mechanics_df: pd.DataFrame, output_dir: Pa
             sns.stripplot(data=df_lin, x='Cond', y='Linear_Slope', order=sorted_conds,
                           color='black', alpha=0.5, ax=axes[0], size=5)
         axes[0].axhline(0, color='black', lw=0.8, ls=':')
+        axes[0].set_ylim(-2, 2)
     axes[0].set_title("Linear Slope (aspiration phase)", fontweight='bold')
     axes[0].set_ylabel("Slope (µm/s)")
     axes[0].set_xlabel("")
@@ -1197,6 +1374,7 @@ def plot_model_independent_comparison(mechanics_df: pd.DataFrame, output_dir: Pa
                       dodge=True, palette='dark:black', alpha=0.5,
                       legend=False, order=ep_conds, size=5)
         plt.axhline(0, color='black', lw=0.8, ls=':')
+        plt.ylim(-2, 2)
         plt.title("Pre vs Post-Pulse Protrusion Slope (EP Cells)", fontweight='bold')
         plt.ylabel("Slope (µm/s)")
         plt.xlabel("")
@@ -1258,26 +1436,289 @@ def plot_uptake_tau_boxplot(mechanics_df: pd.DataFrame, output_dir: Path) -> Non
     plt.close()
 
 def plot_spearman_correlation(df_scalars: pd.DataFrame, output_dir: Path) -> None:
-    cols_to_drop = ['Condition', 'Trap_ID']
-    df_numeric = df_scalars.drop(columns=[c for c in cols_to_drop if c in df_scalars.columns])
-    df_numeric = df_numeric.select_dtypes(include=[np.number])
-    df_numeric = df_numeric.loc[:, df_numeric.nunique() > 1]
-    if df_numeric.shape[1] < 2: return
-        
-    corr_matrix = df_numeric.corr(method='spearman')
-    fig, ax = plt.subplots(figsize=(16, 14))
-    sns.heatmap(corr_matrix, annot=False, cmap='coolwarm', vmin=-1, vmax=1,
-                center=0, square=True, linewidths=0.5,
-                cbar_kws={"shrink": 0.8, "label": "Spearman ρ"}, ax=ax)
+    # cols_to_drop = [
+    #     'Prot_Frame', 'Prot_Protrusion_Length_px', 'Prot_Linear_Size_Prot_um',
+    #     'Prot_Linear_Size_Body_um', 'Prot_Linear_Size_Total_um', 'Prot_Total_Area_um2',
+    #     'Prot_Volume_Prot_um3', 'Prot_Volume_Body_um3', 'Prot_Volume_Total_um3',
+    #     'Prot_Downstream_Intensity', 'Uptake_Protrusion_Area_um2',
+    #     'Uptake_Body_Area_um2', 'Uptake_Total_Area_um2', 'Uptake_Linear_Size_Prot_um',
+    #     'Uptake_Linear_Size_Body_um', 'Uptake_Linear_Size_Total_um',
+    #     'Uptake_Volume_Prot_um3', 'Uptake_Volume_Body_um3', 'Uptake_Volume_Total_um3',
+    #     'Uptake_Total_Intensity', 'Uptake_Protrusion_Intensity', 'Uptake_Tip_Intensity',
+    #     'Uptake_Body_Intensity', 'Uptake_Total_MinMax', 'Uptake_Protrusion_MinMax',
+    #     'Uptake_Tip_MinMax', 'Uptake_Body_MinMax', 'Uptake_Total_Normalized_dF_F0', 'Trap_ID']
     
-    ax.set_title("Spearman Correlation of Morphological and Fluorescent Metrics",
-                 pad=20, weight='bold')
-    plt.xticks(rotation=45, ha='right', fontsize=8)
-    plt.yticks(fontsize=8)
+    
+    nice_names = {
+        'Duration_ms': 'Pulse Duration [ms]',
+        'Trap_ID': 'Trap No.',
+        'Prot_Body_Solidity': 'Body Solidity',
+        'Prot_Body_Area_um2': 'Body Area [µm^2]',
+        'Prot_Protrusion_Area_um2': 'Protrusion Area [µm^2]',
+        'Prot_Protrusion_Length_um': 'Protrusion Length [µm]',
+        'Uptake_Body_Abs_A': 'Body Uptake A (ADU)',
+        'Uptake_Prot_Abs_A': 'Protrusion Uptake A (ADU)',
+        'Uptake_Total_Abs_A': 'Total Uptake A (ADU)',
+    }
+    
+    # Explicitly select only the desired columns in the specified order
+    cols_to_keep = [col for col in nice_names.keys() if col in df_scalars.columns]
+    
+    # We must also keep 'Condition' for the loop later, so we grab it separately
+    # but don't rename it in the nice_names dict.
+    df_clean = df_scalars[['Condition'] + cols_to_keep].copy() if 'Condition' in df_scalars.columns else df_scalars[cols_to_keep].copy()
+    df_clean = df_clean.rename(columns=nice_names)
+    
+    def _plot_and_save(df_subset: pd.DataFrame, filename_prefix: str, title: str):
+        df_numeric = df_subset.select_dtypes(include=[np.number])
+        df_numeric = df_numeric.loc[:, df_numeric.nunique() > 1]
+        
+        if df_numeric.shape[1] < 2: 
+            return
+            
+        corr_matrix = df_numeric.corr(method='spearman')
+        
+        # Generate mask for the upper triangle
+        mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+        
+        fig, ax = plt.subplots(figsize=(16, 14))
+        sns.heatmap(corr_matrix, mask=mask, annot=False, cmap='coolwarm', vmin=-1, vmax=1,
+                    center=0, square=True, linewidths=0.5,
+                    cbar_kws={"shrink": 0.8, "label": "Spearman ρ"}, ax=ax)
+        
+        if ax.figure.axes[-1]:
+            ax.figure.axes[-1].yaxis.label.set_size(16)
+            ax.figure.axes[-1].tick_params(labelsize=14)
+        
+        ax.set_title(title, pad=20, weight='bold', fontsize=20)
+        plt.xticks(rotation=45, ha='right', fontsize=14)
+        plt.yticks(fontsize=14)
+        plt.tight_layout()
+        plt.savefig(output_dir / f"{filename_prefix}.png", dpi=300)
+        plt.close(fig)
+        corr_matrix.to_csv(output_dir / f"{filename_prefix}.csv")
+
+    logger.info("Generating Plot: Spearman Correlation (Combined)...")
+    _plot_and_save(
+        df_clean, 
+        "spearman_correlation_heatmap_combined", 
+        "Spearman Correlation of Morphological and Fluorescent Metrics (All Data)"
+    )
+
+    if 'Condition' in df_clean.columns:
+        for cond in sorted(df_clean['Condition'].dropna().unique()):
+            df_cond = df_clean[df_clean['Condition'] == cond]
+            safe_cond = str(cond).replace(' ', '_')
+            
+            if len(df_cond) >= 3:
+                logger.info(f"Generating Plot: Spearman Correlation for {cond}...")
+                _plot_and_save(
+                    df_cond, 
+                    f"spearman_correlation_heatmap_{safe_cond}", 
+                    f"Spearman Correlation - {cond}"
+                )
+            else:
+                logger.debug(f"Skipping correlation for {cond}: insufficient data points (n={len(df_cond)}).")
+    
+def plot_parameter_pairplot(df_scalars: pd.DataFrame, output_dir: Path) -> None:
+    nice_names = {
+        'Trap_ID': 'Trap No.',
+        'Prot_Body_Solidity': 'Body Solidity',
+        'Prot_Body_Area_um2': 'Body Area [µm^2]',
+        'Prot_Protrusion_Area_um2': 'Protrusion Area [µm^2]',
+        'Prot_Protrusion_Length_um': 'Protrusion Length [µm]',
+        'Uptake_Body_Abs_A': 'Body Uptake A (ADU)',
+        'Uptake_Prot_Abs_A': 'Protrusion Uptake A (ADU)',
+        'Uptake_Total_Abs_A': 'Total Uptake A (ADU)',
+        'Duration_ms': 'Pulse Duration [ms]',
+    }
+    
+    cols_to_keep = [col for col in nice_names.keys() if col in df_scalars.columns]
+    df_clean = df_scalars[['Condition'] + cols_to_keep].copy() if 'Condition' in df_scalars.columns else df_scalars[cols_to_keep].copy()
+    df_clean = df_clean.rename(columns=nice_names)
+    
+    def _plot_and_save_pairplot(df_subset: pd.DataFrame, filename: str, title: str):
+        # 1. Force numeric conversion and float casting
+        df_num = df_subset.copy()
+        for col in df_num.columns:
+            if col != 'Condition':
+                df_num[col] = pd.to_numeric(df_num[col], errors='coerce').astype(float)
+        
+        df_numeric = df_num.select_dtypes(include=[np.number]).dropna(axis=1, how='all')
+        
+        # 2. Filter out constants (like Pulse Duration) using variance threshold
+        # Handles floating point noise (e.g. 0.1 vs 0.1000000001)
+        cols_with_variance = []
+        for col in df_numeric.columns:
+            if df_numeric[col].dropna().nunique() > 1:
+                # Use epsilon threshold of 10^-9
+                if (df_numeric[col].max() - df_numeric[col].min()) > 1e-9:
+                    cols_with_variance.append(col)
+        
+        df_numeric = df_numeric[cols_with_variance]
+        
+        if df_numeric.shape[1] < 2: 
+            return
+
+        # 3. Generate the plot
+        g = sns.pairplot(df_numeric, corner=True, diag_kind='kde',
+                         plot_kws={'alpha': 0.6, 's': 40, 'edgecolor': 'w', 'linewidth': 0.5})
+        
+        g.fig.suptitle(title, y=1.02, weight='bold', fontsize=16)
+
+        # --- THE "FORCE-MANUAL" LABEL OVERRIDE ---
+        # We iterate through the leftmost axes of every row
+        for i, col_name in enumerate(df_numeric.columns):
+            ax = g.axes[i, 0] # Leftmost axis of row i
+            if ax is not None:
+                # Set the label explicitly
+                ax.set_ylabel(col_name, fontsize=12, fontweight='bold', rotation=90)
+                
+                # CRITICAL: Diagonal axes have labelleft=False by default in corner mode.
+                # We turn on the axis ticks for the anchor, but we can keep the 
+                # numeric labels (0.0, 0.5, etc.) hidden if you prefer.
+                ax.tick_params(axis='y', left=True, labelleft=False)
+                
+                # Ensure the label is actually visible and not clipped
+                ax.get_yaxis().set_visible(True)
+
+        # 4. Clean up x-axis labels (Bottom row)
+        for j, col_name in enumerate(df_numeric.columns):
+            ax = g.axes[-1, j]
+            if ax is not None:
+                ax.set_xlabel(col_name, fontsize=12, fontweight='bold')
+
+        plt.savefig(output_dir / filename, dpi=300, bbox_inches='tight')
+        plt.close(g.fig)
+
+    # Execution logic...
+    if 'Condition' in df_clean.columns:
+        for cond in sorted(df_clean['Condition'].dropna().unique()):
+            df_cond = df_clean[df_clean['Condition'] == cond]
+            if len(df_cond) >= 3:
+                _plot_and_save_pairplot(df_cond, f"spearman_parameter_pairplot_{str(cond).replace(' ', '_')}.png", f"Pair Plot - {cond}")
+
+# =============================================================================
+# HELPER: Body size column detection
+# =============================================================================
+
+def _find_body_size_column(pd_data: Dict[str, np.ndarray]) -> Optional[str]:
+    """
+    Searches the protrusion data dict for a column representing cell body size.
+
+    Priority order: direct linear dimension first (preferred), then area
+    columns (caller must take sqrt to convert to a linear scale).
+
+    Returns
+    -------
+    str : column name, or None if nothing suitable is found.
+    """
+    priority = [
+        'Body_Length_um',
+        'Body_Major_Axis_um',
+        'Cell_Body_Length_um',
+        'Body_Minor_Axis_um',
+        'Body_Width_um',
+        'Body_Area_um2',
+        'Cell_Body_Area_um2',
+    ]
+    for col in priority:
+        if col in pd_data and len(pd_data[col]) > 0:
+            return col
+    # Fallback: any column whose name contains both 'body' and a size keyword
+    for col in pd_data:
+        col_l = col.lower()
+        if 'body' in col_l and any(k in col_l for k in ('length', 'area', 'axis', 'width')):
+            return col
+    return None
+
+
+# =============================================================================
+# EP POST-PULSE BEHAVIOR PLOT
+# =============================================================================
+
+def plot_ep_post_pulse_behavior(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
+    """
+    Two-panel stacked bar chart showing the fraction and raw count of EP traps
+    classified as 'Extends', 'Stable', or 'Retracts' immediately after the
+    electroporation pulse, per condition.
+
+    The classification threshold is controlled by
+    bulk_mechanics.EP_BEHAVIOR_SLOPE_THRESHOLD.  Results are also written to a
+    CSV for downstream statistical testing.
+    """
+    logger.info("Generating: EP Post-Pulse Behavior chart...")
+    if mechanics_df is None or mechanics_df.empty:
+        return
+
+    df = mechanics_df[
+        (mechanics_df['Condition_Type'] == 'EP') &
+        mechanics_df['EP_Post_Pulse_Behavior'].notna()
+    ].copy()
+
+    if df.empty:
+        logger.info("  No EP behavior data found — skipping.")
+        return
+
+    df['Cond'] = df.apply(_cond_label_from_row, axis=1)
+    sorted_conds = sorted(df['Cond'].unique())
+
+    # Build counts table; ensure all three categories are present
+    counts = (df.groupby(['Cond', 'EP_Post_Pulse_Behavior'])
+                .size()
+                .unstack(fill_value=0)
+                .reindex(sorted_conds, fill_value=0))
+    for cat in ('Extends', 'Stable', 'Retracts'):
+        if cat not in counts.columns:
+            counts[cat] = 0
+    col_order = ['Extends', 'Stable', 'Retracts']
+    counts    = counts[col_order]
+    totals    = counts.sum(axis=1)
+    fractions = counts.div(totals.replace(0, np.nan), axis=0).fillna(0)
+
+    palette = {'Extends': '#2ca02c', 'Stable': '#1f77b4', 'Retracts': '#d62728'}
+    colors  = [palette[c] for c in col_order]
+
+    fig, axes = plt.subplots(1, 2, figsize=(max(10, len(sorted_conds) * 2.5), 5))
+
+    # Panel 1 — raw counts
+    counts.plot(kind='bar', stacked=True, ax=axes[0], color=colors, legend=False)
+    axes[0].set_title("Post-Pulse Protrusion Behavior\n(raw counts)", fontweight='bold')
+    axes[0].set_ylabel("Number of Traps")
+    axes[0].set_xlabel("")
+    axes[0].tick_params(axis='x', rotation=45)
+    # Annotate total n per bar
+    for j, cond in enumerate(sorted_conds):
+        n_total = int(totals.loc[cond])
+        axes[0].text(j, n_total + 0.2, f"n={n_total}", ha='center',
+                     va='bottom', fontsize=8)
+
+    # Panel 2 — fractions
+    fractions.plot(kind='bar', stacked=True, ax=axes[1], color=colors)
+    axes[1].set_title("Post-Pulse Protrusion Behavior\n(fraction)", fontweight='bold')
+    axes[1].set_ylabel("Fraction of Traps")
+    axes[1].set_xlabel("")
+    axes[1].set_ylim(0, 1.05)
+    axes[1].tick_params(axis='x', rotation=45)
+    axes[1].legend(title='Behavior', loc='upper right', fontsize=9)
+
+    plt.suptitle(
+        "EP Protrusion Behavior Immediately After Pulse",
+        fontweight='bold', y=1.02)
     plt.tight_layout()
-    plt.savefig(output_dir / "spearman_correlation_heatmap.png", dpi=300)
-    plt.close(fig)
-    corr_matrix.to_csv(output_dir / "spearman_correlation_matrix.csv")
+    plt.savefig(output_dir / "EP_PostPulse_Behavior.png",
+                dpi=SAVE_DPI, bbox_inches='tight')
+    plt.close()
+
+    # Save count table for downstream stats
+    counts['Total'] = totals
+    counts.to_csv(output_dir / "EP_PostPulse_Behavior_Counts.csv")
+    logger.info("  EP post-pulse behavior chart saved.")
+
+
+# =============================================================================
+# UPTAKE vs LINEAR SIZE — per-trap 2×2 figures
+# =============================================================================
 
 def plot_slope_comparison(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     """Three-panel slope comparison: full-trace slope, EP pre-vs-post, and delta."""
@@ -1299,6 +1740,7 @@ def plot_slope_comparison(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
         sns.stripplot(data=df[valid], x='Cond', y='Linear_Slope', hue='Condition_Type',
                       palette=palette, dodge=True, alpha=0.6, jitter=True, ax=ax, legend=False)
     ax.axhline(0, color='black', linewidth=0.8, linestyle='--')
+    ax.set_ylim(-2, 2)
     ax.set_title("Full-trace creep slope")
     ax.set_ylabel("Slope [µm/s]")
     ax.set_xlabel("")
@@ -1322,6 +1764,7 @@ def plot_slope_comparison(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
                           palette={'Pre-pulse': '#ff7f0e', 'Post-pulse': '#9467bd'},
                           dodge=True, alpha=0.6, jitter=True, ax=ax, legend=False)
     ax.axhline(0, color='black', linewidth=0.8, linestyle='--')
+    ax.set_ylim(-2, 2)
     ax.set_title("EP: pre-pulse vs post-pulse slope")
     ax.set_ylabel("Slope [µm/s]")
     ax.set_xlabel("")
@@ -1338,6 +1781,7 @@ def plot_slope_comparison(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
             sns.stripplot(data=df_ep[valid_d], x='Cond', y='Delta_Slope', color='black',
                           alpha=0.6, jitter=True, ax=ax)
     ax.axhline(0, color='black', linewidth=0.8, linestyle='--')
+    ax.set_ylim(-2, 2)
     ax.set_title("EP: Δslope (post − pre)")
     ax.set_ylabel("ΔSlope [µm/s]")
     ax.set_xlabel("")
@@ -1403,7 +1847,7 @@ def plot_uptake_asp_vs_ep(grouped_data: Dict, output_dir: Path) -> None:
 
             ax.axvline(0, color='black', linestyle=':', linewidth=0.8, label='Pulse')
             ax.set_xlabel("Time from pulse [s]")
-            ax.set_ylabel(f"{region_label} dF/F₀")
+            ax.set_ylabel(f"{region_label} dF/F0")
             ax.set_title(f"{region_label} Uptake")
             ax.legend(fontsize=9)
 

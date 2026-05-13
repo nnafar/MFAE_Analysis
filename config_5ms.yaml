@@ -13,13 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\260128_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10'
+  data_folder: 'D:\5ms_100V\260114_MDAMB231_WT_Chip1_Experiment5-1100Pa-100V-5ms-frame10'
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "260128_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
+  experiment_id: "260114_MDAMB231_WT_Chip1_Experiment5-1100Pa-100V-5ms-frame10"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -34,7 +34,7 @@ experiment_parameters:
   constant_pressure: 1100  # [Pascals] 
   
   # Time between frames. (Used as a backup if image metadata is missing).
-  frame_interval: 0.14      # [Seconds]
+  frame_interval: 1.75      # [Seconds]
   
   # Maximum number of traps to process (prevents infinite loops if detection fails)
   max_traps: 18            
@@ -108,6 +108,44 @@ rupture_detection:
   
   # --- TIMING & CELL PRESENCE ---
   entry_protrusion_threshold_um: 5.0  # Protrusion length marking cell entry
+
+  # --- DEBRIS / PRE-ENTRY ARTIFACT FILTER ---
+  # Prevents debris or a dead cell already inside the channel from being detected
+  # as the true cell entry event.  Two conditions must BOTH be true for a frame
+  # to count as genuine entry.  Neither condition depends on cell size.
+  #
+  # Condition 1 — protrusion is not clamped at the ROI boundary.
+  #   When debris fills the full channel, the protrusion measurement hits the
+  #   ROI edge and reports a flat maximum (typically ~40 µm = channel_length_um).
+  #   Real protrusions are always well inside the ROI (5–15 µm for typical cells).
+  #   Any protrusion >= entry_max_prot_fraction × channel_length_um is rejected.
+  #   The 0.9 default gives 10 % tolerance for rounding; rarely needs changing.
+  entry_max_prot_fraction: 0.9
+
+  # Condition 2 — a cell body is present at the channel entrance.
+  #   This is a NOISE FLOOR only, not a cell-size discriminator.
+  #   Any real cell body (large or small) is much larger than 10 µm².
+  #   Image artefacts or single-pixel noise are typically < 5 µm².
+  #   Only lower this if very small cells are being missed; raising it
+  #   risks missing genuine entries and should be avoided.
+  entry_body_area_min_um2: 10.0
+
+  # Condition 3 — entry must be sustained for N consecutive frames.
+  #   A cell that briefly touches the entrance and retracts (transient contact,
+  #   passing debris) passes conditions 1 and 2 for only 1–2 frames.
+  #   A cell that genuinely seats itself takes several frames to decelerate.
+  #   Requiring N consecutive valid frames blocks these brief contacts without
+  #   any cell-size dependency.
+  #
+  #   If no sustained valid run is ever found (e.g. protrusion always clamped),
+  #   the trap is flagged as indeterminate and rupture detection is skipped
+  #   entirely rather than defaulting to frame 0 and firing false positives.
+  #
+  #   Tuning guide:
+  #     3 (default) — correct for most experiments; blocks 1–2 frame contacts.
+  #     Raise to 5 if slow-frame-rate recordings still show false entries.
+  #     Lower to 2 only if the cell enters and immediately exits (very rare).
+  entry_confirmed_frames: 3
   exit_protrusion_threshold_um: 0.5   # Absolute length indicating the cell left the trap
   exit_drop_ratio: 0.05               # Fractional drop (95% of its length) from previous frame indicating cell slip
   exit_sustained_frames: 3            # Number of consecutive frames the length must remain dropped
@@ -300,7 +338,7 @@ workflow_settings:
   
   # Setup Screen: Which part of the video to show during setup? (0.5 = Middle of video).
   # This is ignored when guv_settings.enable is True (guv_settings.selection_frame_index is used instead).
-  selection_frame_fraction: 0.3
+  selection_frame_fraction: 0.1
 
 # ===================================================================
 # --- 7. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---

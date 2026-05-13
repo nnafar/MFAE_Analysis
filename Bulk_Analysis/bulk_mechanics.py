@@ -56,6 +56,22 @@ CHANNEL_WIDTH_UM  = 6.7   # microfluidic channel width  [um]
 CHANNEL_HEIGHT_UM = 5.0   # microfluidic channel height [um]
 HALFSPACE_C       = 1.0   # geometric half-space constant (Davidson convention)
 
+# Minimum post-pulse slope (µm/s) required to call a protrusion as extending
+# or retracting.  Below this threshold the protrusion is classified as stable.
+# Adjust based on measurement noise floor.
+EP_BEHAVIOR_SLOPE_THRESHOLD: float = 0.02
+
+# Pre-pulse dye contamination threshold (MinMax scale, 0–1).
+# If Protrusion_MinMax or Body_MinMax exceeds this value in any frame before
+# the pulse, the cell is flagged as contaminated (either Pre_Leaky or
+# Pre_Loaded -- see BLOCK D in _run_trap_mechanics).
+#
+# Empirical gap from the training set: clean cells peak at ≤ 0.04 pre-pulse;
+# contaminated cells start at ≥ 0.43.  0.10 sits comfortably in the middle
+# and is conservative enough to tolerate modest baseline drift without
+# generating false positives.
+PRE_PULSE_MINMAX_THRESHOLD: float = 0.10
+
 # =============================================================================
 # 2.  GEOMETRY -- Son (2007)
 # =============================================================================
@@ -664,6 +680,95 @@ def compute_common_duration(traps: List[bfh.TrapData],
     return common
 
 
+def compute_common_ep_pre_duration(traps: List[bfh.TrapData],
+                                   rupture_fraction: float = 0.20) -> Optional[float]:
+    """
+    Finds the shortest common pre-pulse aspiration window (in seconds) across
+    all EP traps in a group, so that model-independent fits use the same time
+    horizon for every replicate.
+
+    Different experiment folders in the same condition group may have slightly
+    different pulse_frame values, which means the pre-pulse window in seconds
+    can vary.  Truncating all traces to the same duration makes slope and
+    power-law exponent directly comparable.
+
+    Traces where the computed pre-pulse duration is less than
+    `rupture_fraction` of the group median are excluded from setting the
+    window (these are likely malformed recordings with an unusually early
+    pulse trigger).
+
+    Returns None if fewer than 2 valid EP traps are found.
+    """
+    pre_durations = []
+    for trap in traps:
+        if trap.metadata.condition_type != "EP":
+            continue
+        t  = trap.protrusion_data.get('Time_s', np.array([]))
+        pf = trap.metadata.pulse_frame
+        if len(t) < 5 or not (0 < pf < len(t)):
+            continue
+        pre_dur = float(t[pf] - t[0])
+        if pre_dur > 0:
+            pre_durations.append(pre_dur)
+
+    if len(pre_durations) < 2:
+        return None
+
+    median_dur       = float(np.median(pre_durations))
+    threshold        = rupture_fraction * median_dur
+    normal_durations = [d for d in pre_durations if d >= threshold]
+
+    if len(normal_durations) < 2:
+        return None
+
+    common = float(min(normal_durations))
+    logger.info(
+        f"  EP common pre-pulse duration: {common:.1f} s "
+        f"(median={median_dur:.1f}, {len(pre_durations)-len(normal_durations)} "
+        f"outliers excluded)"
+    )
+    return common
+
+
+def compute_common_ep_post_duration(traps: List[bfh.TrapData],
+                                    max_window_s: float = 5.0) -> Optional[float]:
+    """
+    Finds the shortest common post-pulse recording window (in seconds) across
+    all EP traps in a group, capped at `max_window_s`.
+
+    Used to ensure the post-pulse slope (and therefore the Extends / Stable /
+    Retracts classification) is computed over the same time window for every
+    replicate.  Traces that end before the pulse frame are skipped.
+
+    Parameters
+    ----------
+    max_window_s : hard cap on the window (default 5 s).  Post-pulse dynamics
+                   are typically assessed over the first 2–5 seconds; a longer
+                   window would mix the immediate mechanical response with
+                   slower membrane recovery.
+
+    Returns None if fewer than 2 valid EP traps are found.
+    """
+    post_durations = []
+    for trap in traps:
+        if trap.metadata.condition_type != "EP":
+            continue
+        t  = trap.protrusion_data.get('Time_s', np.array([]))
+        pf = trap.metadata.pulse_frame
+        if len(t) < 5 or not (0 < pf < len(t)):
+            continue
+        post_dur = float(t[-1] - t[pf])
+        if post_dur > 0:
+            post_durations.append(post_dur)
+
+    if len(post_durations) < 2:
+        return None
+
+    common = float(min(min(post_durations), max_window_s))
+    logger.info(f"  EP common post-pulse window: {common:.1f} s")
+    return common
+
+
 # =============================================================================
 # 12.  CONDITION LABEL HELPER
 # =============================================================================
@@ -682,7 +787,9 @@ def _make_condition_label(meta: bfh.ExperimentMetadata) -> str:
 
 def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                         r2_floor: float = 0.0,
-                        common_duration_s: Optional[float] = None) -> Dict:
+                        common_duration_s: Optional[float] = None,
+                        common_ep_pre_s: Optional[float] = None,
+                        common_ep_post_s: Optional[float] = None) -> Dict:
     """
     Runs all applicable fits for one trap and returns a flat row dict.
 
@@ -699,20 +806,25 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                         duration (in seconds from cell entry) before
                         fitting. This makes fits comparable across
                         experiments with different recording lengths.
+    common_ep_pre_s   : if provided, EP pre-pulse window for MI fitting is
+                        truncated to this duration (seconds before the pulse).
+    common_ep_post_s  : if provided, the post-pulse slope window for EP
+                        behavior classification is capped at this value.
 
     Output columns
     --------------
     Identity    : Date, Cell_Type, Treatment, Experiment_Number, Pressure_Pa,
                   Voltage_V, Duration_ms, Duration_label, Condition_Type,
-                  Condition, Trap_ID, Son_Factor_fstar
+                  Condition, Trap_ID, Experiment_Folder, Son_Factor_fstar
     Viscoelastic: Best_Model, E_Pa, eta1_Pa_s, eta2_Pa_s, Tau_s,
                   Visco_R2, Visco_BIC, Visco_DW, Visco_R2_Flag,
                   Common_Duration_s
     Model-indep : MI_Best_Model, Linear_Slope, Linear_Intercept, Linear_R2,
                   Linear_BIC, PL_a, PL_b, PL_R2, PL_BIC,
                   MI_Window_Duration_s, MI_N_Points
-    EP slopes   : Pre_Pulse_Slope, Post_Pulse_Slope
-    Uptake      : Uptake_Body_tau, Uptake_Body_R2,
+    EP slopes   : Pre_Pulse_Slope, Post_Pulse_Slope, EP_Post_Pulse_Behavior
+    Uptake      : Uptake_PrePulse_QC,
+                  Uptake_Body_tau, Uptake_Body_R2,
                   Uptake_Prot_tau, Uptake_Prot_R2,
                   Uptake_Total_tau, Uptake_Total_R2
     """
@@ -734,7 +846,9 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         # FIX #11: Pre-built composite label for quick filtering in Excel/Prism.
         'Condition'         : _make_condition_label(meta),
         'Trap_ID'           : trap.trap_id,
-        # NOTE #12: fstar is loaded from the shear CSV and stored here for
+        # Original folder name for traceability, e.g.
+        # "260129_MDAMB231_WT_Chip1_Experiment7-1100Pa-100V-100us-frame35"
+        'Experiment_Folder' : meta.full_path.name,
         # reference/traceability. It is NOT used to override compute_reff()
         # because the theoretical f* and the shear-CSV f* should agree for
         # the standard device geometry. If you use a non-standard device,
@@ -765,12 +879,37 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         'MI_Window_Duration_s'  : None,
         'MI_N_Points'           : None,
         # EP pre/post pulse slopes
-        'Pre_Pulse_Slope'   : None,
-        'Post_Pulse_Slope'  : None,
-        # Uptake taus
-        'Uptake_Body_tau'   : None, 'Uptake_Body_R2'  : None,
-        'Uptake_Prot_tau'   : None, 'Uptake_Prot_R2'  : None,
-        'Uptake_Total_tau'  : None, 'Uptake_Total_R2' : None,
+        'Pre_Pulse_Slope'       : None,
+        'Post_Pulse_Slope'      : None,
+        # EP post-pulse protrusion behavior classification
+        # 'Extends' | 'Stable' | 'Retracts'
+        'EP_Post_Pulse_Behavior': None,
+        # Pre-pulse dye contamination QC (EP only).
+        # 'Clean'        : no significant dye before the pulse.
+        # 'Pre_Leaky'    : MinMax rises into the threshold during the pre-pulse
+        #                  window (membrane was already permeable; Trap 2 pattern).
+        # 'Pre_Loaded'   : MinMax already above threshold at the first recorded
+        #                  frame (cell contained dye before recording started;
+        #                  Trap 7 pattern).  Also fires when recording began late
+        #                  and the first frame is already contaminated (Trap 4
+        #                  pattern -- the subtype is then ambiguous).
+        # 'No_Data'      : uptake CSV missing or too short to evaluate.
+        # 'N/A'          : ASP condition (no pulse; concept does not apply).
+        'Uptake_PrePulse_QC'    : None,
+        # Uptake exponential fit — dF/F0 normalised signals (kept for backward compat).
+        'Uptake_Body_tau'   : None, 'Uptake_Body_R2'  : None, 'Uptake_Body_A'  : None,
+        'Uptake_Prot_tau'   : None, 'Uptake_Prot_R2'  : None, 'Uptake_Prot_A'  : None,
+        'Uptake_Total_tau'  : None, 'Uptake_Total_R2' : None, 'Uptake_Total_A' : None,
+        # Uptake exponential fit — absolute ΔF (ADU, background-subtracted).
+        # Comparable across body/protrusion/total; use these for spatial analysis.
+        'Uptake_Body_Abs_tau'  : None, 'Uptake_Body_Abs_R2'  : None, 'Uptake_Body_Abs_A'  : None,
+        'Uptake_Prot_Abs_tau'  : None, 'Uptake_Prot_Abs_R2'  : None, 'Uptake_Prot_Abs_A'  : None,
+        'Uptake_Total_Abs_tau' : None, 'Uptake_Total_Abs_R2' : None, 'Uptake_Total_Abs_A' : None,
+        # Cell size proxies: median area over the 10 frames immediately before the
+        # pulse (last 10 frames for ASP).  Captures the stable aspirated state
+        # rather than the cell-entry transient.
+        'Cell_Body_Area_um2': None,
+        'Cell_Prot_Area_um2': None,
     }
 
     time_raw   = pd_data.get('Time_s',               np.array([]))
@@ -802,6 +941,30 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
             f"pulse_frame={pf} is out of range for array length {len(time_raw)}. "
             f"Skipping pulse-aligned analyses (pre/post slopes, uptake offset)."
         )
+
+    # --- Cell size proxies ---
+    # Use the 10 frames immediately before the pulse as the stable reference.
+    # For ASP (no pulse, pf_valid=False), use the last 10 frames of the trace.
+    # The first-10-frames approach captured the cell-entry transient where
+    # the protrusion is still extending; pre-pulse frames are more settled.
+    if pf_valid:
+        area_end   = pf
+        area_start = max(0, area_end - 10)
+    else:
+        area_end   = None   # slice to end of array
+        area_start = -10    # last 10 frames
+
+    body_area_arr = pd_data.get('Body_Area_um2', np.array([]))
+    if len(body_area_arr) > 0:
+        window = body_area_arr[area_start:area_end]
+        if len(window) > 0:
+            row['Cell_Body_Area_um2'] = float(np.nanmedian(window))
+
+    prot_area_arr = pd_data.get('Protrusion_Area_um2', np.array([]))
+    if len(prot_area_arr) > 0:
+        window = prot_area_arr[area_start:area_end]
+        if len(window) > 0:
+            row['Cell_Prot_Area_um2'] = float(np.nanmedian(window))
 
     # ------------------------------------------------------------------
     # BLOCK A  --  Viscoelastic fitting (ASP only)
@@ -870,9 +1033,15 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         if pf_valid:
             t_aligned = time_raw - time_raw[pf]
             pre_mask  = (t_aligned < 0) & (length_raw > 0)
+
+            # Apply common pre-pulse window so MI fits across replicates use
+            # the same time horizon (mirrors common_duration_s for ASP).
+            if common_ep_pre_s is not None:
+                pre_mask = pre_mask & (t_aligned >= -common_ep_pre_s)
+
             if np.sum(pre_mask) >= 5:
                 t_pre  = t_aligned[pre_mask]
-                t_pre  = t_pre - t_pre[0]      
+                t_pre  = t_pre - t_pre[0]
                 l_pre  = length_raw[pre_mask]
                 mi_fit = fit_model_independent(t_pre, l_pre)
 
@@ -896,20 +1065,116 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
     if meta.condition_type == "EP" and pf_valid:
         t_aligned = time_raw - time_raw[pf]
 
-        pre_mask  = (t_aligned >= -5) & (t_aligned < 0) & (length_raw > 0)
-        post_mask = (t_aligned >= 0)  & (t_aligned <= 2) & (length_raw > 0)
+        # Pre-pulse window: up to 5 s before pulse, or common_ep_pre_s if set.
+        pre_window = common_ep_pre_s if common_ep_pre_s is not None else 5.0
+        pre_mask  = (t_aligned >= -pre_window) & (t_aligned < 0) & (length_raw > 0)
+
+        # Post-pulse window: capped at common_ep_post_s (default 2 s).
+        post_window = common_ep_post_s if common_ep_post_s is not None else 2.0
+        post_mask = (t_aligned >= 0) & (t_aligned <= post_window) & (length_raw > 0)
 
         if np.sum(pre_mask) > 2:
-            row['Pre_Pulse_Slope']  = float(
+            row['Pre_Pulse_Slope'] = float(
                 np.polyfit(t_aligned[pre_mask], length_raw[pre_mask], 1)[0])
         if np.sum(post_mask) > 2:
-            row['Post_Pulse_Slope'] = float(
+            post_slope = float(
                 np.polyfit(t_aligned[post_mask], length_raw[post_mask], 1)[0])
+            row['Post_Pulse_Slope'] = post_slope
+
+            # Classify immediate post-pulse protrusion behavior.
+            # Three outcomes:
+            #   Extends  — positive slope above threshold (protrusion grows)
+            #   Retracts — negative slope below threshold (protrusion shrinks)
+            #   Stable   — slope within ±threshold (no clear movement)
+            thr = EP_BEHAVIOR_SLOPE_THRESHOLD
+            if post_slope > thr:
+                row['EP_Post_Pulse_Behavior'] = 'Extends'
+            elif post_slope < -thr:
+                row['EP_Post_Pulse_Behavior'] = 'Retracts'
+            else:
+                row['EP_Post_Pulse_Behavior'] = 'Stable'
 
     # ------------------------------------------------------------------
-    # BLOCK D  --  Uptake exponential fitting (both conditions)
+    # BLOCK D  --  Pre-pulse dye contamination QC (EP only)
     # ------------------------------------------------------------------
-    if ud_data and 'Time_s' in ud_data:
+    # DUAL-METRIC PHYSIOLOGICAL QC:
+    # 1. Pre_Leaky: Detects cells that tear during aspiration by measuring the
+    #    peak-to-peak amplitude (max - min) of the raw dF/F0 signal before the pulse.
+    #    A >15% swing indicates significant active leakage.
+    # 2. Pre_Loaded: Detects cells that enter the trap already saturated with dye.
+    #    Since dF/F0 normalizes the baseline away, we mathematically reconstruct
+    #    the absolute baseline intensity (F0 = dF / (dF/F0)) and apply a hard threshold.
+    
+    PRE_LEAKY_P2P_THRESHOLD = 0.15    # 15% peak-to-peak dF/F0 swing before pulse
+    PRE_LOADED_F0_THRESHOLD = 1500.0  # Absolute F0 brightness threshold
+
+    if meta.condition_type == "ASP":
+        row['Uptake_PrePulse_QC'] = 'N/A'
+
+    elif ud_data and 'Time_s' in ud_data:
+        t_up     = np.asarray(ud_data.get('Time_s', []), dtype=float)
+        prot_df  = np.asarray(ud_data.get('Protrusion_Normalized_dF_F0', []), dtype=float)
+        body_df  = np.asarray(ud_data.get('Body_Normalized_dF_F0', []), dtype=float)
+        prot_int = np.asarray(ud_data.get('Protrusion_Intensity', []), dtype=float)
+        body_int = np.asarray(ud_data.get('Body_Intensity', []), dtype=float)
+
+        if pf_valid and len(t_up) > 0 and len(t_up) == len(prot_df) == len(prot_int):
+            pulse_time  = float(time_raw[pf])
+            pre_mask_ud = t_up < pulse_time
+
+            if pre_mask_ud.any():
+                # --- 1. Peak-to-Peak Leaky Check ---
+                # Using max - min accounts for traces that start below the baseline average
+                prot_pre = prot_df[pre_mask_ud]
+                body_pre = body_df[pre_mask_ud]
+                
+                prot_p2p = float(np.nanmax(prot_pre) - np.nanmin(prot_pre)) if len(prot_pre) > 0 else 0.0
+                body_p2p = float(np.nanmax(body_pre) - np.nanmin(body_pre)) if len(body_pre) > 0 else 0.0
+
+                # --- 2. Reconstruct Absolute F0 Loaded Check ---
+                def _estimate_f0(df_array, int_array):
+                    # Use the first 5 frames to robustly estimate F0
+                    n_frames = min(5, len(df_array))
+                    df_sub = df_array[:n_frames]
+                    int_sub = int_array[:n_frames]
+                    
+                    # Avoid division by zero on mathematically flat arrays
+                    valid = np.abs(df_sub) > 1e-4
+                    if np.any(valid):
+                        return float(np.nanmedian(int_sub[valid] / df_sub[valid]))
+                    return 0.0
+
+                f0_prot = _estimate_f0(prot_df, prot_int)
+                f0_body = _estimate_f0(body_df, body_int)
+
+                is_pre_loaded = (f0_prot > PRE_LOADED_F0_THRESHOLD or f0_body > PRE_LOADED_F0_THRESHOLD)
+                is_pre_leaky  = (prot_p2p > PRE_LEAKY_P2P_THRESHOLD or body_p2p > PRE_LEAKY_P2P_THRESHOLD)
+
+                if is_pre_loaded:
+                    row['Uptake_PrePulse_QC'] = 'Pre_Loaded'
+                elif is_pre_leaky:
+                    row['Uptake_PrePulse_QC'] = 'Pre_Leaky'
+                else:
+                    row['Uptake_PrePulse_QC'] = 'Clean'
+            else:
+                row['Uptake_PrePulse_QC'] = 'No_Data'
+        else:
+            row['Uptake_PrePulse_QC'] = 'No_Data'
+    else:
+        row['Uptake_PrePulse_QC'] = 'No_Data'
+
+    # ------------------------------------------------------------------
+    # BLOCK E  --  Uptake exponential fitting (both conditions)
+    # ------------------------------------------------------------------
+    # For EP traps flagged as Pre_Leaky or Pre_Loaded, fitting
+    # A*(1 - exp(-t/tau)) would mix pre-existing dye with genuine
+    # electroporation-induced uptake.  The resulting tau is not
+    # interpretable as a pure EP response, so we skip fitting entirely
+    # for those traps.  ASP and Clean EP traps proceed normally.
+    _qc = row.get('Uptake_PrePulse_QC')
+    _contaminated = _qc in ('Pre_Leaky', 'Pre_Loaded')
+
+    if ud_data and 'Time_s' in ud_data and not _contaminated:
         t_up = ud_data['Time_s']
         # For EP with valid pulse_frame, use it; otherwise default to 0
         uptake_pf = pf if (meta.condition_type == "EP" and pf_valid) else 0
@@ -924,6 +1189,21 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                                              pulse_frame=uptake_pf)
                 row[f'{col_base}_tau'] = fit['tau']
                 row[f'{col_base}_R2']  = fit['r2']
+                row[f'{col_base}_A']   = fit['A']   # plateau dF/F0 amplitude
+
+        # Absolute ΔF fits — same model on background-subtracted intensity (ADU).
+        # Comparable across body/protrusion/total; used by bulk_spatial.py.
+        for col_base, region in [
+            ('Uptake_Body_Abs',  'Body_Intensity'),
+            ('Uptake_Prot_Abs',  'Protrusion_Intensity'),
+            ('Uptake_Total_Abs', 'Total_Intensity'),
+        ]:
+            if region in ud_data:
+                fit = fit_exponential_uptake(t_up, ud_data[region],
+                                             pulse_frame=uptake_pf)
+                row[f'{col_base}_tau'] = fit['tau']
+                row[f'{col_base}_R2']  = fit['r2']
+                row[f'{col_base}_A']   = fit['A']   # plateau in ADU
 
     return row
 
@@ -958,16 +1238,30 @@ def run_all_mechanics(grouped_data: Dict,
     )
 
     for key, traps in grouped_data.items():
-        # --- Compute common time window for ASP groups ---
-        common_dur = None
-        if traps and traps[0].metadata.condition_type == "ASP":
-            common_dur = compute_common_duration(traps)
+        # --- Compute common time window for this group ---
+        common_dur        = None
+        common_ep_pre_dur = None
+        common_ep_post_dur = None
+
+        if traps:
+            ctype = traps[0].metadata.condition_type
+            if ctype == "ASP":
+                # For ASP: truncate all traces to the same recording length
+                # so fitted viscoelastic / MI parameters are comparable.
+                common_dur = compute_common_duration(traps)
+            elif ctype == "EP":
+                # For EP: align all pre-pulse MI windows and post-pulse slope
+                # windows to the same duration across replicates.
+                common_ep_pre_dur  = compute_common_ep_pre_duration(traps)
+                common_ep_post_dur = compute_common_ep_post_duration(traps)
 
         for trap in traps:
             try:
                 row = _run_trap_mechanics(
                     trap, r_eff, C, r2_floor=r2_floor,
-                    common_duration_s=common_dur
+                    common_duration_s=common_dur,
+                    common_ep_pre_s=common_ep_pre_dur,
+                    common_ep_post_s=common_ep_post_dur,
                 )
                 rows.append(row)
             except Exception as e:

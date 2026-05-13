@@ -3,13 +3,21 @@
 File Handling for Bulk MFAE Analysis.
 
 Expected folder name format:
-    YYMMDD_CellType_Treatment_ExpNumber-xxxxxPa-xxxxV-xxxxms-framexxxx
+    YYMMDD_CellType_Treatment_ChipID_ExpNumber-xxxxxPa-xxxxV-xxxxms-framexxxx
 
 Where:
     CellType     = e.g. MDAMB231, MCF10A
-    Treatment    = e.g. Control, CytoD, LatA
-    ExpNumber    = e.g. Experiment275
+    Treatment    = e.g. Control, CytoD, LatA, WT
+    ChipID       = e.g. Chip1, Chip2
+    ExpNumber    = e.g. Experiment275, Experiment1
     Pa / V / ms  = integers (use 0V-0ms-frame0 for aspiration-only runs)
+
+Exclusion flags (per-trap quality control):
+    Traces flagged as ruptured or irregular are skipped automatically.
+    To exclude a trap, rename either:
+      - the filtered detection file:  trap_01_detection_filtered_ruptured.csv
+      - OR the full detection file:   trap_01_detection_full_irregular.csv
+    Recognized flags: _ruptured, _irregular  (case-insensitive)
 
 Grouping key: (CellType, Treatment, Pressure_Pa, Voltage_V, Duration_ms)
 This means replicates that share the same cell type, treatment, and
@@ -166,6 +174,7 @@ class BulkDataLoader:
                 date=date_str,
                 cell_type=cell_type,
                 treatment=treatment,
+                chip=chip,
                 experiment_number=experiment_num,
                 pressure=pressure,
                 voltage=volts,
@@ -200,10 +209,42 @@ class BulkDataLoader:
                     logger.warning(f"   Could not read shear CSV: {e}")
 
         dir_filtered = meta.full_path / "Filtered protrusion detection"
-        dir_uptake = meta.full_path / "Dye Uptake"
+        dir_uptake   = meta.full_path / "Dye Uptake"
+        dir_full     = meta.full_path / "Full protrusion detection"
 
-        # Find filtered files
-        filtered_files = sorted(list(dir_filtered.glob("trap_*_detection_filtered.csv")))
+        # Broad glob: catches plain filtered files AND any flagged variants
+        # (e.g. trap_01_detection_filtered_ruptured.csv).
+        _EXCLUDE_TAGS = ('_ruptured', '_irregular')
+        all_filtered_candidates = sorted(dir_filtered.glob("trap_*_detection_filtered*.csv"))
+
+        filtered_files = []
+        for f_file in all_filtered_candidates:
+            # --- Skip if the filtered file itself carries a quality flag ---
+            if any(tag in f_file.stem.lower() for tag in _EXCLUDE_TAGS):
+                logger.info(f"  Skipping flagged filtered file: {f_file.name}")
+                continue
+
+            # --- Also skip if the corresponding FULL detection file is flagged.
+            #     This lets the experimenter mark only the full-detection files
+            #     and have the pipeline automatically exclude the filtered version.
+            id_match_tmp = re.search(r"trap_(\d+)_", f_file.name, re.IGNORECASE)
+            if id_match_tmp and dir_full.exists():
+                tid_int = int(id_match_tmp.group(1))
+                skip_trap = False
+                for tag in _EXCLUDE_TAGS:
+                    # Check both zero-padded (trap_01) and bare (trap_1) formats
+                    if (list(dir_full.glob(f"trap_{tid_int:02d}_detection_full*{tag}*"))
+                            or list(dir_full.glob(f"trap_{tid_int}_detection_full*{tag}*"))):
+                        skip_trap = True
+                        break
+                if skip_trap:
+                    logger.info(
+                        f"  Skipping trap {tid_int}: full detection file is "
+                        f"marked as ruptured/irregular."
+                    )
+                    continue
+
+            filtered_files.append(f_file)
 
         for f_file in filtered_files:
             id_match = re.search(r"trap_(\d+)_", f_file.name, re.IGNORECASE)

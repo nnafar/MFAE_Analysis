@@ -13,13 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\100us_100V\260129_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-100us-frame53'
+  data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\100us_100V\260402_MDAMB231_WT_Chip2_Experiment3-1100Pa-100V-100us-frame111'
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "260129_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-100us-frame53"
+  experiment_id: "260402_MDAMB231_WT_Chip2_Experiment3-1100Pa-100V-100us-frame111"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -338,7 +338,7 @@ workflow_settings:
   
   # Setup Screen: Which part of the video to show during setup? (0.5 = Middle of video).
   # This is ignored when guv_settings.enable is True (guv_settings.selection_frame_index is used instead).
-  selection_frame_fraction: 0.7
+  selection_frame_fraction: 0.4
 
 # ===================================================================
 # --- 7. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
@@ -352,7 +352,7 @@ dye_uptake_parameters:
   dye_channel_pattern: "C2"         # e.g., PI dye
   
   # Timing: When did you shock the cell?
-  pulse_frame: 53                   # The exact frame number of the electric pulse.
+  pulse_frame: 111                   # The exact frame number of the electric pulse.
   baseline_frames: 5                # How many frames before the pulse to check for background signal.
 
 # ===================================================================
