@@ -13,6 +13,16 @@ This is the main entry point. It coordinates the entire workflow:
 
 import atexit
 import os
+
+# ---------------------------------------------------------------------------
+# Silence noisy libtiff/OpenCV C++ warnings BEFORE cv2 is imported.
+# These lines (e.g. "cv::TIFF_Warning TIFFReadDirectory: Unknown field with
+# tag 18246") come from OpenCV's C++ layer straight to stderr and cannot be
+# intercepted by Python's logging module. The env var below is read by
+# OpenCV at import time; setting it after `import cv2` has no effect.
+# ---------------------------------------------------------------------------
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+
 import gc
 import argparse
 import yaml
@@ -20,6 +30,14 @@ import multiprocessing
 import traceback
 import logging
 import cv2
+
+# Belt-and-braces: also mute OpenCV's Python-facing logger. The env var
+# above is the load-time one; this handles any post-import verbosity.
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except AttributeError:
+    pass  # very old cv2 build without utils.logging
+
 import tempfile
 import shutil
 import time
@@ -172,7 +190,11 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
 
         # Export Raw CSV and Plot Trace.
         try:
-            det_full.export_results_to_csv(dirs['root'], f"trap_{trap_index+1:02d}", dirs['full_csv'], dirs['filtered_csv'])
+            det_full.export_results_to_csv(
+                dirs['root'], f"trap_{trap_index+1:02d}",
+                dirs['full_csv'], dirs['filtered_csv'],
+                time_points=time_data,
+            )
         except Exception:
             worker_logger.warning(f"Trap {trap_index+1}: CSV export failed.", exc_info=True)
 

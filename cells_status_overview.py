@@ -26,7 +26,7 @@ from matplotlib.gridspec import GridSpec
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-INPUT_FILE = r"C:\GitHub\MFAE_Analysis\Output\MDAMB231_WT-1100Pa-100V-100us_Overview.csv"
+INPUT_FILE = r"C:\GitHub\MFAE_Analysis\Output\MDAMB231_WT-1100Pa-100V-5ms_Overview.csv"
 
 # Output directory: a "Figures" subfolder next to the input CSV.
 # It is created automatically if it does not exist yet.

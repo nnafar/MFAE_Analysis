@@ -103,7 +103,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
 
     #     fig.suptitle(f"Trap {trap_idx}: {title}", y=1.05, fontsize=16, weight='bold')
     #     plt.tight_layout()
-    #     utils.save_plot_png(output_dir / fig_name)
+    #     utils.save_plot_pdf(output_dir / fig_name)
     #     plt.close(fig)
 
     # # --- Generate the three 3-panel plots ---
@@ -148,7 +148,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         ax_cv.set_xlabel("Time (s)")
         ax_cv.set_title("Relative Uniformity (Lower = More Uniform)")
         
-        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Heterogeneity.png")
+        utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Uptake_Heterogeneity.png")
         plt.close(fig_het)
 
     # --- E. Kymograph & Diffusion ---
@@ -175,7 +175,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         ax.set_xlabel("Position relative to channel entrance (µm)")
         ax.set_ylabel("Time (s)")
         ax.set_title(f"Trap {trap_idx}: Uptake Kymograph")
-        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Uptake_Kymograph.png")
+        utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Uptake_Kymograph.png")
         plt.close(fig)
 
         # Diffusion Profiles
@@ -197,7 +197,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         ax.set_xlabel("Position relative to channel entrance (µm)")
         ax.set_ylabel("Intensity")
         ax.legend(title="Time")
-        utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Diffusion_Profiles.png")
+        utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Diffusion_Profiles.png")
         plt.close(fig)
 
 # --- 2. KYMOGRAPH PLOT (Unchanged) ---
@@ -227,7 +227,7 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     ax.set_ylabel('Time (s)')
     ax.legend(loc='upper right')
     
-    utils.save_plot_png(Path(output_dir) / f"trap_{trap_index:02d}_kymograph.png")
+    utils.save_plot_pdf(Path(output_dir) / f"trap_{trap_index:02d}_kymograph.png")
     plt.close(fig)
 
 # --- 3. PROTRUSION TRACE PLOT ---
@@ -283,7 +283,7 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
             ax.axvline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2, label='Pulse Applied')
             ax.legend()
 
-    utils.save_plot_png(save_path)
+    utils.save_plot_pdf(save_path)
     plt.close(fig)
 
 # --- 4. FITTING ANALYSIS PLOT (Unchanged) ---
@@ -326,7 +326,7 @@ class MFAPlotter:
 
         ax4.text(0.1, 0.9, text_str, transform=ax4.transAxes, fontsize=12, va='top', fontfamily='monospace')
         
-        utils.save_plot_png(save_path)
+        utils.save_plot_pdf(save_path)
         plt.close(fig)
 
     def plot_all_models_comparison(self, trap_index: int, save_path: Path):
@@ -347,7 +347,7 @@ class MFAPlotter:
         
         ax.legend()
         ax.set_title(f"Model Comparison - Trap {trap_index}")
-        utils.save_plot_png(save_path)
+        utils.save_plot_pdf(save_path)
         plt.close(fig)
         
 # --- 4. ACTIN PLOT ---
@@ -456,7 +456,7 @@ def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Pat
                        linewidth=2, label='Rupture Detected')
 
     fig.tight_layout()
-    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Ratio.png")
+    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Ratio.png")
     plt.close(fig)
 
 
@@ -492,7 +492,7 @@ def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, ou
     ax_kymo.set_title(f"Trap {trap_idx}: Actin Uptake Kymograph")
     if rupture_time is not None or pulse_time is not None:
         ax_kymo.legend()
-    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Kymograph.png")
+    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Kymograph.png")
     plt.close(fig_kymo)
 
     # --- 2. Actin Profiles over time ---
@@ -514,7 +514,7 @@ def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, ou
     ax_prof.set_xlabel("Position relative to channel entrance (µm)")
     ax_prof.set_ylabel("Mean Actin Intensity")
     ax_prof.legend(title="Time", bbox_to_anchor=(1.05, 1), loc='upper left')
-    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Profiles.png")
+    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Profiles.png")
     plt.close(fig_prof)
 
 
@@ -600,7 +600,7 @@ def plot_actin_zones(results: Dict[str, Any], trap_idx: int, output_dir: Path, p
     ax_didt.legend(fontsize=10)
 
     fig.tight_layout()
-    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Zones.png")
+    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Zones.png")
     plt.close(fig)
 
 
@@ -725,7 +725,7 @@ def plot_actin_cortex_structure(results: Dict[str, Any], trap_idx: int, output_d
             ax.axvline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2)
 
     fig.tight_layout()
-    utils.save_plot_png(output_dir / f"Trap_{trap_idx:02d}_Actin_Structure.png")
+    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Structure.png")
     plt.close(fig)
 
 
@@ -936,7 +936,7 @@ def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[fl
 
     fig_area.suptitle(suptitle, fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
-    utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Area.png")
+    utils.save_plot_pdf(output_dir / f"{experiment_id}_Aggregate_Delta_Area.png")
     plt.close(fig_area)
 
     # ======================================================================
@@ -1006,7 +1006,7 @@ def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[fl
     ax_sol.set_title(f"Cell Body Solidity — {title_suffix} — {experiment_id}")
 
     plt.tight_layout()
-    utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Delta_Solidity.png")
+    utils.save_plot_pdf(output_dir / f"{experiment_id}_Aggregate_Delta_Solidity.png")
     plt.close(fig_sol)
     
 
@@ -1077,7 +1077,7 @@ def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Pa
             
             fig.suptitle(f"{experiment_id} - {title}", y=1.05, fontsize=16, weight='bold')
             plt.tight_layout()
-            utils.save_plot_png(output_dir / f"{experiment_id}_Aggregate_Uptake{filename_suffix}.png")
+            utils.save_plot_pdf(output_dir / f"{experiment_id}_Aggregate_Uptake{filename_suffix}.png")
         plt.close(fig)
 
     # Trigger the 3 versions
@@ -1100,5 +1100,5 @@ def plot_shear_analysis_card(metrics: Dict[str, float], save_path: Path):
         ax.text(0.7, y, f"{v:.4f}", ha='right')
         y -= 0.1
         
-    utils.save_plot_png(save_path)
+    utils.save_plot_pdf(save_path)
     plt.close(fig)

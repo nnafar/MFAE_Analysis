@@ -32,13 +32,18 @@ import pandas as pd
 import bulk_file_handling as bfh
 import bulk_mechanics     as bm
 import bulk_plotting      as bp
+import thesis_plotting    as tp  
 import bulk_spatial       as bs
+import Utils_MFA as utils
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%H:%M:%S'
 )
+# Add this line to silence the PDF font embedding spam
+logging.getLogger('fontTools').setLevel(logging.WARNING) 
+
 logger = logging.getLogger(__name__)
 
 
@@ -279,16 +284,21 @@ def main():
         logger.info("Skipping EP-only plots (no EP data in this dataset).")
 
     # --- Cross-group plots (need all conditions together) ---
-    if all_grouped_data:
-        _try("Uptake ASP vs EP overlay",
-             bp.plot_uptake_asp_vs_ep, all_grouped_data, results_dir)
-        _try("ASP best-fit multipanel (reduced grouping)",
-             bp.plot_asp_best_fit_multipanel,
-             all_grouped_data, results_dir, r_eff, bm.HALFSPACE_C)
+    # if all_grouped_data:
+    #     _try("Uptake ASP vs EP overlay",
+    #          bp.plot_uptake_asp_vs_ep, all_grouped_data, results_dir)
+    #     _try("ASP best-fit multipanel (reduced grouping)",
+    #          bp.plot_asp_best_fit_multipanel,
+    #          all_grouped_data, results_dir, r_eff, bm.HALFSPACE_C)
 
-    # --- ASP parameter boxplots (reduced grouping: CellType × Treatment × Pressure) ---
-    _try("ASP parameter boxplots",
-         bp.plot_asp_parameter_boxplots, mechanics_df, results_dir)
+    # # --- ASP parameter boxplots (reduced grouping: CellType × Treatment × Pressure) ---
+    # _try("ASP parameter boxplots",
+    #      bp.plot_asp_parameter_boxplots, mechanics_df, results_dir)
+    
+    # --- Execute Thesis Plots for ASP ---
+    if all_grouped_data:
+        _try("Thesis Plot Suite",
+             tp.run_thesis_plots, all_grouped_data, mechanics_df, results_dir, r_eff)
 
     # --- Spearman correlation (needs all scalars) ---
     # Merge the fitted exponential amplitude A (ADU) from mechanics_df into
@@ -300,7 +310,7 @@ def main():
     # traps where fitting failed get NaN for the amplitude columns.
     if not df_scalars.empty:
         fit_a_cols = ['Date', 'Experiment_Number', 'Trap_ID',
-                      'Uptake_Body_Abs_A', 'Uptake_Prot_Abs_A', 'Uptake_Total_Abs_A']
+                      'Uptake_Body_VolNorm_A', 'Uptake_Prot_VolNorm_A', 'Uptake_Total_VolNorm_A']
         available_fit_cols = [c for c in fit_a_cols if c in mechanics_df.columns]
         df_scalars = df_scalars.merge(
             mechanics_df[available_fit_cols].drop_duplicates(
@@ -311,7 +321,7 @@ def main():
         )
         logger.info(
             f"Merged fitted amplitude A columns into df_scalars "
-            f"({df_scalars['Uptake_Body_Abs_A'].notna().sum()} / "
+            f"({df_scalars['Uptake_Body_VolNorm_A'].notna().sum()} / "
             f"{len(df_scalars)} traps have body A)."
         )
 

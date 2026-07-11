@@ -116,7 +116,20 @@ class DyeUptakeAnalyzer:
             'uptake_cell_body_minmax_std': [],
             'uptake_total_minmax_std': [],
             'uptake_tip_minmax_std': [],
-            
+
+            # Volume-Normalized (a.u./μm³)
+            # Formula: val / volume_um3  where volume_um3 = (area_px × sf²)^1.5
+            # Removes the cell-size confound: a larger cell accumulates more raw
+            # signal simply because it contains more volume, independent of how
+            # permeable its membrane is.  Dividing by volume makes uptake
+            # directly comparable across cells of different sizes.
+            'uptake_protrusion_vol_norm': [],
+            'uptake_cell_body_vol_norm': [],
+            'uptake_total_vol_norm': [],
+            'uptake_protrusion_vol_norm_std': [],
+            'uptake_cell_body_vol_norm_std': [],
+            'uptake_total_vol_norm_std': [],
+
             'spatial_profiles': [],
             'baseline_intensity': None,  
             'pipette_x_px': pipette_x,
@@ -297,7 +310,28 @@ class DyeUptakeAnalyzer:
             
             self.results['count_tip'].append(n_tip)
             
-            # F. Calculate Normalized Values (ΔF/F₀)
+            # F. Volume-Normalized Values (a.u./μm³)
+            # volume_um3 = (area_px × sf²)^1.5 — already computed above.
+            # Guard against zero area (cell not yet in frame / mask failure).
+            vol_prot_frame  = area_prot  ** 1.5   # same value appended to volume_prot_um3
+            vol_body_frame  = area_body  ** 1.5
+            vol_total_frame = area_total ** 1.5
+
+            self.results['uptake_protrusion_vol_norm'].append(
+                val_prot  / vol_prot_frame  if vol_prot_frame  > 0 else 0.0)
+            self.results['uptake_cell_body_vol_norm'].append(
+                val_body  / vol_body_frame  if vol_body_frame  > 0 else 0.0)
+            self.results['uptake_total_vol_norm'].append(
+                val_total / vol_total_frame if vol_total_frame > 0 else 0.0)
+
+            self.results['uptake_protrusion_vol_norm_std'].append(
+                std_prot  / vol_prot_frame  if vol_prot_frame  > 0 else 0.0)
+            self.results['uptake_cell_body_vol_norm_std'].append(
+                std_body  / vol_body_frame  if vol_body_frame  > 0 else 0.0)
+            self.results['uptake_total_vol_norm_std'].append(
+                std_total / vol_total_frame if vol_total_frame > 0 else 0.0)
+
+            # G. Calculate dF/F₀ Normalized Values
             epsilon = 1e-6
             self.results['uptake_protrusion_norm'].append(val_prot / bg_prot if bg_prot > epsilon else 0.0)
             self.results['uptake_cell_body_norm'].append(val_body / bg_body if bg_body > epsilon else 0.0)
@@ -351,7 +385,9 @@ class DyeUptakeAnalyzer:
             'uptake_protrusion', 'uptake_cell_body', 'uptake_total', 'uptake_tip',
             'uptake_protrusion_std', 'uptake_cell_body_std', 'uptake_total_std', 'uptake_tip_std',
             'uptake_protrusion_norm', 'uptake_cell_body_norm', 'uptake_total_norm', 'uptake_tip_norm',
-            'uptake_protrusion_norm_std', 'uptake_cell_body_norm_std', 'uptake_total_norm_std', 'uptake_tip_norm_std'
+            'uptake_protrusion_norm_std', 'uptake_cell_body_norm_std', 'uptake_total_norm_std', 'uptake_tip_norm_std',
+            'uptake_protrusion_vol_norm', 'uptake_cell_body_vol_norm', 'uptake_total_vol_norm',
+            'uptake_protrusion_vol_norm_std', 'uptake_cell_body_vol_norm_std', 'uptake_total_vol_norm_std',
         ]
         for key in keys_to_zero:
             self.results[key].append(0.0)
@@ -438,6 +474,12 @@ class DyeUptakeAnalyzer:
             'Protrusion_MinMax': self.results['uptake_protrusion_minmax'],
             'Tip_MinMax': self.results['uptake_tip_minmax'],
             'Body_MinMax': self.results['uptake_cell_body_minmax'],
+
+            # Volume-Normalized (a.u./μm³)
+            # Preferred metric for bulk analysis: removes cell-size confound.
+            'Body_VolNorm':       self.results.get('uptake_cell_body_vol_norm', []),
+            'Protrusion_VolNorm': self.results.get('uptake_protrusion_vol_norm', []),
+            'Total_VolNorm':      self.results.get('uptake_total_vol_norm', []),
         })
         
         output_dir = Path(output_dir)

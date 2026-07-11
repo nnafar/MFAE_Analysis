@@ -72,6 +72,28 @@ EP_BEHAVIOR_SLOPE_THRESHOLD: float = 0.02
 # generating false positives.
 PRE_PULSE_MINMAX_THRESHOLD: float = 0.10
 
+# ---- Viscoelastic identifiability & bound-hit guards ----
+# Post-hoc rejection of parameters that converge onto their bound.
+# When a fitted parameter lies within this fraction of the (log-scale)
+# distance between its lower and upper bound, it is treated as unidentified:
+# the optimiser wandered in a flat direction until the wall stopped it.
+# Any model with a bound-hitting parameter is dropped from BIC selection.
+# Tune upward (e.g. 0.05) to be more aggressive, downward (e.g. 0.01) to
+# tolerate parameters that genuinely lie near the boundary.
+BOUND_PROXIMITY_FRAC: float = 0.02
+
+# Pre-fit identifiability guard for the long-term flow term.
+# Jeffreys and Burgers both contain a series dashpot that produces linear
+# creep at long times. If the observed late-stage slope over the observation
+# window is smaller than a few times the measurement noise floor, the flow
+# parameter cannot be identified from the data; we therefore fit only
+# Kelvin-Voigt for those cells. Increase noise_um if the raw traces are
+# noisier than 0.3 um; decrease if cleaner.
+IDENTIFIABILITY_NOISE_UM: float = 0.3    # length-noise floor [um]
+IDENTIFIABILITY_LATE_FRAC: float = 0.33  # fraction of trace treated as "late"
+IDENTIFIABILITY_FLOW_SNR: float = 3.0    # late slope * duration must exceed this * noise
+IDENTIFIABILITY_PLATEAU_RATIO: float = 0.5  # late/early slope ratio below this = "elbowed"
+
 # =============================================================================
 # 2.  GEOMETRY -- Son (2007)
 # =============================================================================
@@ -355,6 +377,113 @@ def _multi_start_fit(func, t: np.ndarray, l: np.ndarray,
 
 
 # =============================================================================
+# 7b.  IDENTIFIABILITY & BOUND-HIT HELPERS
+# =============================================================================
+
+def _is_bound_hitting(popt, lower, upper,
+                      frac: float = BOUND_PROXIMITY_FRAC) -> List[int]:
+    """
+    Return the indices of parameters that sit within `frac` of a bound.
+
+    Log-scale comparison when both bounds are positive (matches how
+    `_multi_start_fit` samples the space). This prevents a 2% linear
+    tolerance from being triggered by, say, a fitted eta2 of 20 000 Pa·s
+    just because the upper bound is 1 000 000.
+
+    Parameters
+    ----------
+    popt   : fitted parameter vector
+    lower  : per-parameter lower bounds (same order as popt)
+    upper  : per-parameter upper bounds (same order as popt)
+    frac   : proximity threshold as a fraction of the bound range
+
+    Returns
+    -------
+    list of int : positional indices of pinned parameters (empty if none)
+    """
+    popt  = np.asarray(popt,  dtype=float)
+    lower = np.asarray(lower, dtype=float)
+    upper = np.asarray(upper, dtype=float)
+
+    pinned: List[int] = []
+    for i, (p, lo, hi) in enumerate(zip(popt, lower, upper)):
+        if not np.isfinite(p):
+            pinned.append(i)
+            continue
+        if lo > 0 and hi > 0:
+            log_range = math.log(hi) - math.log(lo)
+            near_lo = (math.log(p) - math.log(lo)) < frac * log_range
+            near_hi = (math.log(hi) - math.log(p)) < frac * log_range
+        else:
+            lin_range = hi - lo
+            near_lo = (p - lo) < frac * lin_range
+            near_hi = (hi - p) < frac * lin_range
+        if near_lo or near_hi:
+            pinned.append(i)
+    return pinned
+
+
+def _check_identifiability(t: np.ndarray, l: np.ndarray,
+                           late_frac: float = IDENTIFIABILITY_LATE_FRAC,
+                           noise_um: float = IDENTIFIABILITY_NOISE_UM,
+                           snr: float = IDENTIFIABILITY_FLOW_SNR,
+                           plateau_ratio: float = IDENTIFIABILITY_PLATEAU_RATIO
+                           ) -> Dict[str, bool]:
+    """
+    Decide which viscoelastic elements the data can actually constrain.
+
+    Both checks are geometry-agnostic. They compare observed length changes
+    to the measurement noise floor over the observed duration, and make no
+    assumptions about E, eta, r_eff, or delta_p. If the flow term is not
+    identifiable, the caller should skip Jeffreys and Burgers (both contain
+    a series dashpot).
+
+    Returns
+    -------
+    dict with:
+        'flow_ok'    -- late-stage slope * duration > snr * noise
+                        (a viscous flow term is resolvable within the window)
+        'plateau_ok' -- late slope << early slope
+                        (the trace has visibly elbowed; a KV plateau lies
+                        inside the observation window)
+    """
+    n = len(t)
+    if n < 5:
+        return {'flow_ok': False, 'plateau_ok': False}
+
+    duration = float(t[-1] - t[0])
+    if duration <= 0:
+        return {'flow_ok': False, 'plateau_ok': False}
+
+    n_side = max(5, int(round(late_frac * n)))
+
+    # Late-stage linear fit
+    t_late, l_late = t[-n_side:], l[-n_side:]
+    try:
+        late_slope = float(np.polyfit(t_late, l_late, 1)[0])
+    except Exception:
+        late_slope = 0.0
+
+    # Early-stage linear fit
+    t_early, l_early = t[:n_side], l[:n_side]
+    try:
+        early_slope = float(np.polyfit(t_early, l_early, 1)[0])
+    except Exception:
+        early_slope = 0.0
+
+    # Flow identifiable if predicted flow over the window clears the noise floor
+    flow_ok = abs(late_slope) * duration > snr * noise_um
+
+    # Plateau identifiable if the trace has clearly decelerated
+    if abs(early_slope) < 1e-9:
+        plateau_ok = False
+    else:
+        plateau_ok = (abs(late_slope) / abs(early_slope)) < plateau_ratio
+
+    return {'flow_ok': flow_ok, 'plateau_ok': plateau_ok}
+
+
+# =============================================================================
 # 8.  VISCOELASTIC FITTING  (ASP cells)
 # =============================================================================
 
@@ -401,6 +530,13 @@ def fit_viscoelastic(time: np.ndarray, length: np.ndarray,
 
     E0, eta1_0, eta2_0 = _estimate_params(t, l, r_eff, delta_p, C)
 
+    # ---- Pre-fit identifiability guard ----
+    # Skip Jeffreys/Burgers when the data cannot resolve a viscous flow term
+    # within the observation window. Both models contain a series dashpot;
+    # fitting them anyway causes eta_flow to run to its upper bound.
+    ident = _check_identifiability(t, l)
+    flow_ok = ident['flow_ok']
+
     E_lo,    E_hi    =   1.0,   100_000.0
     eta1_lo, eta1_hi =   1.0,   500_000.0
     eta2_lo, eta2_hi =   500.0, 1_000_000.0
@@ -413,22 +549,29 @@ def fit_viscoelastic(time: np.ndarray, length: np.ndarray,
             "names" : ["E", "eta"],
             "k"     : 2
         },
-        "Jeffreys": {
+    }
+    if flow_ok:
+        models["Jeffreys"] = {
             "func"  : lambda t, E, eta1, eta2: _jeffreys(t, r_eff, delta_p, C, E, eta1, eta2),
             "p0"    : [E0, eta1_0, eta2_0],
             "bounds": ([E_lo, eta1_lo, eta2_lo], [E_hi, eta1_hi, eta2_hi]),
             "names" : ["E", "eta1", "eta2"],
             "k"     : 3
-        },
-        "Burgers": {
+        }
+        models["Burgers"] = {
             "func"  : lambda t, E1, eta1, E2, eta2: _burgers(t, r_eff, delta_p, C, E1, eta1, E2, eta2),
             "p0"    : [E0, eta2_0, E0, eta1_0],
             "bounds": ([E_lo, eta2_lo, E_lo, eta1_lo],
                        [E_hi, eta2_hi, E_hi, eta1_hi]),
             "names" : ["E1", "eta1", "E2", "eta2"],
             "k"     : 4
-        },
-    }
+        }
+    else:
+        logger.debug(
+            "  Flow term not identifiable "
+            f"(late-slope * duration < {IDENTIFIABILITY_FLOW_SNR}*noise); "
+            "fitting Kelvin-Voigt only."
+        )
 
     all_results: Dict = {}
     best_bic  = np.inf
@@ -438,19 +581,36 @@ def fit_viscoelastic(time: np.ndarray, length: np.ndarray,
         popt, _ = _multi_start_fit(cfg["func"], t, l, cfg["bounds"],
                                    cfg["p0"], n_starts=n_starts)
         if popt is None:
-            all_results[name] = {"params": None, "r2": None, "bic": np.inf, "dw": None}
+            all_results[name] = {"params": None, "r2": None, "bic": np.inf,
+                                 "dw": None, "bound_hit": None}
             continue
 
         l_pred = cfg["func"](t, *popt)
         r2     = _r_squared(l, l_pred)
         bic    = _bic(l, l_pred, cfg["k"])
         dw     = _durbin_watson(l, l_pred)
+
+        # ---- Post-hoc bound-hit check ----
+        pinned_idx = _is_bound_hitting(popt, cfg["bounds"][0], cfg["bounds"][1])
+        pinned_names = [cfg["names"][i] for i in pinned_idx]
+
         all_results[name] = {
-            "params": dict(zip(cfg["names"], popt.tolist())),
-            "r2"    : r2,
-            "bic"   : bic,
-            "dw"    : dw,
+            "params"   : dict(zip(cfg["names"], popt.tolist())),
+            "r2"       : r2,
+            "bic"      : bic,
+            "dw"       : dw,
+            "bound_hit": pinned_names,   # empty list = clean fit
         }
+
+        # A bound-hit fit is not identifiable; exclude from selection.
+        # It stays in all_results as an audit trail.
+        if pinned_names:
+            logger.debug(
+                f"  {name}: parameter(s) {pinned_names} pinned to bound; "
+                "excluded from BIC selection."
+            )
+            continue
+
         if bic < best_bic:
             best_bic  = bic
             best_name = name
@@ -557,7 +717,7 @@ def fit_model_independent(time: np.ndarray, length: np.ndarray,
 # =============================================================================
 
 def fit_exponential_uptake(time: np.ndarray, uptake: np.ndarray,
-                            pulse_frame: int = 0,
+                            pulse_time_s: float = 0.0,
                             min_points: int = 5) -> Dict:
     """
     Fits A*(1-exp(-t/tau)) to post-pulse uptake data after subtracting
@@ -585,17 +745,24 @@ def fit_exponential_uptake(time: np.ndarray, uptake: np.ndarray,
     """
     FAIL = {'A': None, 'tau': None, 'r2': None, 'baseline': None}
 
-    if len(time) <= pulse_frame or len(time) < min_points:
+    if len(time) < min_points:
         return FAIL
 
-    t_zero = time - time[pulse_frame]
+    t_zero = time - pulse_time_s
 
     # --- Compute and subtract pre-pulse baseline ---
     pre_mask = (t_zero <= 0) & np.isfinite(uptake)
     if np.sum(pre_mask) >= 2:
         baseline = float(np.nanmedian(uptake[pre_mask]))
     else:
-        baseline = 0.0
+        # Fallback for late camera triggers: use the first 3 valid recorded frames
+        valid_mask = np.isfinite(uptake)
+        if np.sum(valid_mask) >= 3:
+            baseline = float(np.nanmedian(uptake[valid_mask][:3]))
+        elif np.sum(valid_mask) > 0:
+            baseline = float(uptake[valid_mask][0])
+        else:
+            baseline = 0.0
 
     uptake_corrected = uptake - baseline
 
@@ -624,7 +791,7 @@ def fit_exponential_uptake(time: np.ndarray, uptake: np.ndarray,
 # =============================================================================
 
 def compute_common_duration(traps: List[bfh.TrapData],
-                            rupture_fraction: float = 0.95) -> Optional[float]:
+                            min_duration_fraction: float = 0.50) -> Optional[float]:
     """
     Finds the common time window for a group of ASP traces so that
     viscoelastic and model-independent fits are performed over the same
@@ -633,25 +800,43 @@ def compute_common_duration(traps: List[bfh.TrapData],
     Some experiments record 300 s of aspiration, others 1500 s. Without a
     common window, a Jeffreys fit on a 1500 s trace will weigh the viscous
     flow term much more heavily than the same fit on a 300 s trace. By
-    truncating all traces to the shortest *non-ruptured* duration (e.g.
-    300 s), we ensure the optimizer "sees" the same time horizon everywhere.
+    truncating all traces to the shortest surviving duration, we ensure
+    the optimizer "sees" the same time horizon everywhere.
 
-    Ruptured traces end abruptly at much shorter times. A trace is
-    classified as ruptured if its duration is below `rupture_fraction` of
-    the group median. Those short traces are excluded from setting the
-    window (but they are still fitted on whatever data they have).
+    Short-duration outlier filter
+    -----------------------------
+    Before taking the minimum, traces whose total duration is below
+    `min_duration_fraction` of the group mean are excluded from the window
+    computation. This is a purely statistical filter -- it does not
+    identify ruptured cells, and it is not a substitute for the load-time
+    `_ruptured` / `_irregular` filename filter in bulk_file_handling.py,
+    which is the only place real rupture / annotation flags are honored.
+
+    A trap can end up in the "short-duration outlier" bucket for many
+    reasons that have nothing to do with membrane rupture: the cell
+    slipped out of the trap, the recording ended before the cell did, the
+    cell entered late so post-entry duration is short, etc. Those traps
+    are still fitted on whatever data they have; they just don't get to
+    set the common window.
 
     Parameters
     ----------
-    traps : list of TrapData for one condition group
-    rupture_fraction : fraction of the median below which a trace is
-                       considered ruptured and excluded from window
-                       computation. Default 0.20 (20% of the median).
+    traps                 : list of TrapData for one condition group.
+    min_duration_fraction : fraction of the group mean below which a
+                            trace is treated as a short-duration outlier
+                            and excluded from window computation. Default
+                            0.50 -- traces shorter than half the mean
+                            (typically slipped-out cells or truncated
+                            recordings) do not get to set the window, but
+                            traces within a wide band around the mean do.
+                            Raise this (e.g. to 0.80) for a tighter, more
+                            homogeneous window; lower it (e.g. to 0.20)
+                            to include almost every trace.
 
     Returns
     -------
     float : common window duration in seconds, or None if fewer than 2
-            non-ruptured traces exist.
+            surviving traces exist.
     """
     durations = []
     for trap in traps:
@@ -662,26 +847,27 @@ def compute_common_duration(traps: List[bfh.TrapData],
     if len(durations) < 2:
         return None
 
-    median_dur = float(np.median(durations))
-    threshold  = rupture_fraction * median_dur
+    mean_dur   = float(np.mean(durations))
+    threshold  = min_duration_fraction * mean_dur
 
-    # Keep only traces whose total duration exceeds the rupture threshold.
-    normal_durations = [d for d in durations if d >= threshold]
+    # Keep only traces whose total duration exceeds the outlier threshold.
+    surviving_durations = [d for d in durations if d >= threshold]
 
-    if len(normal_durations) < 2:
+    if len(surviving_durations) < 2:
         return None
 
-    common = float(min(normal_durations))
+    common = float(min(surviving_durations))
+    n_excluded = len(durations) - len(surviving_durations)
     logger.info(
         f"  Common duration: {common:.1f} s "
-        f"(median={median_dur:.1f}, {len(durations)-len(normal_durations)} "
-        f"ruptured traces excluded)"
+        f"(mean={mean_dur:.1f}, {n_excluded} short-duration outlier(s) "
+        f"excluded at <{min_duration_fraction:.0%} of mean)"
     )
     return common
 
 
 def compute_common_ep_pre_duration(traps: List[bfh.TrapData],
-                                   rupture_fraction: float = 0.20) -> Optional[float]:
+                                   min_duration_fraction: float = 0.20) -> Optional[float]:
     """
     Finds the shortest common pre-pulse aspiration window (in seconds) across
     all EP traps in a group, so that model-independent fits use the same time
@@ -692,10 +878,11 @@ def compute_common_ep_pre_duration(traps: List[bfh.TrapData],
     can vary.  Truncating all traces to the same duration makes slope and
     power-law exponent directly comparable.
 
-    Traces where the computed pre-pulse duration is less than
-    `rupture_fraction` of the group median are excluded from setting the
+    Traces whose computed pre-pulse duration is less than
+    `min_duration_fraction` of the group mean are excluded from setting the
     window (these are likely malformed recordings with an unusually early
-    pulse trigger).
+    pulse trigger). This is a purely statistical filter and has no
+    connection to rupture annotation.
 
     Returns None if fewer than 2 valid EP traps are found.
     """
@@ -714,18 +901,18 @@ def compute_common_ep_pre_duration(traps: List[bfh.TrapData],
     if len(pre_durations) < 2:
         return None
 
-    median_dur       = float(np.median(pre_durations))
-    threshold        = rupture_fraction * median_dur
-    normal_durations = [d for d in pre_durations if d >= threshold]
+    mean_dur            = float(np.mean(pre_durations))
+    threshold           = min_duration_fraction * mean_dur
+    surviving_durations = [d for d in pre_durations if d >= threshold]
 
-    if len(normal_durations) < 2:
+    if len(surviving_durations) < 2:
         return None
 
-    common = float(min(normal_durations))
+    common = float(min(surviving_durations))
     logger.info(
         f"  EP common pre-pulse duration: {common:.1f} s "
-        f"(median={median_dur:.1f}, {len(pre_durations)-len(normal_durations)} "
-        f"outliers excluded)"
+        f"(mean={mean_dur:.1f}, {len(pre_durations)-len(surviving_durations)} "
+        f"short-duration outlier(s) excluded)"
     )
     return common
 
@@ -824,9 +1011,12 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                   MI_Window_Duration_s, MI_N_Points
     EP slopes   : Pre_Pulse_Slope, Post_Pulse_Slope, EP_Post_Pulse_Behavior
     Uptake      : Uptake_PrePulse_QC,
-                  Uptake_Body_tau, Uptake_Body_R2,
-                  Uptake_Prot_tau, Uptake_Prot_R2,
-                  Uptake_Total_tau, Uptake_Total_R2
+                  Uptake_Body_VolNorm_tau/R2/A,
+                  Uptake_Prot_VolNorm_tau/R2/A,
+                  Uptake_Total_VolNorm_tau/R2/A
+    Morphology  : Cell_Body_Area_um2, Cell_Prot_Area_um2,
+                  Cell_Body_Area_PrePulse_um2   (source: Uptake CSV),
+                  Max_Prot_length_PrePulse_um   (source: full detection CSV)
     """
     meta    = trap.metadata
     pd_data = trap.protrusion_data
@@ -896,20 +1086,27 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         # 'No_Data'      : uptake CSV missing or too short to evaluate.
         # 'N/A'          : ASP condition (no pulse; concept does not apply).
         'Uptake_PrePulse_QC'    : None,
-        # Uptake exponential fit — dF/F0 normalised signals (kept for backward compat).
-        'Uptake_Body_tau'   : None, 'Uptake_Body_R2'  : None, 'Uptake_Body_A'  : None,
-        'Uptake_Prot_tau'   : None, 'Uptake_Prot_R2'  : None, 'Uptake_Prot_A'  : None,
-        'Uptake_Total_tau'  : None, 'Uptake_Total_R2' : None, 'Uptake_Total_A' : None,
-        # Uptake exponential fit — absolute ΔF (ADU, background-subtracted).
-        # Comparable across body/protrusion/total; use these for spatial analysis.
-        'Uptake_Body_Abs_tau'  : None, 'Uptake_Body_Abs_R2'  : None, 'Uptake_Body_Abs_A'  : None,
-        'Uptake_Prot_Abs_tau'  : None, 'Uptake_Prot_Abs_R2'  : None, 'Uptake_Prot_Abs_A'  : None,
-        'Uptake_Total_Abs_tau' : None, 'Uptake_Total_Abs_R2' : None, 'Uptake_Total_Abs_A' : None,
+        # Uptake exponential fit — volume-normalised intensity (ADU/μm³).
+        # Dividing by cell volume removes the size confound (larger cells
+        # accumulate more raw ADU regardless of membrane permeability).
+        # Source columns: Body_VolNorm / Protrusion_VolNorm / Total_VolNorm
+        # from UptakeQuantification.export_csv().
+        'Uptake_Body_VolNorm_tau'  : None, 'Uptake_Body_VolNorm_R2'  : None, 'Uptake_Body_VolNorm_A'  : None,
+        'Uptake_Prot_VolNorm_tau'  : None, 'Uptake_Prot_VolNorm_R2'  : None, 'Uptake_Prot_VolNorm_A'  : None,
+        'Uptake_Total_VolNorm_tau' : None, 'Uptake_Total_VolNorm_R2' : None, 'Uptake_Total_VolNorm_A' : None,
         # Cell size proxies: median area over the 10 frames immediately before the
         # pulse (last 10 frames for ASP).  Captures the stable aspirated state
         # rather than the cell-entry transient.
         'Cell_Body_Area_um2': None,
         'Cell_Prot_Area_um2': None,
+        # Pre-pulse body area: median of up to 10 frames immediately before the
+        # pulse in the Uptake CSV.  Uses all available pre-pulse frames when
+        # fewer than 10 exist.  Source: Uptake_Data.csv → Body_Area_um2.
+        'Cell_Body_Area_PrePulse_um2': None,
+        # Maximum protrusion length in the pre-pulse window.
+        # Source: detection_full.csv → Protrusion_Length_um (NOT the filtered CSV,
+        # which starts only from cell entry and misses early frames).
+        'Max_Prot_length_PrePulse_um': None,
     }
 
     time_raw   = pd_data.get('Time_s',               np.array([]))
@@ -919,10 +1116,6 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         return row
 
     # --- Common time window truncation (ASP only) ---
-    # If a common_duration_s was computed for this group, truncate the
-    # protrusion trace so that all ASP fits use the same time horizon.
-    # This makes fitted parameters (E, eta, tau) directly comparable
-    # across experiments that recorded for different durations.
     if meta.condition_type == "ASP" and common_duration_s is not None:
         t_from_entry = time_raw - time_raw[0]
         window_mask  = t_from_entry <= common_duration_s
@@ -932,9 +1125,11 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         if len(time_raw) < 5:
             return row
 
-    # --- Shared guard: validate pulse_frame is in range ---
+    # --- Shared guard: compute physical pulse time in seconds ---
     pf = meta.pulse_frame
-    pf_valid = (0 < pf < len(time_raw))  # False for ASP (pf == 0) by design
+    pf_valid = (0 < pf < len(time_raw))
+    pulse_time_s = float(time_raw[pf]) if pf_valid else 0.0
+
     if meta.condition_type == "EP" and not pf_valid:
         logger.warning(
             f"  Trap {trap.trap_id} ({meta.experiment_number}): "
@@ -943,16 +1138,12 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         )
 
     # --- Cell size proxies ---
-    # Use the 10 frames immediately before the pulse as the stable reference.
-    # For ASP (no pulse, pf_valid=False), use the last 10 frames of the trace.
-    # The first-10-frames approach captured the cell-entry transient where
-    # the protrusion is still extending; pre-pulse frames are more settled.
     if pf_valid:
         area_end   = pf
         area_start = max(0, area_end - 10)
     else:
-        area_end   = None   # slice to end of array
-        area_start = -10    # last 10 frames
+        area_end   = None
+        area_start = -10
 
     body_area_arr = pd_data.get('Body_Area_um2', np.array([]))
     if len(body_area_arr) > 0:
@@ -965,6 +1156,32 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         window = prot_area_arr[area_start:area_end]
         if len(window) > 0:
             row['Cell_Prot_Area_um2'] = float(np.nanmedian(window))
+
+    # --- Pre-pulse body area ---
+    ud_body_area = np.asarray(ud_data.get('Body_Area_um2', []), dtype=float)
+    ud_time      = np.asarray(ud_data.get('Time_s',         []), dtype=float)
+
+    if len(ud_body_area) > 0 and len(ud_body_area) == len(ud_time):
+        if pf_valid:
+            pre_mask   = ud_time < pulse_time_s
+            pre_area   = ud_body_area[pre_mask]
+            if len(pre_area) > 10:
+                pre_area = pre_area[-10:]
+        else:
+            pre_area = ud_body_area[-10:]
+
+        if len(pre_area) > 0:
+            row['Cell_Body_Area_PrePulse_um2'] = float(np.nanmedian(pre_area))
+
+    # --- Maximum protrusion length before the pulse ---
+    if pf_valid:
+        pre_pulse_lengths = length_raw[:pf]
+    else:
+        pre_pulse_lengths = length_raw
+
+    valid_lengths = pre_pulse_lengths[np.isfinite(pre_pulse_lengths) & (pre_pulse_lengths > 0)]
+    if len(valid_lengths) > 0:
+        row['Max_Prot_length_PrePulse_um'] = float(np.max(valid_lengths))
 
     # ------------------------------------------------------------------
     # BLOCK A  --  Viscoelastic fitting (ASP only)
@@ -1176,34 +1393,18 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
 
     if ud_data and 'Time_s' in ud_data and not _contaminated:
         t_up = ud_data['Time_s']
-        # For EP with valid pulse_frame, use it; otherwise default to 0
-        uptake_pf = pf if (meta.condition_type == "EP" and pf_valid) else 0
 
         for col_base, region in [
-            ('Uptake_Body',  'Body_Normalized_dF_F0'),
-            ('Uptake_Prot',  'Protrusion_Normalized_dF_F0'),
-            ('Uptake_Total', 'Total_Normalized_dF_F0'),
+            ('Uptake_Body_VolNorm',  'Body_VolNorm'),
+            ('Uptake_Prot_VolNorm',  'Protrusion_VolNorm'),
+            ('Uptake_Total_VolNorm', 'Total_VolNorm'),
         ]:
             if region in ud_data:
                 fit = fit_exponential_uptake(t_up, ud_data[region],
-                                             pulse_frame=uptake_pf)
+                                             pulse_time_s=pulse_time_s)
                 row[f'{col_base}_tau'] = fit['tau']
                 row[f'{col_base}_R2']  = fit['r2']
-                row[f'{col_base}_A']   = fit['A']   # plateau dF/F0 amplitude
-
-        # Absolute ΔF fits — same model on background-subtracted intensity (ADU).
-        # Comparable across body/protrusion/total; used by bulk_spatial.py.
-        for col_base, region in [
-            ('Uptake_Body_Abs',  'Body_Intensity'),
-            ('Uptake_Prot_Abs',  'Protrusion_Intensity'),
-            ('Uptake_Total_Abs', 'Total_Intensity'),
-        ]:
-            if region in ud_data:
-                fit = fit_exponential_uptake(t_up, ud_data[region],
-                                             pulse_frame=uptake_pf)
-                row[f'{col_base}_tau'] = fit['tau']
-                row[f'{col_base}_R2']  = fit['r2']
-                row[f'{col_base}_A']   = fit['A']   # plateau in ADU
+                row[f'{col_base}_A']   = fit['A']
 
     return row
 
@@ -1239,15 +1440,15 @@ def run_all_mechanics(grouped_data: Dict,
 
     for key, traps in grouped_data.items():
         # --- Compute common time window for this group ---
-        common_dur        = None
-        common_ep_pre_dur = None
+        # Each grouped_data key is one condition, so a single scalar window
+        # per condition is what we need (per-condition truncation).
+        common_dur         = None
+        common_ep_pre_dur  = None
         common_ep_post_dur = None
 
         if traps:
             ctype = traps[0].metadata.condition_type
             if ctype == "ASP":
-                # For ASP: truncate all traces to the same recording length
-                # so fitted viscoelastic / MI parameters are comparable.
                 common_dur = compute_common_duration(traps)
             elif ctype == "EP":
                 # For EP: align all pre-pulse MI windows and post-pulse slope
@@ -1259,7 +1460,10 @@ def run_all_mechanics(grouped_data: Dict,
             try:
                 row = _run_trap_mechanics(
                     trap, r_eff, C, r2_floor=r2_floor,
-                    common_duration_s=common_dur,
+                    common_duration_s=(
+                        common_dur
+                        if trap.metadata.condition_type == "ASP" else None
+                    ),
                     common_ep_pre_s=common_ep_pre_dur,
                     common_ep_post_s=common_ep_post_dur,
                 )

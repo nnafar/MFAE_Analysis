@@ -13,13 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: 'D:\MFAE\100us_100V\260402_MDAMB231_WT_Chip1_Experiment1-1100Pa-100V-100us-frame22'
+  data_folder: 'D:\MFAE\0ms_0V\260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0'
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "260402_MDAMB231_WT_Chip1_Experiment1-1100Pa-100V-100us-frame22"
+  experiment_id: "260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -34,7 +34,7 @@ experiment_parameters:
   constant_pressure: 1100  # [Pascals] 
   
   # Time between frames. (Used as a backup if image metadata is missing).
-  frame_interval: 1.75      # [Seconds]
+  frame_interval: 1.72      # [Seconds]
   
   # Maximum number of traps to process (prevents infinite loops if detection fails)
   max_traps: 18            
@@ -108,44 +108,6 @@ rupture_detection:
   
   # --- TIMING & CELL PRESENCE ---
   entry_protrusion_threshold_um: 5.0  # Protrusion length marking cell entry
-
-  # --- DEBRIS / PRE-ENTRY ARTIFACT FILTER ---
-  # Prevents debris or a dead cell already inside the channel from being detected
-  # as the true cell entry event.  Two conditions must BOTH be true for a frame
-  # to count as genuine entry.  Neither condition depends on cell size.
-  #
-  # Condition 1 — protrusion is not clamped at the ROI boundary.
-  #   When debris fills the full channel, the protrusion measurement hits the
-  #   ROI edge and reports a flat maximum (typically ~40 µm = channel_length_um).
-  #   Real protrusions are always well inside the ROI (5–15 µm for typical cells).
-  #   Any protrusion >= entry_max_prot_fraction × channel_length_um is rejected.
-  #   The 0.9 default gives 10 % tolerance for rounding; rarely needs changing.
-  entry_max_prot_fraction: 0.9
-
-  # Condition 2 — a cell body is present at the channel entrance.
-  #   This is a NOISE FLOOR only, not a cell-size discriminator.
-  #   Any real cell body (large or small) is much larger than 10 µm².
-  #   Image artefacts or single-pixel noise are typically < 5 µm².
-  #   Only lower this if very small cells are being missed; raising it
-  #   risks missing genuine entries and should be avoided.
-  entry_body_area_min_um2: 10.0
-
-  # Condition 3 — entry must be sustained for N consecutive frames.
-  #   A cell that briefly touches the entrance and retracts (transient contact,
-  #   passing debris) passes conditions 1 and 2 for only 1–2 frames.
-  #   A cell that genuinely seats itself takes several frames to decelerate.
-  #   Requiring N consecutive valid frames blocks these brief contacts without
-  #   any cell-size dependency.
-  #
-  #   If no sustained valid run is ever found (e.g. protrusion always clamped),
-  #   the trap is flagged as indeterminate and rupture detection is skipped
-  #   entirely rather than defaulting to frame 0 and firing false positives.
-  #
-  #   Tuning guide:
-  #     3 (default) — correct for most experiments; blocks 1–2 frame contacts.
-  #     Raise to 5 if slow-frame-rate recordings still show false entries.
-  #     Lower to 2 only if the cell enters and immediately exits (very rare).
-  entry_confirmed_frames: 3
   exit_protrusion_threshold_um: 0.5   # Absolute length indicating the cell left the trap
   exit_drop_ratio: 0.05               # Fractional drop (95% of its length) from previous frame indicating cell slip
   exit_sustained_frames: 3            # Number of consecutive frames the length must remain dropped
@@ -218,8 +180,8 @@ rupture_detection:
 
   # Anchored drift check (catches slow leaks)
   anchored_baseline_frames: 5
-  anchored_fold_threshold: 1.8      # [Was 2.5] 1.8× rise is sufficient with the global bypass gate
-  anchored_abs_threshold: 2.0       # [Was 3.0]
+  anchored_fold_threshold: 2.5      # [Was 1.5] (require 150% rise, not 50%)
+  anchored_abs_threshold: 3.0       # [Was 1] (require 3 a.u. absolute rise too)
   anchored_scan_window: 7           # [Was 5] (require the rise to be sustained over more frames)
 
   # --- LENGTH-DROP VETO ---
@@ -258,15 +220,6 @@ rupture_detection:
   #     on very dim channels (the absolute check filters those out).
   veto_bypass_fold_threshold: 2.0    # Haze must at least double (post/pre >= 2.0)
   veto_bypass_abs_threshold: 5.0     # And rise by at least 5 a.u. in absolute terms
-
-  # Global haze bypass: compares signal at the candidate frame against the fixed
-  # early-entry baseline (first ~5 frames post-entry) rather than the local ±5-frame
-  # window.  Catches slow EP-type rises where the local fold is modest even when the
-  # cumulative haze increase is large (Trap 7 pattern: haze doubles over 30 s, but
-  # any short window only shows a gentle slope).
-  # Both the local AND the global bypass are checked; either can let a candidate through.
-  veto_global_bypass_fold_threshold: 1.7   # Post haze / entry baseline >= 1.7
-  veto_global_bypass_abs_threshold: 3.0    # And absolute rise from baseline >= 3.0 a.u.
 
   # --- PULSE CONTEXT DETECTION (Electroporation Ruptures) ---
   #    Compares intensity in a window before vs. after the known pulse frame.
@@ -333,26 +286,26 @@ workflow_settings:
   window_scale_factor: 1.0
 
   # ROI Defaults: Starting guess for box size if detection fails.
-  default_roi_width_um: 70.0       # [µm]
-  default_roi_height_um: 31.0       # [µm]
+  default_roi_width_um: 115.0       # [µm]
+  default_roi_height_um: 45.0       # [µm]
   
   # Setup Screen: Which part of the video to show during setup? (0.5 = Middle of video).
   # This is ignored when guv_settings.enable is True (guv_settings.selection_frame_index is used instead).
-  selection_frame_fraction: 0.4
+  selection_frame_fraction: 0.3
 
 # ===================================================================
 # --- 7. DYE UPTAKE ANALYSIS (ELECTROPORATION) ---
 # ===================================================================
 dye_uptake_parameters:
   enable: True
-  has_pulse: True                   # Set to False for control experiments without electroporation.
+  has_pulse: False                   # Set to False for control experiments without electroporation.
   
   # File Naming: Strings used to identify which image is which channel.
   membrane_channel_pattern: "C1"    # e.g., Membrane label
   dye_channel_pattern: "C2"         # e.g., PI dye
   
   # Timing: When did you shock the cell?
-  pulse_frame: 22                  # The exact frame number of the electric pulse.
+  pulse_frame: 10                   # The exact frame number of the electric pulse.
   baseline_frames: 5                # How many frames before the pulse to check for background signal.
 
 # ===================================================================
@@ -380,14 +333,11 @@ image_processing:
   gaussian_kernel_size: [5, 5]     # [Was 3,3] Blur amount to reduce noise before detection.
   # fill_membrane_holes has moved to the guv_settings section above.
 
-  # Passing-cell rejection: the trapped cell is always pressed against the pipette
-  # entrance by aspiration, so its body mask left edge sits within a few pixels of
-  # pipette_x. Any blob further away is a passing cell or debris and is discarded.
-  # This threshold is a device-geometry constant — it never needs changing when
-  # switching objectives (unlike the old centroid-distance approach which scaled
-  # with cell size in pixels).
-  # 8 px ≈ 2.5 µm at 20x ≈ 5 µm at 10x — always far smaller than one cell diameter.
-  max_body_entrance_gap_px: 8
+  # Passing-cell rejection: body blobs whose centroid is further than this many
+  # pixels from the pipette entrance are treated as passing cells and ignored.
+  # Increase if your trapped cells sit unusually far into the pocket (large cells).
+  # Decrease if passing-cell contamination still appears in the mask.
+  max_body_centroid_dist_px: 20
 
   # Threshold preview CLAHE:
   # The pipeline always applies CLAHE before thresholding internally. When this

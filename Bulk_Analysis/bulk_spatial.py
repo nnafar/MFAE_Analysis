@@ -108,17 +108,20 @@ def _uptake_col_for_region(df: pd.DataFrame, region: str) -> Optional[str]:
     rather than dF/F₀.  The dF/F₀ columns are kept in the CSV for backward
     compatibility but are unsuitable for spatial comparisons because each region
     divides by its own near-zero pre-pulse F₀, producing incomparable ratios.
+    Volume-normalised intensity (ADU/μm³) removes the additional cell-size
+    confound so the plateau amplitude reflects membrane permeability rather
+    than cell volume.
 
-    'body'       -> Uptake_Body_Abs_A
-    'protrusion' -> Uptake_Prot_Abs_A
-    'total'      -> Uptake_Total_Abs_A
+    'body'       -> Uptake_Body_VolNorm_A
+    'protrusion' -> Uptake_Prot_VolNorm_A
+    'total'      -> Uptake_Total_VolNorm_A
 
     Returns None if the column is missing or all-NaN.
     """
     col_map = {
-        'body'       : 'Uptake_Body_Abs_A',
-        'protrusion' : 'Uptake_Prot_Abs_A',
-        'total'      : 'Uptake_Total_Abs_A',
+        'body'       : 'Uptake_Body_VolNorm_A',
+        'protrusion' : 'Uptake_Prot_VolNorm_A',
+        'total'      : 'Uptake_Total_VolNorm_A',
     }
 
     if region not in col_map:
@@ -217,9 +220,9 @@ def plot_trap_gradient(
 
     # Choose a readable y-axis label
     y_label_map = {
-        'Uptake_Total_Abs_A'   : 'Total Uptake Plateau (ADU)',
-        'Uptake_Body_Abs_A'    : 'Body Uptake Plateau (ADU)',
-        'Uptake_Prot_Abs_A'    : 'Protrusion Uptake Plateau (ADU)',
+        'Uptake_Total_VolNorm_A'   : 'Total Uptake Plateau (ADU/µm³)',
+        'Uptake_Body_VolNorm_A'    : 'Body Uptake Plateau (ADU/µm³)',
+        'Uptake_Prot_VolNorm_A'    : 'Protrusion Uptake Plateau (ADU/µm³)',
     }
     y_label = y_label_map.get(uptake_col, uptake_col)
 
@@ -345,7 +348,16 @@ def plot_ep_spatial_heatmap(
 ) -> None:
     """
     Heatmap where each row is one experiment replicate and each column is a
-    Trap_ID.  The colour encodes uptake amplitude (dF/F0 plateau).
+    Trap_ID.  The colour encodes uptake amplitude (absolute ΔF plateau, ADU).
+
+    Each coloured cell is additionally annotated with two morphological numbers
+    printed in small text:
+        A: <initial cell body area in µm²>
+        L: <maximum pre-pulse protrusion length in µm>
+
+    This lets you visually check, for each individual trap, whether high uptake
+    co-occurs with a large cell or a long protrusion — without needing a
+    separate plot.
 
     Parameters
     ----------
@@ -377,6 +389,21 @@ def plot_ep_spatial_heatmap(
         )
         return
 
+    y_label_map = {
+        'Uptake_Total_VolNorm_A'   : 'Total Uptake Plateau (ADU/µm³)',
+        'Uptake_Body_VolNorm_A'    : 'Body Uptake Plateau (ADU/µm³)',
+        'Uptake_Prot_VolNorm_A'    : 'Protrusion Uptake Plateau (ADU/µm³)',
+    }
+    cbar_label = y_label_map.get(uptake_col, uptake_col)
+
+    # Annotation columns: (column_name, short_prefix, format_string)
+    # These will be overlaid as small text inside each coloured cell.
+    # Both are always attempted; missing columns are silently skipped.
+    ANN_SPECS = [
+        ('Cell_Body_Area_PrePulse_um2', 'A', '{:.0f}µm²'),
+        ('Max_Prot_Length_PrePulse_um', 'L', '{:.1f}µm'),
+    ]
+
     conditions = _unique_conditions(ep)
 
     for cond in conditions:
@@ -406,9 +433,32 @@ def plot_ep_spatial_heatmap(
                 pivot[t] = np.nan
         pivot = pivot[all_traps]  # enforce column order 1 → 18
 
+        # --- Build annotation pivots (same grid, different values) ---
+        # For each annotation column, build a pivot table that maps the same
+        # (Experiment_Folder × Trap_ID) grid to the morphological value.
+        # reindex() fills gaps with NaN so the indices align perfectly with
+        # the main pivot even when some traps have no area/length data.
+        ann_pivots = {}
+        for col, prefix, fmt in ANN_SPECS:
+            if col in sub.columns and sub[col].notna().any():
+                ann_piv = sub.pivot_table(
+                    index='Experiment_Folder',
+                    columns='Trap_ID',
+                    values=col,
+                    aggfunc='mean',
+                )
+                ann_piv = ann_piv.reindex(index=pivot.index, columns=all_traps)
+                ann_pivots[col] = (ann_piv, prefix, fmt)
+
         # --- Plot ---
         fig_h = max(3, 0.5 * len(pivot))   # scale height with number of experiments
         fig, ax = plt.subplots(figsize=(12, fig_h))
+
+        # The global seaborn-whitegrid style switches gridlines on for every
+        # axes object.  For an imshow heatmap the grid lines are drawn on top
+        # of the pixel data and just chop up the cells visually, so turn them
+        # off here for this axes only.
+        ax.grid(False)
 
         # Use a sequential colourmap; white for NaN (missing traps)
         cmap = plt.cm.YlOrRd.copy()
@@ -422,6 +472,48 @@ def plot_ep_spatial_heatmap(
             interpolation='nearest'
         )
 
+        # --- Cell annotations ---
+        # Overlay area and pre-pulse protrusion length as small text in each
+        # coloured cell.  Text colour adapts to the cell brightness so it
+        # stays legible on both pale-yellow (low uptake) and dark-red (high
+        # uptake) cells.
+        if ann_pivots:
+            # Determine the data range to normalise cell brightness.
+            # np.ma.getmaskarray always returns a full boolean array — avoids
+            # the scalar-False quirk of masked_data.mask when nothing is masked.
+            mask_arr = np.ma.getmaskarray(masked_data)
+            valid_vals = masked_data.data[~mask_arr]
+            v_min = float(np.nanmin(valid_vals)) if len(valid_vals) else 0.0
+            v_max = float(np.nanmax(valid_vals)) if len(valid_vals) else 1.0
+            v_range = max(v_max - v_min, 1e-9)
+
+            for row_idx in range(len(pivot.index)):
+                for col_idx in range(len(all_traps)):
+                    if mask_arr[row_idx, col_idx]:
+                        continue  # white (no-data) cell — nothing to annotate
+
+                    # Choose black or white text based on how dark the cell is.
+                    # YlOrRd transitions from pale yellow to dark red, so cells
+                    # above ~55 % of the range are dark enough to need white text.
+                    norm_val = (masked_data.data[row_idx, col_idx] - v_min) / v_range
+                    txt_color = 'white' if norm_val > 0.55 else 'black'
+
+                    # Collect annotation lines that have valid data for this cell
+                    lines = []
+                    for col, (ann_piv, prefix, fmt) in ann_pivots.items():
+                        val = ann_piv.iloc[row_idx, col_idx]
+                        if np.isfinite(val):
+                            lines.append(f"{prefix}:{fmt.format(val)}")
+
+                    if lines:
+                        ax.text(
+                            col_idx, row_idx,
+                            '\n'.join(lines),
+                            ha='center', va='center',
+                            fontsize=4.5, color=txt_color,
+                            linespacing=1.2,
+                        )
+
         # Axis labels
         ax.set_xticks(range(len(all_traps)))
         ax.set_xticklabels(all_traps, fontsize=8)
@@ -433,12 +525,7 @@ def plot_ep_spatial_heatmap(
         ax.set_ylabel('Experiment replicate', fontsize=9)
 
         cbar = fig.colorbar(im, ax=ax, shrink=0.6, pad=0.02)
-        y_label_map = {
-            'Uptake_Total_Abs_A'  : 'Total Uptake Plateau (ADU)',
-            'Uptake_Body_Abs_A'   : 'Body Uptake Plateau (ADU)',
-            'Uptake_Prot_Abs_A'   : 'Protrusion Uptake Plateau (ADU)',
-        }
-        cbar.set_label(y_label_map.get(uptake_col, uptake_col), fontsize=8)
+        cbar.set_label(cbar_label, fontsize=8)
 
         # Annotate near/far electrode columns
         near_col_idx = all_traps.index(ELECTRODE_NEAR_TRAP)
@@ -447,7 +534,8 @@ def plot_ep_spatial_heatmap(
 
         ax.set_title(
             f'Spatial Heatmap: {cond.replace("_", " ")}\n'
-            f'(white = no data; Trap {ELECTRODE_NEAR_TRAP} = near electrode)',
+            f'(white = no data; Trap {ELECTRODE_NEAR_TRAP} = near electrode; '
+            f'A=initial body area, L=max pre-pulse protrusion)',
             fontsize=9
         )
 
@@ -519,9 +607,9 @@ def plot_cell_size_spatial(
         return
 
     y_label_map = {
-        'Uptake_Total_Abs_A' : 'Total Uptake Plateau (ADU)',
-        'Uptake_Body_Abs_A'  : 'Body Uptake Plateau (ADU)',
-        'Uptake_Prot_Abs_A'  : 'Protrusion Uptake Plateau (ADU)',
+        'Uptake_Total_VolNorm_A'   : 'Total Uptake Plateau (ADU/µm³)',
+        'Uptake_Body_VolNorm_A'    : 'Body Uptake Plateau (ADU/µm³)',
+        'Uptake_Prot_VolNorm_A'    : 'Protrusion Uptake Plateau (ADU/µm³)',
     }
     uptake_label = y_label_map.get(uptake_col, uptake_col)
 
@@ -577,7 +665,7 @@ def plot_cell_size_spatial(
         # ---- RIGHT: uptake vs area, coloured by trap position ----
         # Floor values at 1 ADU before log-scaling so that near-zero or
         # negative baseline-subtracted fits don't produce log(0) errors.
-        y_vals_plot = np.where(y_vals > 1.0, y_vals, 1.0)
+        y_vals_plot = np.where(y_vals > 1e-3, y_vals, 1e-3)
 
         sc_right = ax_right.scatter(
             area_vals, y_vals_plot,

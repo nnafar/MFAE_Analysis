@@ -80,184 +80,47 @@ def setup_logging(debug_mode: bool = False, log_file: Path = Path('mfa_analysis.
     # Suppress overly verbose logs from third-party libraries
     logging.getLogger('matplotlib').setLevel(logging.WARNING)
     logging.getLogger('PIL').setLevel(logging.WARNING)
-    # fontTools: matplotlib delegates PDF font embedding (pdf.fonttype=42) to
-    # fontTools, which by default logs an INFO line per glyph-table subset and
-    # a DEBUG line per table read. Silencing the parent logger covers every
-    # child (fontTools.subset, fontTools.ttLib.ttFont, fontTools.subset.timer,
-    # fontTools.ttLib.tables.otBase, ...).
-    logging.getLogger('fontTools').setLevel(logging.WARNING)
 
 # =============================================================================
 # 2. PLOTTING AND STYLING UTILITIES
 # =============================================================================
-# This block was ported from the GUV chapter's plotting.py so that every
-# figure in every chapter of the thesis prints at the same physical size,
-# with the same fonts, at the same target point size. The core idea: define
-# ONE canonical printed width (page_textwidth_in, derived from an A5 page at
-# hscale=0.75) and one target point size for each text role (title, label,
-# tick, legend, annot). Figures drawn at a non-standard width use
-# _fs_for_width() so their fonts are scaled to come out at the right point
-# size after LaTeX resizes them on the final page.
-#
-# The categorical data palette has been swapped to the same blue ramp used
-# in the GUV chapter so both chapters read as one visual family. The blue
-# -> red time gradient (kymographs / time-color sequences) is kept — it
-# encodes time DIRECTION, which a monochrome ramp cannot express.
-#
-# Pulse and rupture event markers use warm accent hues so they stay
-# distinguishable against the now-all-blue data traces.
-# =============================================================================
 
-import seaborn as sns  # required by set_paper_style() below
-
-# --- Centralized Color Palette (Blue-family with warm event accents) -------
+# --- Centralized Color Palette (Blue to Red Scheme) ---
+# Extracted from user reference image 'Blue to Red'
 MFA_COLORS = {
-    # ── Blue ramp (canonical categorical palette) ──────────────────────────
-    # Same hex codes as the GUV chapter's CONDITION_PALETTE. Legacy keys
-    # 'dark_blue' / 'medium_blue' / 'light_blue' / 'pale_blue' are kept so
-    # any old references still resolve — they just now point at blue-purple
-    # tones instead of the previous saturated-blue tones.
-    'dark_blue':   '#1a243d',
-    'medium_blue': '#34487a',
-    'light_blue':  '#5d6ea6',
-    'pale_blue':   '#9896bb',
+    # Reference Palette (Hex)
+    'dark_blue':   '#1065AB', # R 016, G 101, B 171
+    'medium_blue': '#3A93C3', # R 058, G 147, B 195
+    'light_blue':  '#8EC4DE', # R 142, G 196, B 222
+    'pale_blue':   '#D1E5F0', # R 209, G 229, B 240
+    'light_grey':  '#E7E6E3', # R 231, G 230, B 227
+    'white':       '#F9F9F9', # R 249, G 249, B 249
+    'pale_red':    '#FDDBC7', # R 254, G 219, B 199
+    'light_red':   '#F6A482', # R 246, G 164, B 130
+    'medium_red':  '#D75F4C', # R 215, G 095, B 076
+    'dark_red':    '#B31529', # R 179, G 021, B 041
+    
+    # UI Semantic Mapping
+    'ui_guide':    '#3A93C3', # Medium Blue (ROI Box, Rotation Line)
+    'ui_pipette':  '#1065AB', # Dark Blue   (Pipette Entrance Line)
+    'ui_mask':     '#B31529', # Dark Red    (Threshold Mask)
+    'ui_text':     '#F9F9F9', # White       (Overlay Text)
 
-    # ── Neutrals for grid lines, empty states, etc. ────────────────────────
-    'light_grey':  '#E7E6E3',
-    'white':       '#F9F9F9',
-
-    # ── Warm accents (RESERVED for event markers / annotations) ────────────
-    # Data traces should not draw from these — they are reserved so pulse
-    # and rupture vertical lines stay visible against blue data.
-    'pale_red':    '#FDDBC7',
-    'light_red':   '#F6A482',
-    'medium_red':  '#D75F4C',
-    'dark_red':    '#B31529',
-
-    # ── UI semantic mapping (OpenCV overlays — kept unchanged) ─────────────
-    # OpenCV UI elements sit on live microscopy frames, not data plots, so
-    # they keep their high-contrast blue/red hues for clarity against
-    # grayscale image data.
-    'ui_guide':    '#3A93C3',
-    'ui_pipette':  '#1065AB',
-    'ui_mask':     '#B31529',
-    'ui_text':     '#F9F9F9',
-
-    # ── Plotting defaults (semantic slots — DO NOT rename) ─────────────────
-    # Downstream plotting code references these by name. Only the hex
-    # values have been rewired to the blue palette; keys are unchanged.
-    'primary':     '#1a243d',  # darkest blue — main trace / raw points
-    'secondary':   '#5d6ea6',  # medium blue  — protrusion / fits
-    'tertiary':    '#9896bb',  # pale blue    — cell body
-    'quaternary':  '#34487a',  # dark blue    — total / intensity trace
-
-    # ── Event markers (warm, for contrast against blue data) ───────────────
-    'pulse':       '#D75F4C',  # medium red — pulse vertical dashed line
-    'rupture':     '#B31529',  # dark red   — rupture vertical dashed line
-
-    'grid':        '#D9E4E9',
+    # Plotting Defaults
+    'primary':     '#000000', # Black (Raw Data Points / Main Trace)
+    'secondary':   '#D75F4C', # Medium Red (Protrusion / Fits)
+    'tertiary':    '#8EC4DE', # Light Blue (Cell Body / Mask Overlay)
+    'quaternary':  '#B31529', # Dark Red (Rupture Haze / Intensity Trace)
+    
+    'pulse':       '#3A93C3', # Medium Blue (Vertical line for pulse)
+    'rupture':     '#B31529', # Dark Red (Vertical line for rupture)
+    
+    'grid':        '#D1E5F0', # Pale Blue
     'background':  '#FFFFFF',
-
-    # ── Blue -> red time gradient (kymograph / time-colored traces) ────────
-    # Diverging on purpose. Blue = early, red = late is the strongest
-    # time-direction cue available and no monochrome ramp matches it.
-    'time_gradient_start': '#1a243d',
-    'time_gradient_end':   '#B31529',
+    
+    'time_gradient_start': '#1065AB', 
+    'time_gradient_end':   '#B31529'
 }
-
-# --- Region palette (parallel to bulk_plotting's PALETTE_REGION) -----------
-# Mirrors the GUV cortex-density gradient logic: the region of primary
-# interest sits at medium tone, contextual regions at lighter tones, and
-# aggregate summaries at the darkest tone.
-MFA_REGION_PALETTE = {
-    'Protrusion': '#5d6ea6',  # medium — the focal region of interest
-    'Body':       '#9896bb',  # light  — contextual backdrop
-    'Total':      '#1a243d',  # darkest — aggregate summary
-    'Tip':        '#34487a',  # dark   — top-N% subregion within protrusion
-}
-
-# =============================================================================
-# 2a. PAGE-AWARE FIGURE SIZING (ported from GUV chapter plotting.py)
-# =============================================================================
-
-# The single shared "settings sheet" for every figure. Downstream plotting
-# code should read canvas widths and target font sizes from here so a
-# single edit changes the whole thesis's visual proportions.
-PLOT_STYLE = {
-    "font_family":          "Arial",
-    "sns_style":            "ticks",
-    "sns_context":          "paper",
-
-    # A5 page 17 cm wide x hscale 0.75 = 12.75 cm = 5.02 in.
-    # This is the width _fs() targets when computing font sizes, so text
-    # is drawn at the correct point size after LaTeX resizes the figure
-    # to fit this width on the final page.
-    "page_textwidth_in":    5.02,
-
-    # Target PRINTED font sizes (points) on the final page.
-    "fontsize_title_pt":    12.0,
-    "fontsize_label_pt":    12.0,
-    "fontsize_tick_pt":     12.0,
-    "fontsize_legend_pt":   12.0,
-    "fontsize_annot_pt":    12.0,
-
-    # Line widths (unitless — no pt-conversion needed).
-    "axes_linewidth":       1.5,
-    "tick_linewidth":       1.5,
-
-    # Canvas widths (inches). "Single column" = one Axes.
-    # Grids multiply per_panel_* by nrows / ncols.
-    "single_col_width_in":      7.0,
-    "single_col_height_in":     5.5,
-    "per_panel_width_in":       3.0,
-    "per_panel_height_in":      3.6,
-
-    "dpi_raster":               600,   # for raster elements embedded in PDF
-}
-
-
-def _fs(role: str) -> float:
-    """
-    Returns the matplotlib fontsize needed for text to PRINT at the target
-    point size in PLOT_STYLE, assuming the figure is drawn at the standard
-    single-column width. Roles: title, label, tick, legend, annot.
-
-    For grids or other non-standard widths, use _fs_for_width() instead —
-    pass in that figure's actual width so the conversion accounts for how
-    much the figure will be scaled on the printed page.
-    """
-    return _fs_for_width(role, PLOT_STYLE["single_col_width_in"])
-
-
-def _fs_for_width(role: str, drawn_width_in: float) -> float:
-    """
-    Same as _fs() but for figures whose canvas width isn't the standard
-    single-column width. Pass in the width (inches) actually used in
-    plt.subplots(figsize=(drawn_width_in, ...)).
-    """
-    target_pt = PLOT_STYLE[f"fontsize_{role}_pt"]
-    scale_factor = PLOT_STYLE["page_textwidth_in"] / drawn_width_in
-    return target_pt / scale_factor
-
-
-def _get_figsize_single_col() -> Tuple[float, float]:
-    """Standard (width, height) in inches for a one-panel figure."""
-    return (PLOT_STYLE["single_col_width_in"], PLOT_STYLE["single_col_height_in"])
-
-
-def _get_figsize_grid(nrows: int, ncols: int) -> Tuple[float, float]:
-    """
-    (width, height) in inches for an nrows x ncols grid. Because width
-    scales with ncols, downstream code MUST use _fs_for_width(role, width)
-    when setting fonts on grid figures.
-    """
-    width  = PLOT_STYLE["per_panel_width_in"]  * ncols
-    height = PLOT_STYLE["per_panel_height_in"] * nrows
-    return (width, height)
-
-# =============================================================================
-# 2b. OPENCV UI COLORS (unchanged)
-# =============================================================================
 
 def hex_to_bgr(hex_color: str) -> Tuple[int, int, int]:
     """Converts hex string to BGR tuple for OpenCV."""
@@ -282,114 +145,78 @@ def get_bgr_color(color_name: str) -> Tuple[int, int, int]:
     hex_val = MFA_COLORS.get(color_name, MFA_COLORS['white'])
     return hex_to_bgr(hex_val)
 
-# =============================================================================
-# 2c. GLOBAL STYLE + SAVE HELPERS
-# =============================================================================
-
-def set_paper_style(*_legacy_args, **_legacy_kwargs) -> None:
-    """
-    Applies the shared seaborn theme and matplotlib rcParams used by every
-    figure in the pipeline. Ports the GUV chapter's set_paper_style():
-        - seaborn "ticks" style, "paper" context
-        - Arial (falling back to DejaVu Sans)
-        - top/right spines off
-        - pdf.fonttype = 42 (Type-3-free PDFs)
-        - Tick/label/title/legend sizes come from PLOT_STYLE via _fs()
-
-    Grid figures with a non-standard width should still call
-    _fs_for_width(role, width) locally when setting sizes; the rcParams
-    here only cover the standard-width case.
-
-    *args/**kwargs are absorbed so legacy call sites that used to pass
-    base_fontsize / dpi still work — those parameters are now controlled
-    centrally through PLOT_STYLE.
-    """
-    sns.set_theme(
-        style   = PLOT_STYLE["sns_style"],
-        context = PLOT_STYLE["sns_context"],
-    )
+def set_paper_style(base_fontsize: int = 14, dpi: int = 300) -> None:
+    """Applies publication-quality style to Matplotlib plots."""
+    plt.rcdefaults() 
     mpl.rcParams.update({
-        "font.family":        "sans-serif",
-        "font.sans-serif":    [PLOT_STYLE["font_family"], "DejaVu Sans"],
-        "axes.spines.top":    False,
-        "axes.spines.right":  False,
-        "axes.linewidth":     PLOT_STYLE["axes_linewidth"],
-        "xtick.major.width":  PLOT_STYLE["tick_linewidth"],
-        "ytick.major.width":  PLOT_STYLE["tick_linewidth"],
-        "xtick.labelsize":    _fs("tick"),
-        "ytick.labelsize":    _fs("tick"),
-        "axes.labelsize":     _fs("label"),
-        "axes.titlesize":     _fs("title"),
-        "legend.fontsize":    _fs("legend"),
-        "legend.frameon":     False,
-        "figure.facecolor":   MFA_COLORS['background'],
-        "grid.color":         MFA_COLORS['grid'],
-        "grid.alpha":         0.4,
-        "pdf.fonttype":       42,
-        "svg.fonttype":       "none",
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'DejaVu Sans'],
+        'font.size': base_fontsize,
+        'axes.labelsize': base_fontsize,
+        'axes.titlesize': base_fontsize + 2,
+        'axes.titleweight': 'bold',
+        'legend.fontsize': base_fontsize - 2,
+        'legend.frameon': True,
+        'figure.dpi': dpi,
+        'figure.facecolor': 'white',
+        'axes.spines.top': False,
+        'axes.spines.right': False,
+        'grid.alpha': 0.4,
+        'grid.color': MFA_COLORS['grid'],
+        'lines.linewidth': 2.5,
+        'axes.prop_cycle': mpl.cycler(color=[
+            MFA_COLORS['primary'],    # Black
+            MFA_COLORS['secondary'],  # Medium Red
+            MFA_COLORS['tertiary']    # Dark Blue
+        ])
     })
 
 def get_time_colormap(n_steps: int) -> List[Tuple[float, float, float, float]]:
-    """
-    Discrete sample of the blue -> red time gradient. Kept diverging on
-    purpose: blue -> red encodes time direction in kymographs and time-
-    colored trace overlays. No monochrome ramp is equivalent.
-    """
+    """Returns a list of colors forming the full Blue -> Red gradient."""
+    # Define the full 9-color gradient from the user's palette
     colors = [
-        MFA_COLORS['dark_blue'],   MFA_COLORS['medium_blue'], MFA_COLORS['light_blue'],
-        MFA_COLORS['pale_blue'],   MFA_COLORS['light_grey'],  MFA_COLORS['pale_red'],
-        MFA_COLORS['light_red'],   MFA_COLORS['medium_red'],  MFA_COLORS['dark_red'],
+        MFA_COLORS['dark_blue'], MFA_COLORS['medium_blue'], MFA_COLORS['light_blue'],
+        MFA_COLORS['pale_blue'], MFA_COLORS['light_grey'], MFA_COLORS['pale_red'],
+        MFA_COLORS['light_red'], MFA_COLORS['medium_red'], MFA_COLORS['dark_red']
     ]
     cmap = mpl.colors.LinearSegmentedColormap.from_list("mfa_full_gradient", colors)
+    
     if n_steps == 1:
         return [cmap(0.5)]
     return [cmap(i / (n_steps - 1)) for i in range(n_steps)]
 
 def get_mfa_continuous_cmap() -> mpl.colors.LinearSegmentedColormap:
-    """
-    Continuous colormap for kymographs (Black -> Blue -> White -> Red).
-    Same rationale as get_time_colormap: kymographs need direction, not
-    category, so the diverging axis is preserved.
-    """
+    """Returns a continuous matplotlib colormap for Kymographs (Blue->White->Red)."""
+    # Optimized for heatmaps: Dark Blue (Low) -> White (Mid) -> Dark Red (High)
     nodes = [0.0, 0.2, 0.5, 0.8, 1.0]
     colors = [
-        '#000000',
+        '#000000', # Black (Background)
         MFA_COLORS['dark_blue'],
         MFA_COLORS['light_blue'],
         MFA_COLORS['medium_red'],
-        MFA_COLORS['dark_red'],
+        MFA_COLORS['dark_red']
     ]
     return mpl.colors.LinearSegmentedColormap.from_list("mfa_kymo", list(zip(nodes, colors)))
 
-def save_plot_pdf(save_path: Union[str, Path], dpi: Optional[int] = None) -> None:
-    """
-    Saves the current matplotlib figure as a PDF at the standardized DPI.
+def save_plot_png(save_path: Union[str, Path], dpi: int = 300) -> None:
+    save_path_png = Path(save_path).with_suffix(".png")
+    save_path_png.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(str(save_path_png), dpi=dpi, bbox_inches='tight', format='png')
+    logger.info(f"Plot saved: {save_path_png.name}")
 
-    Why PDF instead of PNG:
-        PDFs store drawings as vectors, so they stay perfectly sharp at any
-        print/zoom level — important for thesis figures embedded in LaTeX.
-        dpi still matters for RASTER elements baked into the figure (e.g.
-        scatter markers, imshow images); PLOT_STYLE["dpi_raster"] controls
-        that so it's consistent across every figure.
-
-    Whatever extension is in save_path is replaced with '.pdf'. This keeps
-    existing call sites — which pass '.png' paths — working during the
-    migration.
+def save_plot_pdf(save_path: Union[str, Path], dpi: int = 300) -> None:
     """
-    if dpi is None:
-        dpi = PLOT_STYLE["dpi_raster"]
+    Save the current matplotlib figure as a PDF (vector format).
+
+    Mirror of save_plot_png. Use for figures intended for the thesis or a
+    publication -- PDF stays sharp at any zoom level and embeds fonts as
+    text rather than rasterizing them. Any raster elements in the figure
+    (e.g. scatter markers, images) still respect the `dpi` argument.
+    """
     save_path_pdf = Path(save_path).with_suffix(".pdf")
     save_path_pdf.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(str(save_path_pdf), dpi=dpi, bbox_inches='tight', format='pdf')
     logger.info(f"Plot saved: {save_path_pdf.name}")
-
-# Backward-compat alias: any legacy code still calling save_plot_png() now
-# transparently writes a PDF. Safe to remove once every call site has been
-# migrated to save_plot_pdf().
-def save_plot_png(save_path: Union[str, Path], dpi: Optional[int] = None) -> None:
-    """DEPRECATED shim during the PNG -> PDF migration.
-    Writes a PDF regardless of the extension in save_path."""
-    save_plot_pdf(save_path, dpi=dpi)
 
 # =============================================================================
 # 3. IMAGE PROCESSING AND DISPLAY UTILITIES

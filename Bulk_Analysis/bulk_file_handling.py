@@ -31,7 +31,7 @@ import pandas as pd
 import numpy as np
 from copy import copy
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 # Configure Logging
@@ -63,10 +63,9 @@ class TrapData:
     """Holds all data arrays for a single trap."""
     trap_id: int
     metadata: ExperimentMetadata
-    
     # Data containers
-    protrusion_data: Dict[str, np.ndarray] # From "Filtered" CSV
-    uptake_data: Dict[str, np.ndarray]     # From "Uptake" CSV
+    protrusion_data: Dict[str, np.ndarray]      # From "Full" detection CSV
+    uptake_data: Dict[str, np.ndarray]          # From "Uptake" CSV
 
     def __repr__(self):
         return (f"TrapData(ID={self.trap_id}, "
@@ -208,55 +207,33 @@ class BulkDataLoader:
                 except Exception as e:
                     logger.warning(f"   Could not read shear CSV: {e}")
 
-        dir_filtered = meta.full_path / "Filtered protrusion detection"
         dir_uptake   = meta.full_path / "Dye Uptake"
         dir_full     = meta.full_path / "Full protrusion detection"
 
-        # Broad glob: catches plain filtered files AND any flagged variants
-        # (e.g. trap_01_detection_filtered_ruptured.csv).
         _EXCLUDE_TAGS = ('_ruptured', '_irregular')
-        all_filtered_candidates = sorted(dir_filtered.glob("trap_*_detection_filtered*.csv"))
+        all_full_candidates = sorted(dir_full.glob("trap_*_detection_full*.csv")) if dir_full.exists() else []
 
-        filtered_files = []
-        for f_file in all_filtered_candidates:
-            # --- Skip if the filtered file itself carries a quality flag ---
-            if any(tag in f_file.stem.lower() for tag in _EXCLUDE_TAGS):
-                logger.info(f"  Skipping flagged filtered file: {f_file.name}")
+        n_ruptured = n_irregular = 0
+        for f_file in all_full_candidates:
+            stem_lower = f_file.stem.lower()
+            if '_ruptured' in stem_lower:
+                n_ruptured += 1
+                logger.debug(f"  Skipping flagged full file: {f_file.name}")
+                continue
+            if '_irregular' in stem_lower:
+                n_irregular += 1
+                logger.debug(f"  Skipping flagged full file: {f_file.name}")
                 continue
 
-            # --- Also skip if the corresponding FULL detection file is flagged.
-            #     This lets the experimenter mark only the full-detection files
-            #     and have the pipeline automatically exclude the filtered version.
-            id_match_tmp = re.search(r"trap_(\d+)_", f_file.name, re.IGNORECASE)
-            if id_match_tmp and dir_full.exists():
-                tid_int = int(id_match_tmp.group(1))
-                skip_trap = False
-                for tag in _EXCLUDE_TAGS:
-                    # Check both zero-padded (trap_01) and bare (trap_1) formats
-                    if (list(dir_full.glob(f"trap_{tid_int:02d}_detection_full*{tag}*"))
-                            or list(dir_full.glob(f"trap_{tid_int}_detection_full*{tag}*"))):
-                        skip_trap = True
-                        break
-                if skip_trap:
-                    logger.info(
-                        f"  Skipping trap {tid_int}: full detection file is "
-                        f"marked as ruptured/irregular."
-                    )
-                    continue
-
-            filtered_files.append(f_file)
-
-        for f_file in filtered_files:
             id_match = re.search(r"trap_(\d+)_", f_file.name, re.IGNORECASE)
             if not id_match: continue
             
             trap_id = int(id_match.group(1))
             
-            # 1. Load Filtered Data
+            # 1. Load Full Detection Data
             prot_dict = self._csv_to_dict(f_file)
 
             # 2. Load Uptake Data
-            # Try 02d format first (Trap_01), then single digit (Trap_1)
             u_file_name = f"Trap_{trap_id:02d}_Uptake_Data.csv"
             u_file = dir_uptake / u_file_name
             uptake_dict = {}
@@ -268,11 +245,9 @@ class BulkDataLoader:
                 if u_file_alt.exists():
                      uptake_dict = self._csv_to_dict(u_file_alt, comment='#')
 
-            # FIX #2: Each trap gets its OWN copy of ExperimentMetadata.
-            # Without this, all traps in the same experiment share a single
-            # metadata object by reference.  If you later add per-trap
-            # metadata (e.g. a per-trap f* or quality flag), modifying one
-            # trap's metadata would accidentally change it for all traps.
+            if uptake_dict:
+                self._add_vol_norm_columns(uptake_dict)
+
             trap_data = TrapData(
                 trap_id=trap_id,
                 metadata=copy(meta),
@@ -280,6 +255,13 @@ class BulkDataLoader:
                 uptake_data=uptake_dict,
             )
             loaded_traps.append(trap_data)
+
+        # One-line audit summary instead of per-file spam.
+        if n_ruptured or n_irregular:
+            logger.info(
+                f"  Excluded {n_ruptured + n_irregular} flagged trap(s) "
+                f"({n_ruptured} ruptured, {n_irregular} irregular)."
+            )
 
         return loaded_traps
 
@@ -301,6 +283,41 @@ class BulkDataLoader:
         except Exception as e:
             logger.error(f"Error loading CSV {file_path.name}: {e}")
             return {}
+
+    @staticmethod
+    def _add_vol_norm_columns(ud: Dict[str, np.ndarray]) -> None:
+        """
+        Derives volume-normalised uptake columns from the columns that are
+        already present in every uptake CSV (old and new alike).
+
+        Formula:  VolNorm = Intensity / Volume_um3
+        Units:    ADU / µm³
+
+        Called after loading the uptake CSV so that:
+          - New CSVs (post-UptakeQuantification update) already contain
+            Body_VolNorm etc. and this function is a no-op for those columns.
+          - Old CSVs (pre-update) get the columns computed on-the-fly from
+            {Body,Protrusion,Total}_Intensity and Volume_{Body,Prot,Total}_um3,
+            which have been present since earlier pipeline versions.
+
+        Modifies *ud* in-place.  Skips any pair where either source column is
+        absent or the volume array is all-zero.
+        """
+        pairs = [
+            ('Body_VolNorm',       'Body_Intensity',       'Volume_Body_um3'),
+            ('Protrusion_VolNorm', 'Protrusion_Intensity', 'Volume_Prot_um3'),
+            ('Total_VolNorm',      'Total_Intensity',      'Volume_Total_um3'),
+        ]
+        for out_col, int_col, vol_col in pairs:
+            if out_col in ud:
+                continue                          # already present — nothing to do
+            if int_col not in ud or vol_col not in ud:
+                continue                          # source columns missing — skip
+            intensity = ud[int_col]
+            volume    = ud[vol_col]
+            with np.errstate(divide='ignore', invalid='ignore'):
+                result = np.where(volume > 0, intensity / volume, 0.0)
+            ud[out_col] = result
 
 def extract_all_scalars(grouped_data: Dict[Tuple[str, str, int, int, float], List[TrapData]]) -> pd.DataFrame:
     """

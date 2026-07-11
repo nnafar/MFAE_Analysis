@@ -2178,19 +2178,45 @@ class LineDetectionMFA:
         return np.mean(roi) if roi.size > 0 else 0.0
     
     def export_results_to_csv(self, output_dir: Union[str, Path], experiment_id: str = "experiment", 
-                              dir_full: Optional[Path] = None, dir_filtered: Optional[Path] = None) -> List[Path]:
+                              dir_full: Optional[Path] = None, dir_filtered: Optional[Path] = None,
+                              time_points: Optional[List[float]] = None) -> List[Path]:
         """
         Saves two CSV files:
         1. `..._full.csv`: Contains every frame of data.
         2. `..._filtered.csv`: Cuts off data after a rupture is detected (cleaner for plotting).
+
+        Time_s is taken from `time_points` when supplied (these are the
+        per-frame timestamps extracted from image metadata upstream). If
+        `time_points` is missing or the length does not match the number of
+        detection frames, we fall back to reconstructing Time_s from the
+        config's `frame_interval`, which is only correct when acquisition
+        is uniform at that interval. The fallback is logged so silent
+        drift between real acquisition times and the config value cannot
+        go unnoticed.
         """
-        frame_interval = self.params.get('experiment_parameters', {}).get('frame_interval', 0.2)
         num_frames = len(self.results['protrusion_lengths_px'])
-        time_points = [i * frame_interval for i in range(num_frames)]
+
+        if time_points is not None and len(time_points) == num_frames:
+            time_col = list(time_points)
+        else:
+            frame_interval = self.params.get('experiment_parameters', {}).get('frame_interval', 0.2)
+            time_col = [i * frame_interval for i in range(num_frames)]
+            if time_points is None:
+                logger.warning(
+                    f"export_results_to_csv ({experiment_id}): no time_points supplied; "
+                    f"Time_s reconstructed from config frame_interval={frame_interval}s. "
+                    f"This will be wrong for non-uniform or non-{frame_interval}s acquisition."
+                )
+            else:
+                logger.warning(
+                    f"export_results_to_csv ({experiment_id}): time_points length "
+                    f"({len(time_points)}) != num_frames ({num_frames}); falling back to "
+                    f"frame_interval={frame_interval}s. Time_s will be wrong for this trap."
+                )
 
         df = pd.DataFrame({
             'Frame': list(range(num_frames)),
-            'Time_s': time_points,
+            'Time_s': time_col,
             'Protrusion_Length_px': self.results['protrusion_lengths_px'],
             'Protrusion_Length_um': self.results['protrusion_lengths_um'],
             'Protrusion_Area_um2': self.results['protrusion_area_um2'],
