@@ -1033,6 +1033,13 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         'Duration_ms'       : meta.duration,
         'Duration_label'    : meta.duration_label,
         'Condition_Type'    : meta.condition_type,
+        # True iff this EP trap's cell entered the pocket AFTER the pulse
+        # fired (source: '_after' filename marker from bulk_file_handling).
+        # For ASP traps and normal EP traps the flag stays False. Downstream
+        # cohort masks route Post_Pulse_Entry=True cells through the ASP
+        # analysis path (viscoelastic + whole-trace treatment) while keeping
+        # them out of the EP pre-pulse comparison.
+        'Post_Pulse_Entry_Flag' : bool(getattr(trap, 'post_pulse_entry', False)),
         # FIX #11: Pre-built composite label for quick filtering in Excel/Prism.
         'Condition'         : _make_condition_label(meta),
         'Trap_ID'           : trap.trap_id,
@@ -1068,6 +1075,25 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         'PL_BIC'                : None,
         'MI_Window_Duration_s'  : None,
         'MI_N_Points'           : None,
+        # Whole-trace MI fit (from entry to end of trace, no pre-pulse
+        # truncation). Populated for every fittable cell. For ASP and
+        # post-pulse-entry cells these values equal the MI_* fields above
+        # because the primary MI fit is already whole-trace. For standard
+        # EP cells this is a SECOND fit that ignores the pulse and treats
+        # the whole recorded trace as a single mechanical response — used
+        # by the alternate MI thesis plot that compares ASP whole-trace
+        # against EP whole-trace and post-pulse-entry whole-trace.
+        'MI_Whole_Best_Model'         : None,
+        'MI_Whole_Linear_Slope'       : None,
+        'MI_Whole_Linear_Intercept'   : None,
+        'MI_Whole_Linear_R2'          : None,
+        'MI_Whole_Linear_BIC'         : None,
+        'MI_Whole_PL_a'               : None,
+        'MI_Whole_PL_b'               : None,
+        'MI_Whole_PL_R2'              : None,
+        'MI_Whole_PL_BIC'             : None,
+        'MI_Whole_Window_Duration_s'  : None,
+        'MI_Whole_N_Points'           : None,
         # EP pre/post pulse slopes
         'Pre_Pulse_Slope'       : None,
         'Post_Pulse_Slope'      : None,
@@ -1115,8 +1141,18 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
     if len(time_raw) < 5 or len(length_raw) < 5:
         return row
 
-    # --- Common time window truncation (ASP only) ---
-    if meta.condition_type == "ASP" and common_duration_s is not None:
+    # Post-pulse-entry EP cells experience no field during aspiration (the
+    # pulse fired before they arrived), so their whole trace from entry is
+    # a clean aspiration curve. We route them through the ASP fitting path
+    # here — common-duration window truncation, viscoelastic fit, MI whole-
+    # trace fit — so they can be plotted alongside ASP cells on the visco-
+    # elastic thesis figures. The MI pre-pulse fit further down (Block B
+    # EP branch) still gets skipped for these traps because their pre_mask
+    # comes out empty.
+    is_asp_like = (meta.condition_type == "ASP") or bool(getattr(trap, 'post_pulse_entry', False))
+
+    # --- Common time window truncation (ASP-like) ---
+    if is_asp_like and common_duration_s is not None:
         t_from_entry = time_raw - time_raw[0]
         window_mask  = t_from_entry <= common_duration_s
         time_raw     = time_raw[window_mask]
@@ -1184,9 +1220,9 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         row['Max_Prot_length_PrePulse_um'] = float(np.max(valid_lengths))
 
     # ------------------------------------------------------------------
-    # BLOCK A  --  Viscoelastic fitting (ASP only)
+    # BLOCK A  --  Viscoelastic fitting (ASP-like: ASP or post-pulse entry)
     # ------------------------------------------------------------------
-    if meta.condition_type == "ASP":
+    if is_asp_like:
         t_asp = time_raw - time_raw[0]
         visco = fit_viscoelastic(t_asp, length_raw, r_eff, meta.pressure, C)
 
@@ -1241,7 +1277,11 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
     # ------------------------------------------------------------------
     # BLOCK B  --  Model-independent fitting (BIC-based selection)
     # ------------------------------------------------------------------
-    if meta.condition_type == "ASP":
+    # ASP and post-pulse-entry EP cells get a WHOLE-TRACE MI fit (both are
+    # aspirating without field). Standard EP cells get a PRE-PULSE MI fit
+    # (t < pulse). Post-pulse-entry cells naturally skip the EP branch too
+    # because their pre_mask ends up empty.
+    if is_asp_like:
         t_mi   = time_raw - time_raw[0]
         mi_fit = fit_model_independent(t_mi, length_raw)
     else:
@@ -1275,6 +1315,29 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         row['PL_BIC'] = mi_fit['power_law']['bic']
     row['MI_Window_Duration_s'] = mi_fit.get('window_duration_s')
     row['MI_N_Points']          = mi_fit.get('n_fit_points')
+
+    # --- Companion whole-trace MI fit (all conditions) ---
+    # For ASP and post-pulse-entry cells the primary MI_* fit above is
+    # already whole-trace; we still recompute here for schema uniformity so
+    # every fittable trap has MI_Whole_* populated regardless of condition.
+    # For standard EP cells this is a distinct fit ignoring the pulse — the
+    # whole recorded trace treated as a single aspiration response.
+    t_whole = time_raw - time_raw[0]
+    if len(t_whole) >= 5:
+        mi_whole_fit = fit_model_independent(t_whole, length_raw)
+        row['MI_Whole_Best_Model'] = mi_whole_fit.get('best_model')
+        if mi_whole_fit['linear']:
+            row['MI_Whole_Linear_Slope']     = mi_whole_fit['linear']['params']['slope']
+            row['MI_Whole_Linear_Intercept'] = mi_whole_fit['linear']['params']['intercept']
+            row['MI_Whole_Linear_R2']        = mi_whole_fit['linear']['r2']
+            row['MI_Whole_Linear_BIC']       = mi_whole_fit['linear']['bic']
+        if mi_whole_fit['power_law']:
+            row['MI_Whole_PL_a']  = mi_whole_fit['power_law']['params']['a']
+            row['MI_Whole_PL_b']  = mi_whole_fit['power_law']['params']['exponent_b']
+            row['MI_Whole_PL_R2'] = mi_whole_fit['power_law']['r2']
+            row['MI_Whole_PL_BIC'] = mi_whole_fit['power_law']['bic']
+        row['MI_Whole_Window_Duration_s'] = mi_whole_fit.get('window_duration_s')
+        row['MI_Whole_N_Points']          = mi_whole_fit.get('n_fit_points')
 
     # ------------------------------------------------------------------
     # BLOCK C  --  Pre/post-pulse slopes (EP only)
@@ -1312,39 +1375,67 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                 row['EP_Post_Pulse_Behavior'] = 'Stable'
 
     # ------------------------------------------------------------------
-    # BLOCK D  --  Pre-pulse dye contamination QC (EP only)
+    # BLOCK D  --  Baseline dye contamination QC (ASP and EP)
     # ------------------------------------------------------------------
-    # DUAL-METRIC PHYSIOLOGICAL QC:
+    # DUAL-METRIC PHYSIOLOGICAL QC (applied symmetrically to both conditions):
     # 1. Pre_Leaky: Detects cells that tear during aspiration by measuring the
-    #    peak-to-peak amplitude (max - min) of the raw dF/F0 signal before the pulse.
-    #    A >15% swing indicates significant active leakage.
-    # 2. Pre_Loaded: Detects cells that enter the trap already saturated with dye.
-    #    Since dF/F0 normalizes the baseline away, we mathematically reconstruct
-    #    the absolute baseline intensity (F0 = dF / (dF/F0)) and apply a hard threshold.
-    
-    PRE_LEAKY_P2P_THRESHOLD = 0.15    # 15% peak-to-peak dF/F0 swing before pulse
+    #    peak-to-peak amplitude (max - min) of the raw dF/F0 signal on the
+    #    baseline window. A >15% swing indicates significant active leakage.
+    #    - EP: baseline window = pre-pulse portion (t < pulse_time).
+    #    - ASP: baseline window = first INITIAL_ASP_WINDOW_S seconds of the
+    #      uptake trace. No pulse exists, so we sample the earliest available
+    #      window as the analog.
+    # 2. Pre_Loaded: Detects cells that enter the trap already saturated with
+    #    dye. F0 is reconstructed from the first 5 frames of the raw intensity
+    #    and dF/F0 columns and compared to a hard threshold. This check is
+    #    naturally condition-agnostic (does not depend on a pulse).
+    #
+    # If the dye channel is missing at the DATASET level, every trap in that
+    # folder is stamped 'No_Data' here and later upgraded to 'No_Dye_Channel'
+    # in run_all_mechanics(). That flag is a signal to downstream code to
+    # skip QC exclusion for that dataset rather than treat it as a per-cell
+    # data loss.
+
+    PRE_LEAKY_P2P_THRESHOLD = 0.15    # 15% peak-to-peak dF/F0 swing on baseline window
     PRE_LOADED_F0_THRESHOLD = 1500.0  # Absolute F0 brightness threshold
+    INITIAL_ASP_WINDOW_S    = 10.0    # ASP baseline window length (seconds)
 
-    if meta.condition_type == "ASP":
-        row['Uptake_PrePulse_QC'] = 'N/A'
+    row['Uptake_PrePulse_QC'] = 'No_Data'  # default; overwritten below on success
 
-    elif ud_data and 'Time_s' in ud_data:
+    if ud_data and 'Time_s' in ud_data:
         t_up     = np.asarray(ud_data.get('Time_s', []), dtype=float)
         prot_df  = np.asarray(ud_data.get('Protrusion_Normalized_dF_F0', []), dtype=float)
         body_df  = np.asarray(ud_data.get('Body_Normalized_dF_F0', []), dtype=float)
         prot_int = np.asarray(ud_data.get('Protrusion_Intensity', []), dtype=float)
         body_int = np.asarray(ud_data.get('Body_Intensity', []), dtype=float)
 
-        if pf_valid and len(t_up) > 0 and len(t_up) == len(prot_df) == len(prot_int):
-            pulse_time  = float(time_raw[pf])
-            pre_mask_ud = t_up < pulse_time
+        arrays_valid = (
+            len(t_up) > 0
+            and len(t_up) == len(prot_df) == len(prot_int)
+            and len(t_up) == len(body_df) == len(body_int)
+        )
+
+        if arrays_valid:
+            # --- Define the baseline window per condition ---
+            # Post-pulse-entry EP cells are treated like ASP here (no pre-pulse
+            # data exists for them, so the ASP-style first-N-seconds window
+            # is the only defensible baseline).
+            is_asp_like_qc = (meta.condition_type == "ASP") or bool(getattr(trap, 'post_pulse_entry', False))
+            if meta.condition_type == "EP" and pf_valid and not is_asp_like_qc:
+                pulse_time  = float(time_raw[pf])
+                pre_mask_ud = t_up < pulse_time
+            elif is_asp_like_qc:
+                pre_mask_ud = t_up < (t_up[0] + INITIAL_ASP_WINDOW_S)
+            else:
+                # EP without a valid pulse frame: no defensible baseline window.
+                pre_mask_ud = np.zeros_like(t_up, dtype=bool)
 
             if pre_mask_ud.any():
                 # --- 1. Peak-to-Peak Leaky Check ---
                 # Using max - min accounts for traces that start below the baseline average
                 prot_pre = prot_df[pre_mask_ud]
                 body_pre = body_df[pre_mask_ud]
-                
+
                 prot_p2p = float(np.nanmax(prot_pre) - np.nanmin(prot_pre)) if len(prot_pre) > 0 else 0.0
                 body_p2p = float(np.nanmax(body_pre) - np.nanmin(body_pre)) if len(body_pre) > 0 else 0.0
 
@@ -1354,7 +1445,7 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                     n_frames = min(5, len(df_array))
                     df_sub = df_array[:n_frames]
                     int_sub = int_array[:n_frames]
-                    
+
                     # Avoid division by zero on mathematically flat arrays
                     valid = np.abs(df_sub) > 1e-4
                     if np.any(valid):
@@ -1373,12 +1464,9 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                     row['Uptake_PrePulse_QC'] = 'Pre_Leaky'
                 else:
                     row['Uptake_PrePulse_QC'] = 'Clean'
-            else:
-                row['Uptake_PrePulse_QC'] = 'No_Data'
-        else:
-            row['Uptake_PrePulse_QC'] = 'No_Data'
-    else:
-        row['Uptake_PrePulse_QC'] = 'No_Data'
+            # else: baseline window is empty -- leave as 'No_Data'
+        # else: array length mismatch -- leave as 'No_Data'
+    # else: no uptake CSV for this trap -- leave as 'No_Data'
 
     # ------------------------------------------------------------------
     # BLOCK E  --  Uptake exponential fitting (both conditions)
@@ -1458,12 +1546,16 @@ def run_all_mechanics(grouped_data: Dict,
 
         for trap in traps:
             try:
+                # Post-pulse-entry EP cells use the ASP common-duration window
+                # since their aspiration is a full-length ASP-equivalent trace
+                # (see _run_trap_mechanics is_asp_like routing).
+                trap_is_asp_like = (
+                    trap.metadata.condition_type == "ASP"
+                    or bool(getattr(trap, 'post_pulse_entry', False))
+                )
                 row = _run_trap_mechanics(
                     trap, r_eff, C, r2_floor=r2_floor,
-                    common_duration_s=(
-                        common_dur
-                        if trap.metadata.condition_type == "ASP" else None
-                    ),
+                    common_duration_s=(common_dur if trap_is_asp_like else None),
                     common_ep_pre_s=common_ep_pre_dur,
                     common_ep_post_s=common_ep_post_dur,
                 )
@@ -1475,6 +1567,32 @@ def run_all_mechanics(grouped_data: Dict,
                 )
 
     df = pd.DataFrame(rows)
+
+    # ------------------------------------------------------------------
+    # Dataset-level dye-channel detection.
+    # ------------------------------------------------------------------
+    # A single trap with 'No_Data' means one CSV is missing. An entire
+    # Experiment_Folder with 'No_Data' means the dye channel was never
+    # acquired for that dataset -- a different situation that should not
+    # be treated as a per-cell data loss. We upgrade the flag so downstream
+    # code can distinguish "skip QC for this dataset" from "this specific
+    # cell's uptake data is missing".
+    if ('Uptake_PrePulse_QC' in df.columns
+            and 'Experiment_Folder' in df.columns):
+        n_upgraded_folders = 0
+        n_upgraded_rows    = 0
+        for folder, grp in df.groupby('Experiment_Folder'):
+            qc_values = grp['Uptake_PrePulse_QC'].dropna()
+            if not qc_values.empty and (qc_values == 'No_Data').all():
+                df.loc[grp.index, 'Uptake_PrePulse_QC'] = 'No_Dye_Channel'
+                n_upgraded_folders += 1
+                n_upgraded_rows    += len(grp)
+        if n_upgraded_folders > 0:
+            logger.info(
+                f"Dye-channel detection: {n_upgraded_folders} dataset(s) "
+                f"({n_upgraded_rows} traps) have no dye channel recorded -- "
+                f"marked 'No_Dye_Channel', skipped by pre-pulse QC exclusion."
+            )
 
     # Log R² quality summary for ASP fits
     if 'Visco_R2_Flag' in df.columns:

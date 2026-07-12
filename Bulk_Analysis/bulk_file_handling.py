@@ -66,11 +66,26 @@ class TrapData:
     # Data containers
     protrusion_data: Dict[str, np.ndarray]      # From "Full" detection CSV
     uptake_data: Dict[str, np.ndarray]          # From "Uptake" CSV
+    # True iff the detection CSV filename carries the '_after' suffix,
+    # meaning the cell entered the trap after the electroporation pulse
+    # was applied. Only meaningful for condition_type=='EP'; for ASP it
+    # stays False.
+    post_pulse_entry: bool = False
+    # True iff the detection CSV filename carries the '_doa' suffix, marking
+    # a trap manually confirmed as dead-on-arrival. Loaded (not skipped) so
+    # its PI_Baseline metric can calibrate the automatic DOA threshold in
+    # bulk_pi_baseline; excluded from the analysis cohort at filter time.
+    is_doa_labeled: bool = False
 
     def __repr__(self):
+        tags = []
+        if self.post_pulse_entry: tags.append('POST')
+        if self.is_doa_labeled:   tags.append('DOA')
+        tag_str = ('|' + '|'.join(tags)) if tags else ''
         return (f"TrapData(ID={self.trap_id}, "
                 f"{self.metadata.cell_type}|{self.metadata.treatment}|"
-                f"{self.metadata.voltage}V_{self.metadata.duration_label})")
+                f"{self.metadata.voltage}V_{self.metadata.duration_label}"
+                f"{tag_str})")
 
 # =============================================================================
 # FILE LOADER CLASS
@@ -100,6 +115,12 @@ class BulkDataLoader:
         # Key: (CellType, Treatment, Pressure_Pa, Voltage_V, Duration_ms)
         # Experiments that share all five values are pooled as replicates.
         self.grouped_data: Dict[Tuple[str, str, int, int, float], List[TrapData]] = {}
+
+        # Cells whose detection CSV carries the '_doa' filename marker
+        # (manually annotated as dead-on-arrival). Loaded but held aside for
+        # PI_Baseline threshold calibration — they never enter the main
+        # pipeline. See bulk_pi_baseline.calibrate_threshold_from_doa().
+        self.doa_traps: List[TrapData] = []
 
     def iter_groups(self):
         """
@@ -213,7 +234,7 @@ class BulkDataLoader:
         _EXCLUDE_TAGS = ('_ruptured', '_irregular')
         all_full_candidates = sorted(dir_full.glob("trap_*_detection_full*.csv")) if dir_full.exists() else []
 
-        n_ruptured = n_irregular = 0
+        n_ruptured = n_irregular = n_post_pulse = n_doa_labeled = 0
         for f_file in all_full_candidates:
             stem_lower = f_file.stem.lower()
             if '_ruptured' in stem_lower:
@@ -224,6 +245,24 @@ class BulkDataLoader:
                 n_irregular += 1
                 logger.debug(f"  Skipping flagged full file: {f_file.name}")
                 continue
+
+            # '_after' marks cells that entered the trap after the pulse was
+            # applied. These are still loaded (unlike _ruptured / _irregular)
+            # but tagged so downstream code can route them to the correct
+            # bucket. Only meaningful for EP conditions; for ASP the flag
+            # exists but the pulse concept does not apply.
+            is_post_pulse_entry = '_after' in stem_lower
+            if is_post_pulse_entry:
+                n_post_pulse += 1
+
+            # '_doa' marks cells manually confirmed as dead-on-arrival.
+            # Loaded (unlike _ruptured / _irregular) so bulk_pi_baseline can
+            # use their PI_Baseline distribution to calibrate the automatic
+            # DOA threshold — the "in case some are missed" behaviour. They
+            # are excluded from the analysis cohort by the PI_DOA filter.
+            is_doa_labeled = '_doa' in stem_lower
+            if is_doa_labeled:
+                n_doa_labeled += 1
 
             id_match = re.search(r"trap_(\d+)_", f_file.name, re.IGNORECASE)
             if not id_match: continue
@@ -253,14 +292,30 @@ class BulkDataLoader:
                 metadata=copy(meta),
                 protrusion_data=prot_dict,
                 uptake_data=uptake_dict,
+                post_pulse_entry=is_post_pulse_entry,
+                is_doa_labeled=is_doa_labeled,
             )
             loaded_traps.append(trap_data)
 
-        # One-line audit summary instead of per-file spam.
+        # One-line audit summary instead of per-file spam. Post-pulse entries
+        # and DOA-labeled cells are counted separately because they are LOADED
+        # (not excluded at load time) — the counts sit here so they show up
+        # next to the exclusion counts in the same log message.
         if n_ruptured or n_irregular:
             logger.info(
                 f"  Excluded {n_ruptured + n_irregular} flagged trap(s) "
                 f"({n_ruptured} ruptured, {n_irregular} irregular)."
+            )
+        if n_post_pulse:
+            logger.info(
+                f"  Loaded {n_post_pulse} post-pulse entry trap(s) — tagged as "
+                f"EP_Post_Entry, routed to ASP-mechanics path, excluded from "
+                f"MI pre-pulse comparison."
+            )
+        if n_doa_labeled:
+            logger.info(
+                f"  Loaded {n_doa_labeled} DOA-labeled trap(s) — used to "
+                f"calibrate PI_Baseline threshold, then excluded from cohort."
             )
 
         return loaded_traps

@@ -1390,9 +1390,7 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
                     ax=ax, showfliers=False, color='lightgray')
         sns.stripplot(data=sub, x='Category', y=col, order=sorted_cats,
                       hue='Best_Model',
-                      palette={'Kelvin-Voigt': '#1f77b4',
-                               'Jeffreys':     '#ff7f0e',
-                               'Burgers':      '#2ca02c'},
+                      palette=VISCO_MODEL_PALETTE,
                       dodge=False, alpha=0.6, ax=ax, size=5)
 
         ax.set_title(title, fontweight='bold')
