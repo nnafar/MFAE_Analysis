@@ -5,26 +5,19 @@ File Handling for Bulk MFAE Analysis.
 Expected folder name format:
     YYMMDD_CellType_Treatment_ChipID_ExpNumber-xxxxxPa-xxxxV-xxxxms-framexxxx
 
-Where:
-    CellType     = e.g. MDAMB231, MCF10A
-    Treatment    = e.g. Control, CytoD, LatA, WT
-    ChipID       = e.g. Chip1, Chip2
-    ExpNumber    = e.g. Experiment275, Experiment1
-    Pa / V / ms  = integers (use 0V-0ms-frame0 for aspiration-only runs)
+Volume estimation (recomputed at load time, overwriting on-disk values):
 
-Exclusion flags (per-trap quality control):
-    Traces flagged as ruptured or irregular are skipped automatically.
-    To exclude a trap, rename either:
-      - the filtered detection file:  trap_01_detection_filtered_ruptured.csv
-      - OR the full detection file:   trap_01_detection_full_irregular.csv
-    Recognized flags: _ruptured, _irregular  (case-insensitive)
+    - Body  : sphere-equivalent from segmented cross-section area
+              V_body = (4/(3*sqrt(pi))) * A_body^(3/2)
+    - Prot  : cylinder + hemispherical cap using the effective aspiration
+              radius r_eff (Son 2007), consistent with the viscoelastic fits
+              V_prot = pi * r_eff^2 * L(t) + (2/3) * pi * r_eff^3
+    - Total : V_total = V_body + V_prot   (additive, not applied to union area)
 
-Grouping key: (CellType, Treatment, Pressure_Pa, Voltage_V, Duration_ms)
-This means replicates that share the same cell type, treatment, and
-electroporation parameters are pooled together for statistics and plots.
+    Volume-normalized intensities I / V are recomputed from these volumes.
 """
 
-import os
+import math
 import re
 import logging
 import pandas as pd
@@ -34,70 +27,71 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-# Configure Logging
 logger = logging.getLogger(__name__)
 
-# =============================================================================
-# DATA STRUCTURES
-# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Local helper: effective aspiration radius (Son 2007)
+# ---------------------------------------------------------------------------
+# Kept in sync with `bulk_mechanics.compute_reff`; duplicated here to avoid a
+# circular import (bulk_mechanics already imports bulk_file_handling).
+def _fstar(width: float, height: float) -> float:
+    dim_min = min(width, height)
+    dim_max = max(width, height)
+    x = dim_min / dim_max
+    sum_term = sum(
+        math.tanh(math.pi * n * x / 2) / n**5
+        for n in range(1, 22, 2)
+    )
+    return 1.0 / ((1 + 1.0 / x)**2 * (1 - (192 / (math.pi**5 * x)) * sum_term))
+
+
+def _compute_reff(width_um: float, height_um: float) -> float:
+    """Effective cylindrical radius with matched hydraulic resistance."""
+    fs  = _fstar(width_um, height_um)
+    h_s = min(width_um, height_um)
+    w_l = max(width_um, height_um)
+    numerator   = (2.0 / (3.0 * math.pi)) * w_l * (h_s ** 3)
+    denominator = (1 + h_s / w_l) ** 2 * fs
+    return (numerator / denominator) ** 0.25
+
 
 @dataclass
 class ExperimentMetadata:
-    """Holds metadata extracted from the folder name."""
     date: str
-    cell_type: str       # ExperimentID1 — e.g. "MDAMB231"
-    treatment: str       # ExperimentID2 — e.g. "Control", "CytoD"
-    chip: str          # Experiment ID3 - e.g. "Chip1"
-    experiment_number: str # ExperimentID4 — e.g. "Experiment275"
-    pressure: int        # e.g. 1100  (from 1100Pa)
-    voltage: int         # e.g. 100
-    duration: float      # NORMALIZED TO MS (for sorting / physics)
-    duration_label: str  # ORIGINAL STRING (e.g. "5us", "10s") for plotting
-    pulse_frame: int     # e.g. 10
-    condition_type: str  # "EP" (electroporated) or "ASP" (aspiration only, 0V)
+    cell_type: str
+    treatment: str
+    chip: str
+    experiment_number: str
+    pressure: int
+    voltage: int
+    duration: float
+    duration_label: str
+    pulse_frame: int
+    condition_type: str
     full_path: Path
-    fstar: Optional[float] = None  # Son (2007) shape factor, loaded from shear CSV
+    fstar: Optional[float] = None
+
 
 @dataclass
 class TrapData:
-    """Holds all data arrays for a single trap."""
     trap_id: int
     metadata: ExperimentMetadata
-    # Data containers
-    protrusion_data: Dict[str, np.ndarray]      # From "Full" detection CSV
-    uptake_data: Dict[str, np.ndarray]          # From "Uptake" CSV
-    # True iff the detection CSV filename carries the '_after' suffix,
-    # meaning the cell entered the trap after the electroporation pulse
-    # was applied. Only meaningful for condition_type=='EP'; for ASP it
-    # stays False.
+    protrusion_data: Dict[str, np.ndarray]
+    uptake_data: Dict[str, np.ndarray]
     post_pulse_entry: bool = False
-    # True iff the detection CSV filename carries the '_doa' suffix, marking
-    # a trap manually confirmed as dead-on-arrival. Loaded (not skipped) so
-    # its PI_Baseline metric can calibrate the automatic DOA threshold in
-    # bulk_pi_baseline; excluded from the analysis cohort at filter time.
-    is_doa_labeled: bool = False
 
     def __repr__(self):
         tags = []
         if self.post_pulse_entry: tags.append('POST')
-        if self.is_doa_labeled:   tags.append('DOA')
         tag_str = ('|' + '|'.join(tags)) if tags else ''
         return (f"TrapData(ID={self.trap_id}, "
                 f"{self.metadata.cell_type}|{self.metadata.treatment}|"
                 f"{self.metadata.voltage}V_{self.metadata.duration_label}"
                 f"{tag_str})")
 
-# =============================================================================
-# FILE LOADER CLASS
-# =============================================================================
 
 class BulkDataLoader:
-    """
-    Scans, parses, and loads MFAE experiment data.
-    """
-    
-    # EXPECTED PATTERN:
-    # Format: YYMMDD_CellType_Treatment_ChipNumber_ExpNumber-xxxxxPa-xxxxV-xxxxms-framexxxx
     FOLDER_PATTERN = re.compile(
         r"(\d{6})_([^_\-]+)_([^_\-]+)_([^_\-]+)_([^_\-]+)"
         r"[-_](\d+)Pa"
@@ -107,30 +101,52 @@ class BulkDataLoader:
         re.IGNORECASE
     )
 
-    def __init__(self, root_output_dir: str):
+    def __init__(
+        self,
+        root_output_dir: str,
+        channel_width_um: float = 6.7,
+        channel_height_um: float = 5.0,
+        r_eff_um: Optional[float] = None,
+    ):
+        """
+        Parameters
+        ----------
+        root_output_dir
+            Root directory containing per-experiment output folders.
+        channel_width_um, channel_height_um
+            Physical channel cross-section, used to derive r_eff via the Son
+            (2007) formula if r_eff_um is not supplied.
+        r_eff_um
+            Effective aspiration radius (um). If None, computed from
+            channel_width_um and channel_height_um. Pass an explicit value to
+            keep the loader in lockstep with bulk_mechanics.DEFAULT_R_EFF.
+        """
         self.root_dir = Path(root_output_dir)
         if not self.root_dir.exists():
             raise FileNotFoundError(f"Root directory not found: {self.root_dir}")
-
-        # Key: (CellType, Treatment, Pressure_Pa, Voltage_V, Duration_ms)
-        # Experiments that share all five values are pooled as replicates.
         self.grouped_data: Dict[Tuple[str, str, int, int, float], List[TrapData]] = {}
 
-        # Cells whose detection CSV carries the '_doa' filename marker
-        # (manually annotated as dead-on-arrival). Loaded but held aside for
-        # PI_Baseline threshold calibration — they never enter the main
-        # pipeline. See bulk_pi_baseline.calibrate_threshold_from_doa().
-        self.doa_traps: List[TrapData] = []
+        self.W_um: float = float(channel_width_um)
+        self.H_um: float = float(channel_height_um)
+        self.r_eff_um: float = (
+            float(r_eff_um) if r_eff_um is not None
+            else _compute_reff(self.W_um, self.H_um)
+        )
+        # Hemispherical cap volume for the protrusion: (2/3) * pi * r_eff^3
+        self.V_prot_cap_um3: float = (2.0 / 3.0) * math.pi * (self.r_eff_um ** 3)
 
+        logger.info(
+            f"BulkDataLoader geometry: W={self.W_um:.2f} um, H={self.H_um:.2f} um, "
+            f"r_eff={self.r_eff_um:.3f} um, V_cap={self.V_prot_cap_um3:.2f} um^3"
+        )
+
+    # -------------------------------------------------------------------
+    # Iteration / metadata parsing
+    # -------------------------------------------------------------------
     def iter_groups(self):
-        """
-        Main execution method to browse and yield loaded data iteratively.
-        Groups experiments by (CellType, Treatment, Pressure, Voltage, Duration).
-        Yields one group of TrapData objects at a time for processing.
-        """
         logger.info(f"Scanning root directory: {self.root_dir}")
         grouped_metadata = {}
-        
+
         for entry in self.root_dir.iterdir():
             if entry.is_dir():
                 metadata = self._parse_folder_name(entry.name, entry)
@@ -151,7 +167,7 @@ class BulkDataLoader:
             for meta in meta_list:
                 logger.info(f"Loading Experiment: {meta.full_path.name}")
                 traps.extend(self._load_experiment_traps(meta))
-            
+
             if traps:
                 logger.info(f"   -> Yielding group {group_key} ({len(traps)} traps).")
                 yield group_key, traps
@@ -160,34 +176,28 @@ class BulkDataLoader:
         match = self.FOLDER_PATTERN.match(folder_name)
         if match:
             date_str        = match.group(1)
-            cell_type       = match.group(2)   # e.g. "MDAMB231"
-            treatment       = match.group(3)   # e.g. "Control", "CytoD"
-            chip            = match.group(4)    # e.g. "Chip1"
-            experiment_num  = match.group(5)   # e.g. "Experiment275"
+            cell_type       = match.group(2)
+            treatment       = match.group(3)
+            chip            = match.group(4)
+            experiment_num  = match.group(5)
             pressure        = int(match.group(6))
             volts           = int(match.group(7))
             raw_val         = float(match.group(8))
             unit            = match.group(9).lower()
             frame           = int(match.group(10))
 
-            # Normalise any mu variant to "us" for consistent handling.
             if unit in ['µs', '\u03bcs']:
                 unit = 'us'
 
-            # 1. Create the display label (e.g. "5us", "10ms")
             val_fmt = int(raw_val) if raw_val.is_integer() else raw_val
             label = f"{val_fmt}{unit}"
 
-            # 2. Normalize duration to milliseconds for sorting
             duration_ms = raw_val
             if unit == 's':
                 duration_ms = raw_val * 1000.0
             elif unit == 'us':
                 duration_ms = raw_val / 1000.0
 
-            # 3. Classify condition type.
-            #    ASP = aspiration-only control (0 V, 0 ms, frame 0).
-            #    EP  = electroporated (non-zero voltage).
             condition_type = "ASP" if volts == 0 else "EP"
 
             return ExperimentMetadata(
@@ -205,17 +215,16 @@ class BulkDataLoader:
                 full_path=full_path
             )
 
-        # FIX #14: Log folders that were scanned but did not match the regex.
-        # Helps diagnose typos in folder names (e.g. missing "Pa" suffix).
-        # Ignore known non-experiment folders (Bulk_Analysis_results, etc.)
         if not folder_name.startswith(("Bulk_", "__", ".")):
             logger.debug(f"Skipping folder (no regex match): {folder_name}")
         return None
 
+    # -------------------------------------------------------------------
+    # Per-experiment loading
+    # -------------------------------------------------------------------
     def _load_experiment_traps(self, meta: ExperimentMetadata) -> List[TrapData]:
         loaded_traps = []
 
-        # --- Load Son Factor f* from shear analysis CSV (per-experiment) ---
         dir_fitting = meta.full_path / "Fitting results"
         if dir_fitting.exists():
             shear_files = list(dir_fitting.glob("*_shear_analysis.csv"))
@@ -228,107 +237,62 @@ class BulkDataLoader:
                 except Exception as e:
                     logger.warning(f"   Could not read shear CSV: {e}")
 
-        dir_uptake   = meta.full_path / "Dye Uptake"
-        dir_full     = meta.full_path / "Full protrusion detection"
+        dir_uptake = meta.full_path / "Dye Uptake"
+        dir_full   = meta.full_path / "Full protrusion detection"
 
-        _EXCLUDE_TAGS = ('_ruptured', '_irregular')
+        _EXCLUDE_TAGS = ('_ruptured', '_irregular', '_doa')
         all_full_candidates = sorted(dir_full.glob("trap_*_detection_full*.csv")) if dir_full.exists() else []
 
-        n_ruptured = n_irregular = n_post_pulse = n_doa_labeled = 0
+        n_excluded = n_post_pulse = 0
         for f_file in all_full_candidates:
             stem_lower = f_file.stem.lower()
-            if '_ruptured' in stem_lower:
-                n_ruptured += 1
-                logger.debug(f"  Skipping flagged full file: {f_file.name}")
-                continue
-            if '_irregular' in stem_lower:
-                n_irregular += 1
+            if any(tag in stem_lower for tag in _EXCLUDE_TAGS):
+                n_excluded += 1
                 logger.debug(f"  Skipping flagged full file: {f_file.name}")
                 continue
 
-            # '_after' marks cells that entered the trap after the pulse was
-            # applied. These are still loaded (unlike _ruptured / _irregular)
-            # but tagged so downstream code can route them to the correct
-            # bucket. Only meaningful for EP conditions; for ASP the flag
-            # exists but the pulse concept does not apply.
             is_post_pulse_entry = '_after' in stem_lower
             if is_post_pulse_entry:
                 n_post_pulse += 1
 
-            # '_doa' marks cells manually confirmed as dead-on-arrival.
-            # Loaded (unlike _ruptured / _irregular) so bulk_pi_baseline can
-            # use their PI_Baseline distribution to calibrate the automatic
-            # DOA threshold — the "in case some are missed" behaviour. They
-            # are excluded from the analysis cohort by the PI_DOA filter.
-            is_doa_labeled = '_doa' in stem_lower
-            if is_doa_labeled:
-                n_doa_labeled += 1
-
             id_match = re.search(r"trap_(\d+)_", f_file.name, re.IGNORECASE)
             if not id_match: continue
-            
+
             trap_id = int(id_match.group(1))
-            
-            # 1. Load Full Detection Data
+
             prot_dict = self._csv_to_dict(f_file)
 
-            # 2. Load Uptake Data
             u_file_name = f"Trap_{trap_id:02d}_Uptake_Data.csv"
             u_file = dir_uptake / u_file_name
             uptake_dict = {}
-            
+
             if u_file.exists():
                 uptake_dict = self._csv_to_dict(u_file, comment='#')
             else:
                 u_file_alt = dir_uptake / f"Trap_{trap_id}_Uptake_Data.csv"
                 if u_file_alt.exists():
-                     uptake_dict = self._csv_to_dict(u_file_alt, comment='#')
+                    uptake_dict = self._csv_to_dict(u_file_alt, comment='#')
 
             if uptake_dict:
-                self._add_vol_norm_columns(uptake_dict)
+                self._recompute_volumes_and_norms(uptake_dict, prot_dict)
 
             trap_data = TrapData(
                 trap_id=trap_id,
                 metadata=copy(meta),
                 protrusion_data=prot_dict,
                 uptake_data=uptake_dict,
-                post_pulse_entry=is_post_pulse_entry,
-                is_doa_labeled=is_doa_labeled,
+                post_pulse_entry=is_post_pulse_entry
             )
             loaded_traps.append(trap_data)
 
-        # One-line audit summary instead of per-file spam. Post-pulse entries
-        # and DOA-labeled cells are counted separately because they are LOADED
-        # (not excluded at load time) — the counts sit here so they show up
-        # next to the exclusion counts in the same log message.
-        if n_ruptured or n_irregular:
-            logger.info(
-                f"  Excluded {n_ruptured + n_irregular} flagged trap(s) "
-                f"({n_ruptured} ruptured, {n_irregular} irregular)."
-            )
+        if n_excluded:
+            logger.info(f"  Excluded {n_excluded} flagged trap(s).")
         if n_post_pulse:
-            logger.info(
-                f"  Loaded {n_post_pulse} post-pulse entry trap(s) — tagged as "
-                f"EP_Post_Entry, routed to ASP-mechanics path, excluded from "
-                f"MI pre-pulse comparison."
-            )
-        if n_doa_labeled:
-            logger.info(
-                f"  Loaded {n_doa_labeled} DOA-labeled trap(s) — used to "
-                f"calibrate PI_Baseline threshold, then excluded from cohort."
-            )
+            logger.info(f"  Loaded {n_post_pulse} post-pulse entry trap(s).")
 
         return loaded_traps
 
     def _csv_to_dict(self, file_path: Path, comment: str = None) -> Dict[str, np.ndarray]:
-        """
-        Reads a CSV into a dict of {column_name: numpy_array}.
-
-        FIX #1: Uses pd.to_numeric(..., errors='coerce') instead of a bare
-        dtype=np.float64 cast. If a column contains non-numeric data (string
-        labels, "NA" text, etc.), those values become NaN instead of crashing
-        the whole pipeline with a ValueError.
-        """
         try:
             df = pd.read_csv(file_path, comment=comment)
             return {
@@ -339,58 +303,96 @@ class BulkDataLoader:
             logger.error(f"Error loading CSV {file_path.name}: {e}")
             return {}
 
-    @staticmethod
-    def _add_vol_norm_columns(ud: Dict[str, np.ndarray]) -> None:
+    # -------------------------------------------------------------------
+    # Volume recomputation with region-appropriate geometry
+    # -------------------------------------------------------------------
+    def _recompute_volumes_and_norms(
+        self,
+        uptake_dict: Dict[str, np.ndarray],
+        prot_dict: Dict[str, np.ndarray],
+    ) -> None:
         """
-        Derives volume-normalised uptake columns from the columns that are
-        already present in every uptake CSV (old and new alike).
+        Recompute per-frame volumes and volume-normalized intensities using
+        region-appropriate geometry, overwriting whatever was loaded from disk.
 
-        Formula:  VolNorm = Intensity / Volume_um3
-        Units:    ADU / µm³
+        Body  : sphere-equivalent           V_body = (4/(3*sqrt(pi))) * A_body^(3/2)
+        Prot  : cylinder + hemisphere cap   V_prot = pi * r_eff^2 * L + (2/3)*pi*r_eff^3
+        Total : additive                    V_total = V_body + V_prot
 
-        Called after loading the uptake CSV so that:
-          - New CSVs (post-UptakeQuantification update) already contain
-            Body_VolNorm etc. and this function is a no-op for those columns.
-          - Old CSVs (pre-update) get the columns computed on-the-fly from
-            {Body,Protrusion,Total}_Intensity and Volume_{Body,Prot,Total}_um3,
-            which have been present since earlier pipeline versions.
-
-        Modifies *ud* in-place.  Skips any pair where either source column is
-        absent or the volume array is all-zero.
+        L(t) is taken from the detection CSV column 'Protrusion_Length_um'
+        (sub-pixel protrusion length from the kymograph pipeline).
+        Body and prot CSVs come from the same acquisition stack, so their row
+        counts should match; if they don't we truncate to the shorter and warn.
         """
+        # --- Body volume: sphere-equivalent from segmented area --------------
+        A_body = uptake_dict.get('Body_Area_um2')
+        if A_body is None:
+            logger.debug("Body_Area_um2 missing; skipping volume recomputation.")
+            return
+
+        # V_body = (4 / (3*sqrt(pi))) * A_body^(3/2)
+        # Prefactor from V = (4/3) pi r^3 with r = sqrt(A/pi).
+        sphere_prefactor = 4.0 / (3.0 * math.sqrt(math.pi))
+        V_body = sphere_prefactor * np.power(A_body, 1.5)
+
+        # --- Protrusion volume: cylinder + hemispherical cap -----------------
+        L_um = prot_dict.get('Protrusion_Length_um')
+        if L_um is None:
+            logger.debug(
+                "Protrusion_Length_um missing from detection CSV; "
+                "cannot recompute confined protrusion volume."
+            )
+            return
+
+        # Align by row index; both CSVs are one row per acquisition frame.
+        n = min(len(L_um), len(V_body))
+        if len(L_um) != len(V_body):
+            logger.warning(
+                f"Frame-count mismatch between detection ({len(L_um)}) and "
+                f"uptake ({len(V_body)}) CSVs; truncating to {n}."
+            )
+        L_aligned = L_um[:n]
+        V_body    = V_body[:n]
+
+        # Guard against NaN L (rare, from failed detection frames): treat as 0
+        L_safe = np.where(np.isfinite(L_aligned), L_aligned, 0.0)
+
+        V_prot  = math.pi * (self.r_eff_um ** 2) * L_safe + self.V_prot_cap_um3
+        V_total = V_body + V_prot
+
+        # Overwrite / install volume columns
+        uptake_dict['Volume_Body_um3']  = V_body
+        uptake_dict['Volume_Prot_um3']  = V_prot
+        uptake_dict['Volume_Total_um3'] = V_total
+
+        # --- Volume-normalized intensities -----------------------------------
         pairs = [
             ('Body_VolNorm',       'Body_Intensity',       'Volume_Body_um3'),
             ('Protrusion_VolNorm', 'Protrusion_Intensity', 'Volume_Prot_um3'),
             ('Total_VolNorm',      'Total_Intensity',      'Volume_Total_um3'),
         ]
         for out_col, int_col, vol_col in pairs:
-            if out_col in ud:
-                continue                          # already present — nothing to do
-            if int_col not in ud or vol_col not in ud:
-                continue                          # source columns missing — skip
-            intensity = ud[int_col]
-            volume    = ud[vol_col]
+            if int_col not in uptake_dict:
+                continue
+            intensity = uptake_dict[int_col][:n]
+            volume    = uptake_dict[vol_col]
             with np.errstate(divide='ignore', invalid='ignore'):
-                result = np.where(volume > 0, intensity / volume, 0.0)
-            ud[out_col] = result
+                uptake_dict[out_col] = np.where(volume > 0, intensity / volume, 0.0)
+
+        # Trim any other per-frame columns to the same length so downstream
+        # code sees a consistent frame count.
+        for k, v in list(uptake_dict.items()):
+            if isinstance(v, np.ndarray) and len(v) > n:
+                uptake_dict[k] = v[:n]
+
 
 def extract_all_scalars(grouped_data: Dict[Tuple[str, str, int, int, float], List[TrapData]]) -> pd.DataFrame:
-    """
-    Extracts maximum values from time-series arrays to compute scalar metrics
-    for Spearman correlation.
-
-    NOTE: np.max is applied to every non-time numeric column. This is
-    meaningful for monotonic signals (protrusion length, cumulative uptake)
-    but may not suit columns where the peak isn't the right summary (e.g.
-    velocity, normalized ratios). Review the resulting column list before
-    interpreting the correlation matrix.
-    """
     rows = []
     for (cell_type, treatment, press, volt, dur), traps in grouped_data.items():
         for trap in traps:
             row_data = {
                 'Condition': f"{cell_type}_{treatment}_{press}Pa_{volt}V_{dur}ms",
-                'Condition_Type': trap.metadata.condition_type,  # "EP" or "ASP"
+                'Condition_Type': trap.metadata.condition_type,
                 'Date': trap.metadata.date,
                 'Cell_Type': cell_type,
                 'Treatment': treatment,
@@ -400,33 +402,25 @@ def extract_all_scalars(grouped_data: Dict[Tuple[str, str, int, int, float], Lis
                 'Duration_ms': dur,
                 'Trap_ID': trap.trap_id
             }
-            
-            # Extract max values for protrusion data
+
             if hasattr(trap, 'protrusion_data') and trap.protrusion_data:
                 for k, v in trap.protrusion_data.items():
                     if 'time' not in k.lower() and isinstance(v, np.ndarray) and len(v) > 0:
                         row_data[f"Prot_{k}"] = np.max(v)
-                        
-            # Extract max values for uptake data
+
             if hasattr(trap, 'uptake_data') and trap.uptake_data:
                 for k, v in trap.uptake_data.items():
                     if 'time' not in k.lower() and isinstance(v, np.ndarray) and len(v) > 0:
                         row_data[f"Uptake_{k}"] = np.max(v)
-                        
+
             rows.append(row_data)
 
     df = pd.DataFrame(rows)
-    n_total = len(df)
-    n_numeric = df.select_dtypes(include=[np.number]).dropna(how='all').shape[0]
-    logger.info(
-        f"extract_all_scalars: {n_total} traps total, "
-        f"{n_numeric} with at least one numeric column populated."
-    )
     return df
+
 
 def get_group_stats(grouped_data: Dict[Tuple[str, str, int, int, float], List[TrapData]]):
     summary = []
-    # Sort keys: cell type → treatment → pressure → voltage → duration
     sorted_keys = sorted(grouped_data.keys())
     for (cell_type, treatment, press, volt, dur) in sorted_keys:
         traps = grouped_data[(cell_type, treatment, press, volt, dur)]

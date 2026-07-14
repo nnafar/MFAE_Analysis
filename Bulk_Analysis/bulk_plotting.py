@@ -1,19 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Plotting Module for Bulk MFAE Analysis.
-=============================================================================
-This module handles all data visualization for the pipeline.
-
-It generates three categories of plots:
-1. Statistical Summaries: Global trends.
-2. Time-Series Dynamics: Averaged behavior.
-3. Verification Panels: Multipanel grids with FITS and ANNOTATIONS.
-
-Dependencies:
-    - seaborn, matplotlib: For plotting
-    - scipy: For curve fitting and interpolation
-    - numpy, pandas: For data manipulation
-    - bulk_file_handling: For custom data structures (TrapData)
 """
 
 import logging
@@ -31,56 +18,36 @@ from scipy.optimize import curve_fit
 from scipy.stats import mannwhitneyu
 
 import bulk_file_handling as bfh
+import bulk_mechanics as bm
 import Utils_MFA as utils
 from Utils_MFA import MFA_COLORS
 
 logger = logging.getLogger(__name__)
 
-# =============================================================================
-# 1. VISUAL CONFIGURATION
-# =============================================================================
-
-# NOTE: Style is controlled centrally by Utils_MFA.set_paper_style().
-# Do NOT call plt.style.use() or sns.set_context() at import time here:
-# any caller that runs set_paper_style() after importing this module would
-# still see seaborn's context scaling from "talk", producing inconsistent
-# fonts and gridlines across figures.
-
 PALETTE_REGION = {
-    "Body": "#1f77b4",       # Blue
-    "Protrusion": "#ff7f0e", # Orange
-    "Total": "#333333"       # Dark Grey/Black
+    "Body": "#1f77b4",       
+    "Protrusion": "#ff7f0e", 
+    "Total": "#333333"       
 }
 
 MI_MODEL_PALETTE = {
-    "Linear":    "#e377c2",  # Pink
-    "Power-Law": "#17becf",  # Cyan
+    "Linear":    "#e377c2",  
+    "Power-Law": "#17becf",  
 }
 
-# Viscoelastic model palette. The three models are nested by complexity:
-#   Kelvin-Voigt (2 params)  ⊂  Jeffreys (3 params)  ⊂  Burgers (4 params)
-# This is an ordinal gradient, not an opposition, so we use a sequential
-# single-hue ramp (the MFA_COLORS blues, light -> dark) rather than a
-# divergent palette. Perceptually monotonic: darker = more complex.
 VISCO_MODEL_PALETTE = {
-    "Kelvin-Voigt": MFA_COLORS['light_blue'],   # 2 params (simplest)
-    "Jeffreys":     MFA_COLORS['medium_blue'],  # 3 params
-    "Burgers":      MFA_COLORS['dark_blue'],    # 4 params (most complex)
+    "Kelvin-Voigt": MFA_COLORS['light_blue'],   
+    "Jeffreys":     MFA_COLORS['medium_blue'],  
+    "Burgers":      MFA_COLORS['dark_blue'],    
 }
 
-# Line Styles for Multipanels
 STYLE_DEFAULT = '-'      
 
-# Recoil Fit Lines
 COLOR_FIT_PRE = 'green'
 COLOR_FIT_POST = 'magenta'
 
 SAVE_DPI = 300
 PANEL_DPI = 150
-
-# =============================================================================
-# 2. HELPER FUNCTIONS
-# =============================================================================
 
 def get_cond_label(meta: bfh.ExperimentMetadata) -> str:
     if meta.condition_type == "ASP":
@@ -100,13 +67,6 @@ def calculate_slope(time: np.ndarray, data: np.ndarray) -> Tuple[float, float]:
     return slope, intercept
 
 def interpolate_to_common_time(time_series_list, data_series_list, dt=1.75):
-    """
-    Interpolates multiple time-series onto a shared time grid for averaging.
-
-    Uses Pchip (monotone cubic Hermite) instead of plain cubic splines.
-    Pchip preserves local monotonicity, which prevents the artificial
-    negative dF/F₀ values that cubic overshoot can produce near plateaus.
-    """
     valid_pairs = [(t, y) for t, y in zip(time_series_list, data_series_list) if len(t) >= 4]
     if not valid_pairs: return np.array([]), np.array([])
     t_min = min(t[0] for t, _ in valid_pairs)
@@ -128,39 +88,6 @@ def _compute_common_uptake_xlim(
         rupture_fraction: float = 0.20,
         max_pre_s: float = 30.0,
 ) -> Tuple[float, float]:
-    """
-    Computes a consistent x-axis range (in pulse-aligned seconds) for uptake
-    multipanel plots so that all panels in a group share the same window.
-
-    Algorithm
-    ---------
-    Post-pulse end (x_max):
-        Collect the maximum aligned time from each trap's uptake array.
-        Discard traces whose post-pulse duration is below
-        ``rupture_fraction * group_median`` (these are truncated recordings
-        that would otherwise impose an unreasonably short window).
-        x_max = minimum of the remaining durations.
-
-    Pre-pulse start (x_min):
-        For EP data, the aligned time starts at a large negative value
-        (aspiration phase before the pulse).  Showing hundreds of seconds of
-        baseline context is uninformative and makes the interesting post-pulse
-        region tiny.  x_min is therefore capped at ``-max_pre_s`` (default
-        -30 s), still showing enough baseline to confirm the pre-pulse signal
-        is flat.
-        For ASP data (time zeroed to cell entry), x_min = 0.
-
-    Parameters
-    ----------
-    traps           : all TrapData objects for one condition group
-    rupture_fraction: fraction of group median below which a trace is
-                      considered too short to contribute to setting x_max
-    max_pre_s       : maximum pre-pulse context to show for EP data [s]
-
-    Returns
-    -------
-    (x_min, x_max) : floats.  Falls back to (0, 1) if no valid data found.
-    """
     post_durations = []
     pre_starts     = []
 
@@ -168,7 +95,6 @@ def _compute_common_uptake_xlim(
         ud = trap.uptake_data
         if 'Time_s' not in ud:
             continue
-        # FETCH PHYSICAL PULSE TIME
         pf = trap.metadata.pulse_frame
         t_raw = trap.protrusion_data.get('Time_s', [])
         pulse_time_s = float(t_raw[pf]) if (0 < pf < len(t_raw)) else 0.0
@@ -182,7 +108,6 @@ def _compute_common_uptake_xlim(
             post_durations.append(t_max)
         pre_starts.append(t_min)
 
-    # --- x_max: common post-pulse end ---
     if not post_durations:
         return 0.0, 1.0
     median_post = float(np.median(post_durations))
@@ -190,10 +115,6 @@ def _compute_common_uptake_xlim(
     normal      = [d for d in post_durations if d >= threshold]
     x_max       = float(min(normal)) if normal else float(min(post_durations))
 
-    # --- x_min: pre-pulse context ---
-    # For EP, show a fixed window of at most max_pre_s before the pulse.
-    # Collect the actual median start time so we don't request more data
-    # than any trace actually has (avoids empty whitespace on the left).
     if pre_starts:
         median_pre = float(np.median(pre_starts))
         x_min = max(median_pre, -max_pre_s)
@@ -226,11 +147,6 @@ def _add_global_legend(fig, mode='uptake'):
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 
 def _safe_max(arr: np.ndarray, default: float = 0.0) -> float:
-    """
-    FIX #4: Safe wrapper around np.max that handles empty arrays.
-    Returns `default` if the array is empty or all-NaN, instead of
-    raising a ValueError.
-    """
     if arr is None or (isinstance(arr, np.ndarray) and len(arr) == 0):
         return default
     if isinstance(arr, (list, tuple)) and len(arr) == 0:
@@ -241,24 +157,8 @@ def _safe_max(arr: np.ndarray, default: float = 0.0) -> float:
     except (ValueError, TypeError):
         return default
 
-# =============================================================================
-# STATISTICAL ANNOTATION HELPERS
-# -----------------------------------------------------------------------------
 
 def _mw_stars(vals_a: np.ndarray, vals_b: np.ndarray) -> Tuple[str, float]:
-    """
-    Runs a two-sided Mann-Whitney U test and returns a star-rating plus the
-    raw p-value.
-
-    Returns
-    -------
-    stars : str
-        "***" (p<0.001), "**" (p<0.01), "*" (p<0.05), or "ns" (not significant
-        or sample too small).
-    p     : float
-        The raw p-value (1.0 if the test could not be run).
-    """
-    # Guard against tiny groups — the U test is unreliable below n≈5 per side.
     if len(vals_a) < 5 or len(vals_b) < 5:
         return "ns", 1.0
     try:
@@ -272,43 +172,17 @@ def _mw_stars(vals_a: np.ndarray, vals_b: np.ndarray) -> Tuple[str, float]:
 
 
 def _cliffs_delta(vals_a: np.ndarray, vals_b: np.ndarray) -> float:
-    """
-    Cliff's Delta: how large is the difference between two groups, in a
-    non-parametric sense?
-
-    Imagine picking one observation from A and one from B at random. Cliff's
-    Delta is the probability that A > B minus the probability that A < B.
-    The result ranges from -1 to +1:
-        +1  → A always larger than B
-        -1  → B always larger than A
-         0  → the two distributions overlap completely.
-
-    Computed by broadcasting: every A × B pair is compared once, which is
-    much faster than a nested Python loop for the trap counts we work with.
-    """
     n_a, n_b = len(vals_a), len(vals_b)
     if n_a == 0 or n_b == 0:
         return 0.0
 
-    a_col = vals_a[:, np.newaxis]   # shape (n_a, 1)
-    b_row = vals_b[np.newaxis, :]   # shape (1, n_b)
-    dominance = np.sign(a_col - b_row)   # +1 / 0 / -1 per pair
+    a_col = vals_a[:, np.newaxis]   
+    b_row = vals_b[np.newaxis, :]   
+    dominance = np.sign(a_col - b_row)   
     return float(dominance.sum() / (n_a * n_b))
 
 
 def _delta_linewidth(delta: float) -> float:
-    """
-    Maps |Cliff's Delta| to a bracket line width, encoding effect size
-    visually. Thresholds follow Romano et al. (2006):
-
-        |δ| < 0.147  → 1.5 px  (negligible)
-        |δ| < 0.330  → 2.5 px  (small)
-        |δ| < 0.474  → 3.5 px  (medium)
-        |δ| ≥ 0.474  → 4.8 px  (large)
-
-    The floor (1.5 px) is deliberately above 1 px so that even negligible
-    effects remain visible after the figure is shrunk to the printed A5 size.
-    """
     abs_d = abs(delta)
     if abs_d < 0.147:
         return 1.5
@@ -322,44 +196,17 @@ def _delta_linewidth(delta: float) -> float:
 def _add_bracket(ax, x1: float, x2: float, y_top: float, label: str,
                  lw: float = 0.9, color: str = 'black',
                  fontsize: Optional[float] = None, inset: float = 0.13) -> None:
-    """
-    Draws a single significance bracket between two categories on `ax`.
-
-    A flat horizontal bar is drawn just above `y_top`, and the stars
-    annotation sits above the bar. The bar's line width encodes Cliff's
-    Delta (passed in as `lw`), and the stars encode the p-value tier — so
-    the reader gets both "is it real?" and "how big is it?" from one mark.
-
-    Handles both linear and log y-axes: on log axes, the vertical offsets
-    are computed in log space and mapped back to data coordinates, so the
-    bracket floats visually the same distance above the data regardless of
-    whether the axis spans 0–1 or 10⁰–10⁵.
-
-    Parameters
-    ----------
-    x1, x2   : x-positions of the two boxes being compared (category indices).
-    y_top    : data y-value at the top of the taller box/data max.
-    label    : star string ("***", "**", "*"), or None to skip drawing.
-    lw       : bracket line width, from _delta_linewidth().
-    inset    : how far to pull each endpoint in from x1/x2, in category units,
-               so the bracket connects the boxes rather than spanning the full
-               category-to-category distance.
-    """
     if label is None:
         return
     if fontsize is None:
-        fontsize = 9  # matches Utils_MFA paper style for annotations
+        fontsize = 9  
 
-    # Pull the endpoints in so the bracket sits over the boxes, not the gaps.
     x1_drawn = x1 + inset if x2 > x1 else x1 - inset
     x2_drawn = x2 - inset if x2 > x1 else x2 + inset
 
     y_lo, y_hi = ax.get_ylim()
 
     if ax.get_yscale() == 'log':
-        # Work in log space so vertical offsets look uniform on a log axis.
-        # A small additive offset in log10 is a multiplicative offset in data:
-        # 0.08 in log10 ≈ ×1.20, 0.13 in log10 ≈ ×1.35.
         log_lo, log_hi = np.log10(y_lo), np.log10(y_hi)
         log_range = log_hi - log_lo
         y_line = 10 ** (np.log10(y_top) + log_range * 0.08)
@@ -371,30 +218,16 @@ def _add_bracket(ax, x1: float, x2: float, y_top: float, label: str,
         y_text  = y_top + y_range * 0.13
         needed_top = y_text + y_range * 0.08
 
-    # Single flat horizontal bar — no vertical tick lines (matches GUV style).
     ax.plot([x1_drawn, x2_drawn], [y_line, y_line], lw=lw, color=color)
     ax.text((x1 + x2) / 2, y_text, label,
             ha='center', va='bottom', fontsize=fontsize, color=color)
 
-    # Expand the axis if the stars would fall off the top.
     if needed_top > y_hi:
         ax.set_ylim(y_lo, needed_top)
 
 
 def _build_stat_label(vals_a: np.ndarray, vals_b: np.ndarray
                       ) -> Tuple[str, Optional[str], float, float]:
-    """
-    Runs the Mann-Whitney test and Cliff's Delta together, and packages the
-    inputs needed by `_add_bracket`.
-
-    Returns
-    -------
-    stars : str      -- "***" / "**" / "*" / "ns"
-    label : str|None -- the stars string (or None if not significant, so the
-                        caller can skip drawing the bracket entirely)
-    lw    : float    -- bracket line width encoding |δ|
-    delta : float    -- the raw Cliff's Delta value (signed), for logging
-    """
     stars, _ = _mw_stars(vals_a, vals_b)
     delta = _cliffs_delta(vals_a, vals_b)
     if stars == "ns":
@@ -402,10 +235,6 @@ def _build_stat_label(vals_a: np.ndarray, vals_b: np.ndarray
     lw = _delta_linewidth(delta)
     return stars, stars, lw, delta
 
-
-# =============================================================================
-# 3. STATISTICAL PLOTS
-# =============================================================================
 
 def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
     import matplotlib.lines as mlines
@@ -428,7 +257,6 @@ def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
                 if len(t_raw) == 0 or len(l_raw) == 0:
                     continue
                 
-                # Unique identifier to pair pre and post measurements
                 exp_id = trap.metadata.experiment_number
                 
                 if is_ep:
@@ -470,7 +298,6 @@ def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
         df = pd.DataFrame(records)
         df = df.dropna(subset=['Length_um'])
         
-        # Aggregate a 'Global' group to explicitly show the overall size range
         df_global = df.copy()
         df_global['Trap'] = 'All Traps'
         df_global['Trap_Int'] = 999 
@@ -483,7 +310,6 @@ def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
         if is_ep:
             palette = {'Pre-pulse': '#ff7f0e', 'Post-pulse': '#9467bd'}
             
-            # Background boxplots for the distribution ranges
             sns.boxplot(data=df_combined, x='Trap', y='Length_um', hue='Phase', palette=palette, 
                         showfliers=False, boxprops=dict(alpha=0.3), order=trap_order)
             
@@ -491,7 +317,6 @@ def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
             growth_thresh = 0.5
             trap_to_x = {t: i for i, t in enumerate(trap_order)}
             
-            # Manual scatter and paired line plotting
             for _, row in df_combined.iterrows():
                 x_center = trap_to_x[row['Trap']]
                 is_global = row['Trap'] == 'All Traps'
@@ -507,11 +332,10 @@ def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
                     pair_id = f"{row['Trap']}_{row['Exp_ID']}"
                     if pd.notna(y_linked) and pair_id not in plotted_pairs:
                         delta = y_linked - y_val
-                        if delta > growth_thresh: color = '#2ca02c' # Green - Grows
-                        elif delta < -growth_thresh: color = '#d62728' # Red - Retracts
-                        else: color = '#7f7f7f' # Gray - Stable
+                        if delta > growth_thresh: color = '#2ca02c' 
+                        elif delta < -growth_thresh: color = '#d62728' 
+                        else: color = '#7f7f7f' 
                         
-                        # Isolate line drawing to individual traps, omit for the global summary
                         if not is_global:
                             plt.plot([x_center - 0.2, x_center + 0.2], [y_val, y_linked], 
                                      color=color, alpha=0.5, lw=1.5, zorder=2)
@@ -537,7 +361,6 @@ def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
             sns.stripplot(data=df_combined, x='Trap', y='Length_um', color='black', size=6, 
                           jitter=True, edgecolor='black', linewidth=0.8, alpha=0.9, order=trap_order)
 
-        # Draw visual separator for the global summary column
         plt.axvline(len(trap_order) - 1.5, color='black', ls='--', lw=1, alpha=0.5)
 
         plt.ylabel("Max Protrusion Length (µm)")
@@ -557,8 +380,6 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
         if not traps: continue
         cond_label = get_cond_label(traps[0].metadata)
 
-        # Compute shared x-axis window once — same logic as the other
-        # uptake multipanels.  Replaces the old hardcoded set_xlim(-5, 120).
         x_min, x_max = _compute_common_uptake_xlim(traps)
 
         trap_groups = _group_by_trap_id(traps)
@@ -578,7 +399,6 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
             for trap in trap_list:
                 ud = trap.uptake_data
                 if 'Time_s' in ud and 'Body_VolNorm' in ud:
-                    # FETCH PHYSICAL PULSE TIME
                     pf = trap.metadata.pulse_frame
                     t_raw = trap.protrusion_data.get('Time_s', [])
                     pulse_time_s = float(t_raw[pf]) if (0 < pf < len(t_raw)) else 0.0
@@ -620,7 +440,6 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
                 }
             processed_trap_data[tid] = stats
 
-            # Use only signal within the common window for the y-scale
             win = (ct >= x_min) & (ct <= x_max)
             if np.any(win):
                 arr1 = stats['body_mean'][win] + stats['body_std'][win]
@@ -692,7 +511,7 @@ def plot_uptake_exponential_fit(grouped_data, output_dir: Path):
             ]:
                 if col_name in ud:
                     fit = bm.fit_exponential_uptake(
-                        ud['Time_s'], ud[col_name], pulse_frame=pf
+                        ud['Time_s'], ud[col_name], pulse_time_s=pf
                     )
                     if fit['r2'] is not None and fit['r2'] > 0.5 and fit['tau'] is not None:
                         records.append({
@@ -713,16 +532,6 @@ def plot_uptake_exponential_fit(grouped_data, output_dir: Path):
     plt.close()
 
 def plot_per_trap_uptake_distribution(grouped_data, output_dir: Path):
-    """
-    Per-trap boxplot of the fitted exponential amplitude A (ADU/µm³) for each
-    region (Body, Protrusion, Total).
-
-    Uses volume-normalised intensity (Body_VolNorm / Protrusion_VolNorm /
-    Total_VolNorm) and the fitted amplitude A from fit_exponential_uptake(),
-    matching what is stored in the mechanics CSV.  Volume normalisation removes
-    the cell-size confound so amplitude is proportional to membrane permeability,
-    not cell size.
-    """
     import bulk_mechanics as bm
 
     logger.info("Generating Plot: Body vs Protrusion Uptake Amplitude (ADU/µm³) per Trap...")
@@ -738,12 +547,10 @@ def plot_per_trap_uptake_distribution(grouped_data, output_dir: Path):
             if 'Time_s' not in ud:
                 continue
 
-            # pulse_frame is only meaningful for EP cells; for ASP use 0
             pf = (trap.metadata.pulse_frame
                   if trap.metadata.condition_type == "EP"
                   else 0)
 
-            # Map each region label to its volume-normalised column name
             region_cols = [
                 ('Body',       'Body_VolNorm'),
                 ('Protrusion', 'Protrusion_VolNorm'),
@@ -754,14 +561,10 @@ def plot_per_trap_uptake_distribution(grouped_data, output_dir: Path):
                 if col_name not in ud or len(ud[col_name]) == 0:
                     continue
 
-                # Fit A*(1 - exp(-t/tau)) to the absolute signal.
-                # fit_exponential_uptake subtracts the pre-pulse baseline
-                # internally, so we pass the raw absolute array directly.
                 fit = bm.fit_exponential_uptake(
-                    ud['Time_s'], ud[col_name], pulse_frame=pf
+                    ud['Time_s'], ud[col_name], pulse_time_s=pf
                 )
 
-                # Only keep the amplitude if the fit converged
                 if fit['A'] is not None:
                     records.append({
                         'Trap'   : f"T{trap.trap_id}",
@@ -775,11 +578,8 @@ def plot_per_trap_uptake_distribution(grouped_data, output_dir: Path):
         df = pd.DataFrame(records)
         df['Trap'] = df['Trap'].astype('category')
 
-        # Floor at 1 ADU so that near-zero fits don't break the log scale.
-        # Values below 1 ADU are indistinguishable from baseline noise anyway.
         df['Amp_A'] = df['Amp_A'].clip(lower=1e-3)
 
-        # Sort trap labels strictly by integer value (T2, T3, … T18)
         trap_order = sorted(df['Trap'].unique(), key=lambda x: int(x[1:]))
 
         plt.figure(figsize=(16, 7))
@@ -812,15 +612,8 @@ def plot_per_trap_uptake_distribution(grouped_data, output_dir: Path):
         plt.savefig(output_dir / save_name, dpi=SAVE_DPI)
         plt.close()
 
-# =============================================================================
-# 7. MULTIPANEL PLOTS
-# =============================================================================
 
 def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
-    """
-    Multipanel grid showing uptake data with exponential fit overlays.
-    Uses bulk_mechanics.fit_exponential_uptake() for consistency with CSV.
-    """
     import bulk_mechanics as bm
 
     logger.info("Generating Plot: Multipanel Uptake Fits...")
@@ -829,10 +622,6 @@ def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
         if not traps: continue
         cond_label = get_cond_label(traps[0].metadata)
 
-        # Compute shared x-axis window once per group so every panel uses
-        # the same time range.  This mirrors the common-duration logic in
-        # bulk_mechanics and prevents long-recording outliers from compressing
-        # all other panels.
         x_min, x_max = _compute_common_uptake_xlim(traps)
         
         trap_groups = _group_by_trap_id(traps)
@@ -858,7 +647,6 @@ def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
                 ud = trap.uptake_data
                 if 'Time_s' not in ud: continue
                 
-                # FETCH PHYSICAL PULSE TIME
                 pf = trap.metadata.pulse_frame
                 t_raw = trap.protrusion_data.get('Time_s', [])
                 pulse_time_s = float(t_raw[pf]) if (0 < pf < len(t_raw)) else 0.0
@@ -872,7 +660,6 @@ def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
                     color = PALETTE_REGION[region_name]
                     ax.plot(at, y_data, '.', ms=2, color=color, alpha=0.3)
                     
-                    # PASS PULSE_TIME_S TO FIT
                     fit = bm.fit_exponential_uptake(ud['Time_s'], y_data, pulse_time_s=pf_for_fit)
                     if fit['tau'] is not None:
                         t_post = at[at > 0]
@@ -894,12 +681,10 @@ def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
 
 
 def plot_recoil_fits_multipanel(grouped_data, output_dir: Path):
-    """Multipanel recoil fit grid. Only meaningful for EP data."""
     logger.info("Generating Plot: Multipanel Recoil Fits...")
     for key in sorted(grouped_data.keys()):
         traps = grouped_data[key]
         if not traps: continue
-        # Skip ASP groups — recoil is an EP concept
         if traps[0].metadata.condition_type == "ASP":
             continue
 
@@ -928,7 +713,6 @@ def plot_recoil_fits_multipanel(grouped_data, output_dir: Path):
                 time_raw = pd_data['Time_s']; length = pd_data.get('Protrusion_Length_um', np.array([]))
                 if len(time_raw) < 5 or len(length) < 5: continue
 
-                # FETCH PHYSICAL PULSE TIME
                 pf = trap.metadata.pulse_frame
                 pulse_time_s = float(time_raw[pf]) if (0 < pf < len(time_raw)) else 0.0
                 
@@ -960,7 +744,6 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
         if not traps: continue
         cond_label = get_cond_label(traps[0].metadata)
 
-        # Shared x-axis window for all panels in this group
         x_min, x_max = _compute_common_uptake_xlim(traps)
         
         trap_groups = _group_by_trap_id(traps)
@@ -985,7 +768,6 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
                     vals = ud[col][win_mask]
                     valid_vals = vals[np.isfinite(vals)]
                     if len(valid_vals) > 0:
-                        # Use 99th percentile to ignore massive single-frame volume spikes
                         current_max = float(np.nanpercentile(valid_vals, 99))
                         if current_max > global_max_y: global_max_y = current_max
         
@@ -1010,7 +792,6 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
                 ud = trap.uptake_data
                 if 'Time_s' not in ud: continue
 
-                # FETCH PHYSICAL PULSE TIME
                 pf = trap.metadata.pulse_frame
                 t_raw = trap.protrusion_data.get('Time_s', [])
                 pulse_time_s = float(t_raw[pf]) if (0 < pf < len(t_raw)) else 0.0
@@ -1032,13 +813,7 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
         plt.close()
 
 
-# =============================================================================
-# CONDITION LABEL HELPERS (for mechanics_df-based plots)
-# =============================================================================
-
 def _cond_label_from_row(row: pd.Series) -> str:
-    """Build condition label from a mechanics_df row."""
-    # Use pre-built Condition column if available (FIX #11)
     if 'Condition' in row.index and pd.notna(row.get('Condition')):
         return row['Condition']
     if row.get('Condition_Type') == 'ASP':
@@ -1046,115 +821,6 @@ def _cond_label_from_row(row: pd.Series) -> str:
     return (f"{row['Cell_Type']}_{row['Treatment']}_"
             f"{row['Pressure_Pa']}Pa_{row['Voltage_V']}V_{row['Duration_label']}")
 
-
-# =============================================================================
-# 8. VISCOELASTIC PLOTS
-# =============================================================================
-
-def plot_viscoelastic_fits_multipanel(grouped_data: Dict, output_dir: Path, r_eff: float, C: float = 1.0) -> None:
-    logger.info("Generating Plot: Multipanel Viscoelastic Fits (ASP only)...")
-    import bulk_mechanics as bm
-
-    # Pre-compute reduced labels across all ASP conditions so filenames and
-    # titles drop fields that are constant across the plotted set (see
-    # _reduce_labels). Only ASP groups are considered because the loop
-    # below filters non-ASP conditions.
-    _asp_full_labels = [
-        get_cond_label(traps[0].metadata)
-        for key, traps in grouped_data.items()
-        if traps and traps[0].metadata.condition_type == "ASP"
-    ]
-    _asp_label_map = _reduce_labels(sorted(set(_asp_full_labels)))
-
-    for key in sorted(grouped_data.keys()):
-        traps = grouped_data[key]
-        if not traps: continue
-
-        meta = traps[0].metadata
-        if meta.condition_type != "ASP": continue
-
-        cond_label = get_cond_label(meta)
-        cond_label_short = _asp_label_map.get(cond_label, cond_label)
-        trap_groups = _group_by_trap_id(traps)
-        sorted_ids = sorted(trap_groups.keys())
-        n = len(sorted_ids)
-        if n == 0: continue
-
-        # Compute common duration for this group (same logic as mechanics)
-        common_dur = bm.compute_common_duration(traps)
-
-        cols = 5
-        rows = math.ceil(n / cols)
-        fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-        if n == 1: axes = [axes]
-        else: axes = axes.flatten()
-        
-        handles = [
-            mlines.Line2D([], [], color='black', marker='o', lw=0, label='Cleaned Data', alpha=0.4),
-            mlines.Line2D([], [], color=VISCO_MODEL_PALETTE['Kelvin-Voigt'], lw=2, label='Kelvin-Voigt'),
-            mlines.Line2D([], [], color=VISCO_MODEL_PALETTE['Jeffreys'],     lw=2, label='Jeffreys'),
-            mlines.Line2D([], [], color=VISCO_MODEL_PALETTE['Burgers'],      lw=2, label='Burgers')
-        ]
-        fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, 1.0), ncol=4, frameon=False, fontsize=12)
-        dur_note = f"  [window: {common_dur:.0f} s]" if common_dur else ""
-        fig.text(0.5, 0.01, f'Time (s){dur_note}', ha='center', fontsize=14)
-        fig.text(0.01, 0.5, 'Protrusion Length (µm)', va='center', rotation='vertical', fontsize=14)
-        
-        for i, tid in enumerate(sorted_ids):
-            ax = axes[i]
-            ax.set_title(f"Trap {tid}", fontsize=10, fontweight='bold')
-            trap_list = trap_groups[tid]
-            
-            for trap in trap_list:
-                pd_data = trap.protrusion_data
-                if 'Time_s' not in pd_data or 'Protrusion_Length_um' not in pd_data: continue
-                
-                t_raw = pd_data['Time_s']
-                l_raw = pd_data['Protrusion_Length_um']
-
-                # Apply common duration window (matching mechanics pipeline)
-                if common_dur is not None:
-                    t_from_entry = t_raw - t_raw[0]
-                    win_mask = t_from_entry <= common_dur
-                    t_raw = t_raw[win_mask]
-                    l_raw = l_raw[win_mask]
-
-                t_clean, l_clean = bm._clean_trace(t_raw, l_raw)
-                if len(t_clean) < 5: continue
-                t_zeroed = t_clean - t_clean[0]
-                
-                ax.plot(t_zeroed, l_clean, 'o', c='black', ms=3, alpha=0.4)
-                visco = bm.fit_viscoelastic(t_zeroed, l_clean, r_eff, meta.pressure, C, n_starts=3, min_points=5)
-                if not visco['best_model']: continue
-                
-                t_smooth = np.linspace(0, t_zeroed[-1], 200)
-                models_info = visco['all_models']
-                
-                if 'Kelvin-Voigt' in models_info and models_info['Kelvin-Voigt']['params']:
-                    p = models_info['Kelvin-Voigt']['params']
-                    l_pred = bm._kelvin_voigt(t_smooth, r_eff, meta.pressure, C, p['E'], p['eta'])
-                    ax.plot(t_smooth, l_pred, color=VISCO_MODEL_PALETTE['Kelvin-Voigt'], lw=1.5, alpha=0.8)
-                if 'Jeffreys' in models_info and models_info['Jeffreys']['params']:
-                    p = models_info['Jeffreys']['params']
-                    l_pred = bm._jeffreys(t_smooth, r_eff, meta.pressure, C, p['E'], p['eta1'], p['eta2'])
-                    ax.plot(t_smooth, l_pred, color=VISCO_MODEL_PALETTE['Jeffreys'], lw=1.5, alpha=0.8)
-                if 'Burgers' in models_info and models_info['Burgers']['params']:
-                    p = models_info['Burgers']['params']
-                    l_pred = bm._burgers(t_smooth, r_eff, meta.pressure, C, p['E1'], p['eta1'], p['E2'], p['eta2'])
-                    ax.plot(t_smooth, l_pred, color=VISCO_MODEL_PALETTE['Burgers'], lw=1.5, alpha=0.8)
-
-                best = visco['best_model']
-                ax.text(0.05, 0.9, f"Winner: {best}", transform=ax.transAxes, fontsize=8, fontweight='bold', color=VISCO_MODEL_PALETTE.get(best, 'black'))
-                
-        for j in range(len(sorted_ids), len(axes)): axes[j].axis('off')
-        plt.tight_layout(rect=[0.03, 0.03, 1, 0.95])
-        utils.save_plot_pdf(output_dir / f"Viscoelastic_Fits_Panel_{cond_label_short}.pdf", dpi=PANEL_DPI)
-        plt.close()
-
-
-# =============================================================================
-# 9. ASP-SPECIFIC PLOTS  (reduced grouping: CellType × Treatment × Pressure)
-# =============================================================================
 
 def _asp_category_label(meta: bfh.ExperimentMetadata) -> str:
     return f"{meta.cell_type}_{meta.treatment}_{meta.pressure}Pa"
@@ -1165,30 +831,6 @@ def _asp_category_label_from_row(row: pd.Series) -> str:
 
 
 def _reduce_labels(labels: List[str], sep: str = '_') -> Dict[str, str]:
-    """
-    Compress a set of underscore-separated labels to show only varying fields.
-
-    Splits each label into components on `sep`, checks which positions vary
-    across the list, and returns a mapping from each full label to a
-    reduced label that keeps only the varying positions.
-
-    Examples
-    --------
-    Only the treatment varies:
-        _reduce_labels(['MDAMB231_CytD_1100Pa', 'MDAMB231_WT_1100Pa'])
-        -> {'MDAMB231_CytD_1100Pa': 'CytD',
-            'MDAMB231_WT_1100Pa':   'WT'}
-
-    Two fields vary:
-        _reduce_labels(['MDAMB231_CytD_1100Pa', 'HeLa_WT_1100Pa'])
-        -> {'MDAMB231_CytD_1100Pa': 'MDAMB231_CytD',
-            'HeLa_WT_1100Pa':       'HeLa_WT'}
-
-    Safe fallbacks (returns labels unchanged) if:
-      - the list is empty or has one element,
-      - the labels do not all have the same number of components,
-      - no position varies (all labels identical).
-    """
     if len(labels) < 2:
         return {l: l for l in labels}
     parts = [l.split(sep) for l in labels]
@@ -1204,10 +846,6 @@ def _reduce_labels(labels: List[str], sep: str = '_') -> Dict[str, str]:
 def plot_asp_best_fit_multipanel(
         all_grouped_data: Dict, output_dir: Path,
         r_eff: float, C: float = 1.0) -> None:
-    """
-    Multipanel grid for ASP cells: cleaned data + BEST viscoelastic model only.
-    Applies common time window for comparable fits.
-    """
     import bulk_mechanics as bm
 
     logger.info("Generating Plot: ASP Best-Fit Multipanel (reduced grouping)...")
@@ -1225,15 +863,8 @@ def plot_asp_best_fit_multipanel(
         logger.info("  No ASP data found — skipping.")
         return
 
-    # Use the shared viscoelastic palette so colours are consistent with the
-    # parameter boxplots and the model selection frequency chart.
     model_color = VISCO_MODEL_PALETTE
 
-    # Pre-compute reduced labels across the full set of pools. Each figure's
-    # SUPTITLE uses the reduced label (e.g. "CytD" instead of
-    # "MDAMB231_CytD_1100Pa") so the varying field is what a reader sees.
-    # Filenames keep the full label -- they need to stay unique and
-    # descriptive when files are viewed outside the thesis.
     _pool_labels_full = sorted(asp_pools.keys())
     _pool_label_map = _reduce_labels(_pool_labels_full)
 
@@ -1241,8 +872,7 @@ def plot_asp_best_fit_multipanel(
         cat_label_short = _pool_label_map[cat_label]
         trap_list_all = asp_pools[cat_label]
 
-        # Compute common duration for the pool
-        common_dur = bm.compute_common_duration(trap_list_all)
+        common_dur = bm.TARGET_WINDOW_S
 
         trap_groups = _group_by_trap_id(trap_list_all)
         sorted_ids = sorted(trap_groups.keys())
@@ -1278,7 +908,6 @@ def plot_asp_best_fit_multipanel(
                 t_raw = pd_data['Time_s']
                 l_raw = pd_data['Protrusion_Length_um']
 
-                # Apply common duration window
                 if common_dur is not None:
                     t_from_entry = t_raw - t_raw[0]
                     win_mask = t_from_entry <= common_dur
@@ -1325,23 +954,8 @@ def plot_asp_best_fit_multipanel(
 
 
 def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
-    """
-    Boxplots of viscoelastic parameters for ASP cells, grouped by the reduced
-    key (CellType × Treatment × Pressure). Points coloured by winning model.
-    Also produces a model selection frequency bar chart.
-    """
     logger.info("Generating: ASP Parameter Boxplots (reduced grouping)...")
 
-    # Filter cascade for the plotted set. All four conditions must hold:
-    #   1. Condition_Type == 'ASP'
-    #   2. Best_Model is set (a viscoelastic winner exists after BIC selection,
-    #      which already excludes bound-hit fits and models skipped by the
-    #      identifiability guard).
-    #   3. E_Pa is finite (a real parameter, not NaN).
-    #   4. Visco_R2_Flag is True (the winning model clears the R² floor set
-    #      at pipeline level -- currently r2_floor=0.85).
-    # The unfiltered CSV (mechanics_results_all_traps.csv) preserves the audit
-    # trail; only the plot itself is filtered.
     df = mechanics_df[
         (mechanics_df['Condition_Type'] == 'ASP') &
         mechanics_df['Best_Model'].notna() &
@@ -1356,10 +970,6 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     df['Category'] = df.apply(_asp_category_label_from_row, axis=1)
     sorted_cats_full = sorted(df['Category'].unique())
 
-    # Compress labels to only the fields that vary across the plotted set.
-    # If only "treatment" differs, "MDAMB231_CytD_1100Pa" -> "CytD".
-    # If more differs, more is kept. Falls through to the full label when
-    # only one category is present.
     label_map = _reduce_labels(sorted_cats_full)
     df['Category'] = df['Category'].map(label_map)
     sorted_cats = [label_map[c] for c in sorted_cats_full]
@@ -1368,13 +978,13 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     axes = axes.flatten()
 
     panels = [
-        ('E_Pa',      'E / E₂ (Pa)',  'KV Spring Modulus (E/E₂)'),
-        ('E1_Pa',     'E₁ (Pa)',      'Maxwell Spring E₁\n(Burgers only)'),
-        ('Tau_s',     'τ (s)',        'Creep Time Constant τ'),
-        ('eta1_Pa_s', 'η₁ (Pa·s)',    'Parallel Viscosity η₁'),
-        ('eta2_Pa_s', 'η₂ (Pa·s)',    'Flow Viscosity η₂\n(Jeffreys / Burgers)'),
+        ('E_Pa',      r'E / E$_2$ (Pa)',  r'KV Spring Modulus (E/E$_2$)'),
+        ('E1_Pa',     r'E$_1$ (Pa)',      "Maxwell Spring E$_1$\n(Burgers only)"),
+        ('Tau_s',     r'$\tau$ (s)',      r'Creep Time Constant $\tau$'),
+        ('eta1_Pa_s', r'$\eta_1$ (Pa$\cdot$s)', r'Parallel Viscosity $\eta_1$'),
+        ('eta2_Pa_s', r'$\eta_2$ (Pa$\cdot$s)', "Flow Viscosity $\eta_2$\n(Jeffreys / Burgers)"),
     ]
-
+    
     for i, ax in enumerate(axes):
         if i >= len(panels):
             ax.set_visible(False)
@@ -1398,19 +1008,9 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
         ax.set_xlabel("")
         ax.tick_params(axis='x', rotation=45)
 
-        # Log-scale y-axis: viscoelastic parameters span orders of magnitude,
-        # and linear axes compress the low-end distribution into an
-        # unreadable strip along the baseline.
         if (sub[col] > 0).all():
             ax.set_yscale('log')
 
-        # -------------------------------------------------------------
-        # Pairwise significance annotation between adjacent categories.
-        # Each bracket carries two independent signals:
-        #     stars  -> Mann-Whitney U p-value tier
-        #     lw     -> Cliff's Delta magnitude (visual effect size)
-        # Log-scale-aware offsets are handled inside _add_bracket.
-        # -------------------------------------------------------------
         pairs = [(sorted_cats[j], sorted_cats[j + 1])
                  for j in range(len(sorted_cats) - 1)]
 
@@ -1419,8 +1019,6 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
             vals_b = sub.loc[sub['Category'] == cat_b, col].dropna().values
             stars, label, lw, delta = _build_stat_label(vals_a, vals_b)
 
-            # Log the numeric result so the values that go into the thesis
-            # text ("p = 0.017, δ = 0.38") are always traceable to a run.
             n_a, n_b = len(vals_a), len(vals_b)
             logger.info(
                 f"  [{title.splitlines()[0]:<30}] {cat_a} vs {cat_b}: "
@@ -1428,13 +1026,10 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
             )
 
             if label is None:
-                continue  # not significant, no bracket drawn
+                continue  
 
             x1 = sorted_cats.index(cat_a)
             x2 = sorted_cats.index(cat_b)
-            # The visible top of the data is the taller group's max.
-            # (Whiskers/points can extend above the box; anchoring to nanmax
-            # keeps the bracket clear of the fliers as well.)
             y_top = float(np.nanmax(np.concatenate([vals_a, vals_b])))
             _add_bracket(ax, x1, x2, y_top, label, lw=lw)
 
@@ -1447,7 +1042,6 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     utils.save_plot_pdf(output_dir / "ASP_Parameter_Boxplots.pdf", dpi=SAVE_DPI)
     plt.close()
 
-    # --- Model selection frequency bar chart ---
     model_counts = (df.groupby(['Category', 'Best_Model'])
                     .size()
                     .unstack(fill_value=0)
@@ -1466,26 +1060,8 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     plt.close()
 
 
-# FIX #6/#7: Removed the duplicate model-selection frequency bar chart and
-# the duplicate parameter boxplots that existed in the old
-# plot_viscoelastic_parameters(). The ASP parameter boxplots above (reduced
-# grouping) are the correct version. For ASP cells, the full-condition
-# grouping is identical to the reduced grouping (voltage/duration are always
-# 0), so the old function was producing a duplicate chart.
-
-
-# =============================================================================
-# 10. MODEL-INDEPENDENT PLOTS
-# =============================================================================
-
 def plot_model_independent_fits_multipanel(
-        grouped_data: Dict, output_dir: Path) -> None:
-    """
-    NEW: Multipanel grid showing cleaned protrusion data with BOTH linear
-    and power-law model curves overlaid. Labels the BIC winner on each panel.
-
-    Works for both ASP and EP (EP uses pre-pulse window).
-    """
+        grouped_data: Dict, output_dir: Path, global_pre_dur: Optional[float] = None) -> None:
     import bulk_mechanics as bm
 
     logger.info("Generating Plot: Model-Independent Fits Multipanel...")
@@ -1495,11 +1071,6 @@ def plot_model_independent_fits_multipanel(
         if not traps: continue
         cond_label = get_cond_label(traps[0].metadata)
         meta = traps[0].metadata
-
-        # For ASP groups, compute common duration window
-        common_dur = None
-        if meta.condition_type == "ASP":
-            common_dur = bm.compute_common_duration(traps)
 
         trap_groups = _group_by_trap_id(traps)
         sorted_ids = sorted(trap_groups.keys())
@@ -1534,31 +1105,30 @@ def plot_model_independent_fits_multipanel(
                 t_raw = pd_data['Time_s'].copy()
                 l_raw = pd_data['Protrusion_Length_um'].copy()
 
-                # --- Extract the fitting window ---
                 if meta.condition_type == "ASP":
-                    # Apply common duration window
-                    if common_dur is not None:
+                    if global_pre_dur is not None:
                         t_from_entry = t_raw - t_raw[0]
-                        win_mask = t_from_entry <= common_dur
+                        win_mask = t_from_entry <= global_pre_dur
                         t_raw = t_raw[win_mask]
                         l_raw = l_raw[win_mask]
                     t_fit_raw = t_raw - t_raw[0]
                     l_fit_raw = l_raw
                 else:
-                    # EP: use pre-pulse window
                     pf = trap.metadata.pulse_frame
                     if not (0 < pf < len(t_raw)):
                         continue
                     t_aligned = t_raw - t_raw[pf]
                     pre_mask = (t_aligned < 0) & (l_raw > 0)
-                    if np.sum(pre_mask) < 5:
+                    if global_pre_dur is not None:
+                        pre_mask = pre_mask & (t_aligned >= -global_pre_dur)
+                    if np.sum(pre_mask) < 15:
                         continue
                     t_fit_raw = t_aligned[pre_mask]
                     t_fit_raw = t_fit_raw - t_fit_raw[0]
                     l_fit_raw = l_raw[pre_mask]
 
                 t_clean, l_clean = bm._clean_trace(t_fit_raw, l_fit_raw)
-                if len(t_clean) < 5:
+                if len(t_clean) < 15:
                     continue
 
                 ax.plot(t_clean, l_clean, 'o', c='black', ms=2, alpha=0.35)
@@ -1566,23 +1136,20 @@ def plot_model_independent_fits_multipanel(
                 mi_fit = bm.fit_model_independent(t_clean, l_clean)
                 t_smooth = np.linspace(t_clean[0], t_clean[-1], 200)
 
-                # Plot linear fit
                 if mi_fit['linear']:
                     p = mi_fit['linear']['params']
                     ax.plot(t_smooth, bm._linear(t_smooth, p['slope'], p['intercept']),
                             color=MI_MODEL_PALETTE['Linear'], lw=1.5, alpha=0.8)
 
-                # Plot power-law fit
                 if mi_fit['power_law']:
                     p = mi_fit['power_law']['params']
                     ax.plot(t_smooth, bm._power_law(t_smooth, p['a'], p['exponent_b']),
                             color=MI_MODEL_PALETTE['Power-Law'], lw=1.5, alpha=0.8)
 
-                # Label BIC winner
                 winner = mi_fit.get('best_model')
                 if winner:
                     color = MI_MODEL_PALETTE.get(winner, 'black')
-                    ax.text(0.05, 0.9, f"BIC: {winner}",
+                    ax.text(0.05, 0.9, f"AICc: {winner}",
                             transform=ax.transAxes, fontsize=7,
                             fontweight='bold', color=color)
 
@@ -1593,15 +1160,6 @@ def plot_model_independent_fits_multipanel(
 
 
 def plot_model_independent_comparison(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
-    """
-    UPDATED: Model-independent fit parameter comparison.
-
-    Produces:
-      1. Two-panel boxplot (Linear Slope, Power-Law exponent) with points
-         coloured by the BIC-winning model (Linear or Power-Law).
-      2. MI model selection frequency bar chart.
-      3. EP pre-vs-post slope comparison (unchanged from original).
-    """
     logger.info("Generating: Model-Independent Fit Comparison...")
     if mechanics_df is None or mechanics_df.empty: return
 
@@ -1609,7 +1167,6 @@ def plot_model_independent_comparison(mechanics_df: pd.DataFrame, output_dir: Pa
     df['Cond'] = df.apply(_cond_label_from_row, axis=1)
     sorted_conds_full = sorted(df['Cond'].unique())
 
-    # Compress labels to only the fields that vary (see _reduce_labels).
     label_map = _reduce_labels(sorted_conds_full)
     df['Cond'] = df['Cond'].map(label_map)
     sorted_conds = [label_map[c] for c in sorted_conds_full]
@@ -1619,7 +1176,6 @@ def plot_model_independent_comparison(mechanics_df: pd.DataFrame, output_dir: Pa
 
     if df_lin.empty and df_pl.empty: return
 
-    # --- Panel 1: Boxplots with points coloured by MI winner ---
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
     if not df_lin.empty:
@@ -1660,7 +1216,6 @@ def plot_model_independent_comparison(mechanics_df: pd.DataFrame, output_dir: Pa
     plt.savefig(output_dir / "Model_Independent_Comparison.png", dpi=SAVE_DPI, bbox_inches='tight')
     plt.close()
 
-    # --- Panel 2: MI model selection frequency bar chart ---
     if 'MI_Best_Model' in df.columns:
         df_mi = df[df['MI_Best_Model'].notna()]
         if not df_mi.empty:
@@ -1681,7 +1236,6 @@ def plot_model_independent_comparison(mechanics_df: pd.DataFrame, output_dir: Pa
                 plt.savefig(output_dir / "MI_Model_Selection_Frequency.png", dpi=SAVE_DPI)
                 plt.close()
 
-    # --- Panel 3: EP pre-vs-post slope comparison (unchanged) ---
     df_ep = df[(df['Condition_Type'] == 'EP') &
                (df['Pre_Pulse_Slope'].notna() | df['Post_Pulse_Slope'].notna())]
     if not df_ep.empty:
@@ -1728,8 +1282,6 @@ def plot_uptake_tau_boxplot(mechanics_df: pd.DataFrame, output_dir: Path) -> Non
     if df_melt.empty: return
     sorted_conds_full = sorted(df_melt['Cond'].unique())
 
-    # Compress axis labels to only the fields that vary across the plotted set
-    # (see _reduce_labels). Filenames and internal columns keep the full label.
     label_map = _reduce_labels(sorted_conds_full)
     df_melt['Cond'] = df_melt['Cond'].map(label_map)
     sorted_conds = [label_map[c] for c in sorted_conds_full]
@@ -1763,19 +1315,6 @@ def plot_uptake_tau_boxplot(mechanics_df: pd.DataFrame, output_dir: Path) -> Non
     plt.close()
 
 def plot_spearman_correlation(df_scalars: pd.DataFrame, output_dir: Path) -> None:
-    # cols_to_drop = [
-    #     'Prot_Frame', 'Prot_Protrusion_Length_px', 'Prot_Linear_Size_Prot_um',
-    #     'Prot_Linear_Size_Body_um', 'Prot_Linear_Size_Total_um', 'Prot_Total_Area_um2',
-    #     'Prot_Volume_Prot_um3', 'Prot_Volume_Body_um3', 'Prot_Volume_Total_um3',
-    #     'Prot_Downstream_Intensity', 'Uptake_Protrusion_Area_um2',
-    #     'Uptake_Body_Area_um2', 'Uptake_Total_Area_um2', 'Uptake_Linear_Size_Prot_um',
-    #     'Uptake_Linear_Size_Body_um', 'Uptake_Linear_Size_Total_um',
-    #     'Uptake_Volume_Prot_um3', 'Uptake_Volume_Body_um3', 'Uptake_Volume_Total_um3',
-    #     'Uptake_Total_Intensity', 'Uptake_Protrusion_Intensity', 'Uptake_Tip_Intensity',
-    #     'Uptake_Body_Intensity', 'Uptake_Total_MinMax', 'Uptake_Protrusion_MinMax',
-    #     'Uptake_Tip_MinMax', 'Uptake_Body_MinMax', 'Uptake_Total_Normalized_dF_F0', 'Trap_ID']
-    
-    
     nice_names = {
         'Duration_ms': 'Pulse Duration [ms]',
         'Trap_ID': 'Trap No.',
@@ -1788,11 +1327,8 @@ def plot_spearman_correlation(df_scalars: pd.DataFrame, output_dir: Path) -> Non
         'Uptake_Total_VolNorm_A': 'Total Uptake A (ADU/µm³)',
     }
     
-    # Explicitly select only the desired columns in the specified order
     cols_to_keep = [col for col in nice_names.keys() if col in df_scalars.columns]
     
-    # We must also keep 'Condition' for the loop later, so we grab it separately
-    # but don't rename it in the nice_names dict.
     df_clean = df_scalars[['Condition'] + cols_to_keep].copy() if 'Condition' in df_scalars.columns else df_scalars[cols_to_keep].copy()
     df_clean = df_clean.rename(columns=nice_names)
     
@@ -1805,7 +1341,6 @@ def plot_spearman_correlation(df_scalars: pd.DataFrame, output_dir: Path) -> Non
             
         corr_matrix = df_numeric.corr(method='spearman')
         
-        # Generate mask for the upper triangle
         mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
         
         fig, ax = plt.subplots(figsize=(16, 14))
@@ -1865,7 +1400,6 @@ def plot_parameter_pairplot(df_scalars: pd.DataFrame, output_dir: Path) -> None:
     df_clean = df_clean.rename(columns=nice_names)
     
     def _plot_and_save_pairplot(df_subset: pd.DataFrame, filename: str, title: str):
-        # 1. Force numeric conversion and float casting
         df_num = df_subset.copy()
         for col in df_num.columns:
             if col != 'Condition':
@@ -1873,12 +1407,9 @@ def plot_parameter_pairplot(df_scalars: pd.DataFrame, output_dir: Path) -> None:
         
         df_numeric = df_num.select_dtypes(include=[np.number]).dropna(axis=1, how='all')
         
-        # 2. Filter out constants (like Pulse Duration) using variance threshold
-        # Handles floating point noise (e.g. 0.1 vs 0.1000000001)
         cols_with_variance = []
         for col in df_numeric.columns:
             if df_numeric[col].dropna().nunique() > 1:
-                # Use epsilon threshold of 10^-9
                 if (df_numeric[col].max() - df_numeric[col].min()) > 1e-9:
                     cols_with_variance.append(col)
         
@@ -1887,28 +1418,16 @@ def plot_parameter_pairplot(df_scalars: pd.DataFrame, output_dir: Path) -> None:
         if df_numeric.shape[1] < 2: 
             return
 
-        # 3. Generate the plot
         g = sns.pairplot(df_numeric, corner=True, diag_kind='kde',
                          plot_kws={'alpha': 0.6, 's': 40, 'edgecolor': 'w', 'linewidth': 0.5})
         
-
-        # --- THE "FORCE-MANUAL" LABEL OVERRIDE ---
-        # We iterate through the leftmost axes of every row
         for i, col_name in enumerate(df_numeric.columns):
-            ax = g.axes[i, 0] # Leftmost axis of row i
+            ax = g.axes[i, 0] 
             if ax is not None:
-                # Set the label explicitly
                 ax.set_ylabel(col_name, fontsize=12, fontweight='bold', rotation=90)
-                
-                # CRITICAL: Diagonal axes have labelleft=False by default in corner mode.
-                # We turn on the axis ticks for the anchor, but we can keep the 
-                # numeric labels (0.0, 0.5, etc.) hidden if you prefer.
                 ax.tick_params(axis='y', left=True, labelleft=False)
-                
-                # Ensure the label is actually visible and not clipped
                 ax.get_yaxis().set_visible(True)
 
-        # 4. Clean up x-axis labels (Bottom row)
         for j, col_name in enumerate(df_numeric.columns):
             ax = g.axes[-1, j]
             if ax is not None:
@@ -1917,28 +1436,14 @@ def plot_parameter_pairplot(df_scalars: pd.DataFrame, output_dir: Path) -> None:
         plt.savefig(output_dir / filename, dpi=300, bbox_inches='tight')
         plt.close(g.fig)
 
-    # Execution logic...
     if 'Condition' in df_clean.columns:
         for cond in sorted(df_clean['Condition'].dropna().unique()):
             df_cond = df_clean[df_clean['Condition'] == cond]
             if len(df_cond) >= 3:
                 _plot_and_save_pairplot(df_cond, f"spearman_parameter_pairplot_{str(cond).replace(' ', '_')}.png", f"Pair Plot - {cond}")
 
-# =============================================================================
-# HELPER: Body size column detection
-# =============================================================================
 
 def _find_body_size_column(pd_data: Dict[str, np.ndarray]) -> Optional[str]:
-    """
-    Searches the protrusion data dict for a column representing cell body size.
-
-    Priority order: direct linear dimension first (preferred), then area
-    columns (caller must take sqrt to convert to a linear scale).
-
-    Returns
-    -------
-    str : column name, or None if nothing suitable is found.
-    """
     priority = [
         'Body_Length_um',
         'Body_Major_Axis_um',
@@ -1951,7 +1456,6 @@ def _find_body_size_column(pd_data: Dict[str, np.ndarray]) -> Optional[str]:
     for col in priority:
         if col in pd_data and len(pd_data[col]) > 0:
             return col
-    # Fallback: any column whose name contains both 'body' and a size keyword
     for col in pd_data:
         col_l = col.lower()
         if 'body' in col_l and any(k in col_l for k in ('length', 'area', 'axis', 'width')):
@@ -1959,20 +1463,7 @@ def _find_body_size_column(pd_data: Dict[str, np.ndarray]) -> Optional[str]:
     return None
 
 
-# =============================================================================
-# EP POST-PULSE BEHAVIOR PLOT
-# =============================================================================
-
 def plot_ep_post_pulse_behavior(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
-    """
-    Two-panel stacked bar chart showing the fraction and raw count of EP traps
-    classified as 'Extends', 'Stable', or 'Retracts' immediately after the
-    electroporation pulse, per condition.
-
-    The classification threshold is controlled by
-    bulk_mechanics.EP_BEHAVIOR_SLOPE_THRESHOLD.  Results are also written to a
-    CSV for downstream statistical testing.
-    """
     logger.info("Generating: EP Post-Pulse Behavior chart...")
     if mechanics_df is None or mechanics_df.empty:
         return
@@ -1989,12 +1480,10 @@ def plot_ep_post_pulse_behavior(mechanics_df: pd.DataFrame, output_dir: Path) ->
     df['Cond'] = df.apply(_cond_label_from_row, axis=1)
     sorted_conds_full = sorted(df['Cond'].unique())
 
-    # Compress axis labels to only the fields that vary (see _reduce_labels).
     label_map = _reduce_labels(sorted_conds_full)
     df['Cond'] = df['Cond'].map(label_map)
     sorted_conds = [label_map[c] for c in sorted_conds_full]
 
-    # Build counts table; ensure all three categories are present
     counts = (df.groupby(['Cond', 'EP_Post_Pulse_Behavior'])
                 .size()
                 .unstack(fill_value=0)
@@ -2012,19 +1501,16 @@ def plot_ep_post_pulse_behavior(mechanics_df: pd.DataFrame, output_dir: Path) ->
 
     fig, axes = plt.subplots(1, 2, figsize=(max(10, len(sorted_conds) * 2.5), 5))
 
-    # Panel 1 — raw counts
     counts.plot(kind='bar', stacked=True, ax=axes[0], color=colors, legend=False)
     axes[0].set_title("Post-Pulse Protrusion Behavior\n(raw counts)", fontweight='bold')
     axes[0].set_ylabel("Number of Traps")
     axes[0].set_xlabel("")
     axes[0].tick_params(axis='x', rotation=45)
-    # Annotate total n per bar
     for j, cond in enumerate(sorted_conds):
         n_total = int(totals.loc[cond])
         axes[0].text(j, n_total + 0.2, f"n={n_total}", ha='center',
                      va='bottom', fontsize=8)
 
-    # Panel 2 — fractions
     fractions.plot(kind='bar', stacked=True, ax=axes[1], color=colors)
     axes[1].set_title("Post-Pulse Protrusion Behavior\n(fraction)", fontweight='bold')
     axes[1].set_ylabel("Fraction of Traps")
@@ -2038,25 +1524,18 @@ def plot_ep_post_pulse_behavior(mechanics_df: pd.DataFrame, output_dir: Path) ->
                 dpi=SAVE_DPI, bbox_inches='tight')
     plt.close()
 
-    # Save count table for downstream stats
     counts['Total'] = totals
     counts.to_csv(output_dir / "EP_PostPulse_Behavior_Counts.csv")
     logger.info("  EP post-pulse behavior chart saved.")
 
 
-# =============================================================================
-# UPTAKE vs LINEAR SIZE — per-trap 2×2 figures
-# =============================================================================
-
 def plot_slope_comparison(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
-    """Three-panel slope comparison: full-trace slope, EP pre-vs-post, and delta."""
     logger.info("Generating: Slope Comparison (ASP vs EP)...")
     if mechanics_df is None or mechanics_df.empty: return
 
     df = mechanics_df.copy()
     df['Cond'] = df.apply(_cond_label_from_row, axis=1)
 
-    # Compress axis labels to only the fields that vary (see _reduce_labels).
     _slope_sorted_full = sorted(df['Cond'].unique())
     _slope_label_map = _reduce_labels(_slope_sorted_full)
     df['Cond'] = df['Cond'].map(_slope_label_map)
@@ -2124,7 +1603,6 @@ def plot_slope_comparison(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     plt.close()
 
 
-# FIX #13: Added Protrusion panel to the ASP-vs-EP uptake overlay.
 def plot_uptake_asp_vs_ep(grouped_data: Dict, output_dir: Path) -> None:
     logger.info("Generating: Uptake Comparison ASP vs EP...")
     base_conditions: Dict[Tuple, Dict[str, List[bfh.TrapData]]] = {}
@@ -2135,10 +1613,6 @@ def plot_uptake_asp_vs_ep(grouped_data: Dict, output_dir: Path) -> None:
         ctype = traps[0].metadata.condition_type if traps else None
         if ctype in ('ASP', 'EP'): base_conditions[base_key][ctype].extend(traps)
 
-    # Pre-compute reduced labels across all base conditions so suptitles and
-    # filenames drop fields that are constant across the plotted set. Each
-    # figure is one condition, so the reduction is computed globally over
-    # the set of conditions before the per-figure loop.
     _base_full_labels = [f"{c}_{t}_{p}Pa" for (c, t, p) in base_conditions]
     _base_label_map = _reduce_labels(sorted(set(_base_full_labels)))
 
@@ -2149,7 +1623,6 @@ def plot_uptake_asp_vs_ep(grouped_data: Dict, output_dir: Path) -> None:
         full_label  = f"{cell_type}_{treatment}_{pressure_pa}Pa"
         short_label = _base_label_map.get(full_label, full_label)
 
-        # 3 panels: Body, Protrusion, Total
         fig, axes = plt.subplots(1, 3, figsize=(20, 5))
 
         panel_defs = [
@@ -2167,7 +1640,6 @@ def plot_uptake_asp_vs_ep(grouped_data: Dict, output_dir: Path) -> None:
                     ud = trap.uptake_data
                     if 'Time_s' not in ud or col not in ud: continue
                     
-                    # FETCH PHYSICAL PULSE TIME
                     pf = trap.metadata.pulse_frame
                     t_raw = trap.protrusion_data.get('Time_s', [])
                     pulse_time_s = float(t_raw[pf]) if (0 < pf < len(t_raw)) else 0.0
