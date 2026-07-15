@@ -67,11 +67,11 @@ def main():
     results_dir = output_root_dir / "Bulk_Analysis_results" / date_stamp
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    mechanics_dir     = results_dir / "mechanics"          
-    asp_visco_dir     = results_dir / "asp_viscoelastic"   
-    mi_prepulse_dir   = results_dir / "mi_prepulse"        
-    mi_wholetrace_dir = results_dir / "mi_wholetrace"      
-    for d in (mechanics_dir, asp_visco_dir, mi_prepulse_dir, mi_wholetrace_dir):
+    mechanics_dir     = results_dir / "mechanics"
+    claim1_dir        = results_dir / "claim1_asp"
+    claim2_dir        = results_dir / "claim2_ep_vs_asp"
+    supp_dir          = results_dir / "supplementary"
+    for d in (mechanics_dir, claim1_dir, claim2_dir, supp_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Results will be saved to: {results_dir}")
@@ -218,16 +218,19 @@ def main():
 
     if filtered_grouped_data.keys():
         _try("Thesis Plot Suite",
-             tp.run_thesis_plots, filtered_grouped_data, mechanics_df, asp_visco_dir, r_eff, global_asp_dur)
+             tp.run_thesis_plots, filtered_grouped_data, mechanics_df, claim1_dir, r_eff, global_asp_dur)
 
     # ------------------------------------------------------------------
-    # Claim 2 completion — actin, trap-dependency, body-volume sanity
+    # Claim 1 completion — actin, trap-dependency, body-volume sanity.
+    # These are ASP-only figures showing that the platform detects the
+    # CytD softening and that the readout doesn't confound with trap
+    # position; body volume vs E is intentionally shown even though it
+    # is not null (see chapter interpretation).
     # ------------------------------------------------------------------
-    claim2_dir = results_dir / "claim2_sensitivity"
     if filtered_grouped_data.keys():
-        _try("Thesis Claim 2 Plots",
-             tp.run_thesis_claim2_plots,
-             filtered_grouped_data, mechanics_df, claim2_dir, global_asp_dur)
+        _try("Thesis Claim 1 Plots",
+             tp.run_thesis_claim1_plots,
+             filtered_grouped_data, mechanics_df, claim1_dir, global_asp_dur)
 
     # ------------------------------------------------------------------
     # MI cohort filter (both ASP and EP-pre)
@@ -300,16 +303,24 @@ def main():
     if mi_filtered_grouped_data.keys():
         _try("Thesis MI Pre-Pulse Plot Suite",
              tp.run_thesis_mi_prepulse_plots,
-             mi_filtered_grouped_data, mechanics_df, mi_prepulse_dir, global_pre_dur)
+             mi_filtered_grouped_data, mechanics_df, claim2_dir, global_pre_dur)
+
+    # ------------------------------------------------------------------
+    # Claim 2 core — fate-mechanics story (Batch 3a).
+    # Uses the FULL grouped data (not the MI-filtered subset) so ruptured
+    # EP cells are visible.  Filtering by fate + MI R² happens inside the
+    # plot functions.
+    # ------------------------------------------------------------------
+    _try("Thesis Claim 2 Core Plots",
+         tp.run_thesis_claim2_plots,
+         all_grouped_data, mechanics_df, claim2_dir, global_whole_dur)
 
     # ------------------------------------------------------------------
     # Fate cohort histogram: intact vs ruptured counts per pulse condition.
-    # Draws from mechanics_df + attrition_df; no cohort filtering needed.
+    # Belongs to Claim 2 (irreversible vs reversible electroporation).
     # ------------------------------------------------------------------
-    fate_dir = results_dir / "fate"
-    fate_dir.mkdir(parents=True, exist_ok=True)
     _try("Fate Histogram", tp.plot_thesis_fate_counts,
-         mechanics_df, attrition_df, fate_dir)
+         mechanics_df, attrition_df, claim2_dir)
 
     # ------------------------------------------------------------------
     # SUPPLEMENTARY: MI whole-trace plots.
@@ -322,7 +333,7 @@ def main():
     if RUN_SUPPLEMENTARY and mi_whole_filtered_grouped_data.keys():
         _try("SUPPLEMENTARY: MI Whole-Trace Plot Suite",
              tp.run_thesis_mi_wholetrace_plots,
-             mi_whole_filtered_grouped_data, mechanics_df, mi_wholetrace_dir, global_whole_dur)
+             mi_whole_filtered_grouped_data, mechanics_df, supp_dir, global_whole_dur)
 
     logger.info("\n=== THESIS ANALYSIS COMPLETE ===")
 

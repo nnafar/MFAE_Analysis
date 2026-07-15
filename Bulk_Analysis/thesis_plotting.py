@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from pathlib import Path
 from scipy.interpolate import interp1d
 
@@ -144,7 +144,6 @@ def plot_asp_protrusion_dynamics(grouped_data: Dict, output_dir: Path, global_as
                             jitter=True, edgecolor='black', linewidth=0.8, alpha=0.7, order=trap_order, ax=ax)
 
             ax.set_xlabel('Trap ID')
-            ax.set_ylim(0, 40)
             ax.set_ylabel('Max Protrusion Length (µm)')
             ax.tick_params(axis='x', rotation=45)
 
@@ -1384,18 +1383,18 @@ def plot_thesis_fate_counts(mechanics_df: pd.DataFrame,
     per pulse condition, with the pre-pulse-rupture (_R0) count shown as a
     third bar for context.
 
-    Only two categories affect the analysis cohort:
+    Three bars per pulse condition:
         intact          <- mechanics_df where Fate_Status == 'intact'
-        ruptured_post   <- mechanics_df where Fate_Status == 'ruptured_post'
+        ruptured_post   <- mechanics_df where Fate_Status == 'ruptured_post' (_R)
+        excluded        <- sum of every non-analysed attrition bucket:
+                             ruptured_pre_pulse    (_R0)
+                             not_viable            (_DOA, _PI, _R_DOA, _R0_DOA)
+                             post_pulse_arrival    (_after, _POST)
+                             detection_failure     (_MASK, _SHAPE, _IRREGULAR)
 
-    A third informational bar is drawn from the attrition tally:
-        ruptured_pre_pulse (_R0)  <- pre-aspiration rupture, excluded from
-                                     analysis but relevant to the
-                                     "fraction ruptured per pulse regime"
-                                     framing.
-
-    All other attrition buckets (non_viable, post_pulse_arrival,
-    detection_failure) are excluded per the current chapter scope.
+    The 'excluded' bar reports the total cell budget lost to any reason
+    other than being carried into the analysis cohort, so the reader can
+    read the analysable fraction directly off the figure.
 
     ASP cells are dropped because "pulse regime" is the grouping axis;
     ASP has no pulse.
@@ -1423,22 +1422,38 @@ def plot_thesis_fate_counts(mechanics_df: pd.DataFrame,
         if col not in counts_analysis.columns:
             counts_analysis[col] = 0
 
-    # Pull _R0 counts from attrition, restricted to EP experiments
-    r0_counts = pd.Series(dtype=int)
+    # Pull excluded counts from attrition, restricted to EP experiments.
+    # 'excluded' collapses every non-analysed bucket into a single total:
+    # _R0 (pre-pulse rupture), _DOA/_PI/_R_DOA/_R0_DOA (non-viable),
+    # _after/_POST (post-pulse arrival), and _MASK/_SHAPE/_IRREGULAR
+    # (detection failure).
+    EXCLUDED_BUCKETS = [
+        'ruptured_pre_pulse',
+        'not_viable',
+        'post_pulse_arrival',
+        'detection_failure',
+    ]
+    excluded_counts = pd.Series(dtype=int)
     if attrition_df is not None and not attrition_df.empty:
         ep_att = attrition_df.loc[attrition_df['Condition_Type'] == 'EP']
-        if not ep_att.empty and 'ruptured_pre_pulse' in ep_att.columns:
-            r0_counts = ep_att.groupby('Duration_label')['ruptured_pre_pulse'].sum()
+        if not ep_att.empty:
+            present_buckets = [b for b in EXCLUDED_BUCKETS if b in ep_att.columns]
+            if present_buckets:
+                # Row-wise sum across the excluded buckets, then group by pulse duration.
+                excluded_counts = (
+                    ep_att.assign(_excluded=ep_att[present_buckets].sum(axis=1))
+                          .groupby('Duration_label')['_excluded'].sum()
+                )
 
     # Combine into a single tidy DataFrame keyed by Duration_label
     durations = sorted(
-        set(counts_analysis.index) | set(r0_counts.index),
+        set(counts_analysis.index) | set(excluded_counts.index),
         key=_duration_sort_key,
     )
     tidy = pd.DataFrame({
-        'intact'            : [counts_analysis.get('intact',        pd.Series()).get(d, 0) for d in durations],
-        'ruptured_post'     : [counts_analysis.get('ruptured_post', pd.Series()).get(d, 0) for d in durations],
-        'ruptured_pre_pulse': [int(r0_counts.get(d, 0))                                     for d in durations],
+        'intact'        : [counts_analysis.get('intact',        pd.Series()).get(d, 0) for d in durations],
+        'ruptured_post' : [counts_analysis.get('ruptured_post', pd.Series()).get(d, 0) for d in durations],
+        'excluded'      : [int(excluded_counts.get(d, 0))                              for d in durations],
     }, index=durations)
 
     # ---- Draw ------------------------------------------------------------
@@ -1447,17 +1462,17 @@ def plot_thesis_fate_counts(mechanics_df: pd.DataFrame,
     width   = 0.27
 
     colours = {
-        'intact'            : '#4C78A8',   # analysis-in blue
-        'ruptured_post'     : '#E15759',   # ruptured red
-        'ruptured_pre_pulse': '#B0B0B0',   # excluded grey
+        'intact'        : '#4C78A8',   # analysis-in blue
+        'ruptured_post' : '#E15759',   # ruptured red
+        'excluded'      : '#B0B0B0',   # excluded grey
     }
     labels = {
-        'intact'            : 'Intact',
-        'ruptured_post'     : 'Ruptured (post-pulse)',
-        'ruptured_pre_pulse': 'Ruptured (pre-pulse, excluded)',
+        'intact'        : 'Intact',
+        'ruptured_post' : 'Ruptured (post-pulse)',
+        'excluded'      : 'Excluded (all reasons)',
     }
 
-    for i, key in enumerate(('intact', 'ruptured_post', 'ruptured_pre_pulse')):
+    for i, key in enumerate(('intact', 'ruptured_post', 'excluded')):
         offset = (i - 1) * width
         bars = ax.bar(x + offset, tidy[key].to_numpy(),
                       width=width, color=colours[key], label=labels[key],
@@ -1485,10 +1500,16 @@ def plot_thesis_fate_counts(mechanics_df: pd.DataFrame,
     # Also drop the counts alongside the figure so the numbers can be quoted
     tidy_out = tidy.copy()
     tidy_out.index.name = 'Duration_label'
-    tidy_out['analysis_total']       = tidy_out['intact'] + tidy_out['ruptured_post']
-    tidy_out['fraction_ruptured']    = np.where(
+    tidy_out['analysis_total']    = tidy_out['intact'] + tidy_out['ruptured_post']
+    tidy_out['candidate_total']   = tidy_out['analysis_total'] + tidy_out['excluded']
+    tidy_out['fraction_ruptured'] = np.where(
         tidy_out['analysis_total'] > 0,
         tidy_out['ruptured_post'] / tidy_out['analysis_total'],
+        np.nan,
+    )
+    tidy_out['fraction_excluded'] = np.where(
+        tidy_out['candidate_total'] > 0,
+        tidy_out['excluded'] / tidy_out['candidate_total'],
         np.nan,
     )
     tidy_out.to_csv(output_dir / "Thesis_Fate_Counts_by_Pulse.csv")
@@ -1525,8 +1546,15 @@ def _actin_f0_trace(trap: bfh.TrapData, region: str):
     Return (t_seconds, I_over_F0) for one region of one trap, or (None, None).
 
     region is 'Body' or 'Prot' (matches the CSV column suffix).
-    Time is zero-referenced to the first frame so cross-cell interpolation
-    can share a common axis.
+    Time is zero-referenced to the first detection frame (aspiration onset)
+    so cross-cell interpolation can share a common axis.
+
+    Frames where the region mean is zero are treated as segmentation
+    failures (no mask), not as real zero-intensity readings, and are
+    dropped from the returned trace.  This is critical for the
+    protrusion region, which is empty for the first N frames before the
+    protrusion has formed; if these zeros are kept, the cross-cell mean
+    is dragged toward zero at early time points.
     """
     ad = getattr(trap, 'actin_data', {}) or {}
     if 'Time_s' not in ad:
@@ -1548,12 +1576,15 @@ def _actin_f0_trace(trap: bfh.TrapData, region: str):
     if f0_scalar is None:
         return None, None
 
-    valid = np.isfinite(t) & np.isfinite(I)
+    # Align to aspiration onset BEFORE filtering, so protrusion traces
+    # that start later keep their absolute time offset.
+    t_aligned = t - t[0]
+
+    valid = np.isfinite(t_aligned) & np.isfinite(I) & (I > 0)
     if valid.sum() < 5:
         return None, None
-    t = t[valid]; I = I[valid]
 
-    return t - t[0], I / f0_scalar
+    return t_aligned[valid], I[valid] / f0_scalar
 
 
 def plot_thesis_asp_actin_trace_by_condition(grouped_data: Dict,
@@ -1854,14 +1885,487 @@ def plot_thesis_asp_body_volume_vs_E(mechanics_df: pd.DataFrame,
     logger.info("Body volume vs E scatter written.")
 
 
-def run_thesis_claim2_plots(grouped_data: Dict,
+def plot_thesis_asp_prot_length_vs_mechanics(mechanics_df: pd.DataFrame,
+                                               output_dir: Path) -> None:
+    """
+    Two-panel scatter: max pre-pulse protrusion length vs elastic modulus E
+    and vs parallel viscosity η₁.  Coloured by treatment, Spearman ρ
+    annotated per treatment per panel.
+
+    Rationale: L_max is set by the balance between driving pressure and
+    cortical resistance at steady state.  If E scales with L_max within
+    a treatment, the two are reading the same underlying property
+    (cortical compliance); if they don't, they're independent readouts.
+    Filters to ASP intact cells with a valid viscoelastic fit.
+    """
+    from scipy import stats
+    if mechanics_df is None or mechanics_df.empty:
+        return
+
+    df = mechanics_df.loc[
+        (mechanics_df['Condition_Type'] == 'ASP')
+        & (mechanics_df['Fate_Status'] == 'intact')
+        & mechanics_df['E_Pa'].notna()
+        & (mechanics_df['Visco_R2_Flag'] == True)
+        & mechanics_df['Max_Prot_length_PrePulse_um'].notna()
+    ].copy()
+
+    if df.empty:
+        logger.warning("Prot length vs mechanics plot skipped: no eligible cells.")
+        return
+
+    panels = [
+        ('E_Pa',      r"$E$ (Pa)"),
+        ('eta1_Pa_s', r"$\eta_1$ (Pa$\cdot$s)"),
+    ]
+
+    fig, axes = plt.subplots(1, 2, figsize=(5.02, 2.8))
+    for ax, (col, ylabel) in zip(axes, panels):
+        if col not in df.columns:
+            continue
+
+        for treatment in _TREATMENT_ORDER:
+            sub = df.loc[df['Treatment'] == treatment,
+                         ['Max_Prot_length_PrePulse_um', col]].dropna()
+            if sub.empty:
+                continue
+            colour = _TREATMENT_COLOR[treatment]
+            ax.scatter(sub['Max_Prot_length_PrePulse_um'], sub[col],
+                       s=22, color=colour, edgecolor='white', linewidths=0.4,
+                       alpha=0.75, label=f"{treatment} (n={len(sub)})")
+
+            if len(sub) >= 5:
+                rho, p = stats.spearmanr(
+                    sub['Max_Prot_length_PrePulse_um'], sub[col])
+                y_anchor = 0.95 if treatment == 'WT' else 0.88
+                ax.text(0.03, y_anchor,
+                        rf"$\rho_{{{treatment}}}={rho:.2f}$ (p={p:.2g})",
+                        transform=ax.transAxes, fontsize=8, color=colour,
+                        va='top')
+
+        ax.set_yscale('log')
+        ax.set_xlabel(r"Max protrusion length (µm, pre-pulse)")
+        ax.set_ylabel(ylabel)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes[0].legend(frameon=False, fontsize=8, loc='best')
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_ProtLength_vs_Mechanics.pdf")
+    plt.close()
+    logger.info("Prot-length vs mechanics scatter written.")
+
+
+def plot_thesis_asp_actin_f0_boxplot(mechanics_df: pd.DataFrame,
+                                       output_dir: Path) -> None:
+    """
+    Two-panel boxplot: raw F0_Body and F0_Prot by treatment.
+
+    F0-normalisation of the actin trace erases the between-cell baseline,
+    so a between-condition actin comparison has to look at F0 itself.
+    This plot answers the question the F0-normalised trace can't: does
+    CytD reduce baseline actin fluorescence?
+
+    Filters to ASP intact cells with a valid viscoelastic fit (same
+    cohort as the viscoelastic boxplots, so figures are comparable).
+    """
+    if mechanics_df is None or mechanics_df.empty:
+        return
+
+    df = mechanics_df.loc[
+        (mechanics_df['Condition_Type'] == 'ASP')
+        & (mechanics_df['Fate_Status'] == 'intact')
+        & mechanics_df['E_Pa'].notna()
+        & (mechanics_df['Visco_R2_Flag'] == True)
+    ].copy()
+
+    if df.empty:
+        logger.warning("F0 boxplot skipped: no eligible ASP cells.")
+        return
+
+    if 'F0_Body' not in df.columns or 'F0_Prot' not in df.columns:
+        logger.warning("F0 boxplot skipped: F0 columns not in mechanics_df.")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(5.02, 3.2), sharey=False)
+    panels = [
+        ('F0_Body', r'$F_0$ body (ADU)',       'Body'),
+        ('F0_Prot', r'$F_0$ protrusion (ADU)', 'Protrusion'),
+    ]
+
+    for ax, (col, ylabel, title) in zip(axes, panels):
+        sub = df.loc[df[col].notna(), ['Treatment', col]].copy()
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+
+        # Match the box+strip style used elsewhere
+        sns.boxplot(data=sub, x='Treatment', y=col, order=_TREATMENT_ORDER,
+                    ax=ax, showfliers=False, color='lightgray')
+        # Colour stripplot points by treatment using our palette
+        for i, treatment in enumerate(_TREATMENT_ORDER):
+            pts = sub.loc[sub['Treatment'] == treatment, col].to_numpy()
+            if len(pts) == 0:
+                continue
+            rng = np.random.default_rng(42 + i)
+            jitter = rng.uniform(-0.15, 0.15, size=len(pts))
+            ax.scatter(np.full(len(pts), i) + jitter, pts,
+                       s=22, color=_TREATMENT_COLOR[treatment],
+                       edgecolor='white', linewidths=0.4, alpha=0.75, zorder=3)
+
+        # Significance bracket
+        vals_wt   = sub.loc[sub['Treatment'] == 'WT',   col].dropna().to_numpy()
+        vals_cytd = sub.loc[sub['Treatment'] == 'CytD', col].dropna().to_numpy()
+        stars, label, lw, delta = bp._build_stat_label(vals_cytd, vals_wt)
+        n_wt, n_cytd = len(vals_wt), len(vals_cytd)
+        logger.info(
+            f"  [F0 {title:<10}] CytD vs WT: n=({n_cytd},{n_wt})  "
+            f"stars={stars}  delta={delta:+.3f}"
+        )
+        if label is not None:
+            x1 = _TREATMENT_ORDER.index('CytD')
+            x2 = _TREATMENT_ORDER.index('WT')
+            y_top = float(np.nanmax(np.concatenate([vals_wt, vals_cytd])))
+            bp._add_bracket(ax, x1, x2, y_top, label, lw=lw)
+
+        if (sub[col] > 0).all():
+            ax.set_yscale('log')
+
+        ax.set_title(title, fontsize=10)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel("")
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_Actin_F0_Boxplot.pdf")
+    plt.close()
+    logger.info("F0 boxplot written.")
+
+
+def run_thesis_claim1_plots(grouped_data: Dict,
                              mechanics_df: pd.DataFrame,
                              output_dir: Path,
                              global_asp_dur: Optional[float] = None) -> None:
-    """Convenience runner: all Claim 2 (sensitivity) plots."""
+    """Convenience runner: all Claim 1 (ASP heterogeneity) plots."""
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_thesis_asp_actin_trace_by_condition(
         grouped_data, mechanics_df, output_dir, global_asp_dur)
+    plot_thesis_asp_actin_f0_boxplot(mechanics_df, output_dir)
     plot_thesis_asp_actin_vs_mechanics(mechanics_df, output_dir)
     plot_thesis_asp_trap_dependency(mechanics_df, output_dir)
     plot_thesis_asp_body_volume_vs_E(mechanics_df, output_dir)
+    plot_thesis_asp_prot_length_vs_mechanics(mechanics_df, output_dir)
+
+
+# ==========================================================================
+# BATCH 3a — Claim 2 core (fate-mechanics story)
+# ==========================================================================
+# Colours for fate-cohort plots:
+_FATE_COLOR = {
+    'intact'        : utils.MFA_COLORS['dark_blue'],   # analysis-in blue
+    'ruptured_post' : utils.MFA_COLORS['medium_red'],  # ruptured red
+    'asp_baseline'  : '#808080',                       # neutral grey baseline
+}
+
+
+def _ep_fate_bucket(duration_label: str, fate_status: str) -> str:
+    """
+    Compact bucket label for fate-cohort figures.
+    e.g. '100us_intact', '5ms_ruptured'.
+    Falls through to raw values if either field is missing.
+    """
+    dl = str(duration_label) if duration_label is not None else '?'
+    fs = str(fate_status)   if fate_status   is not None else '?'
+    fs_short = {'intact': 'intact', 'ruptured_post': 'ruptured'}.get(fs, fs)
+    return f"{dl}_{fs_short}"
+
+
+def plot_thesis_ep_fate_mi_boxplots(mechanics_df: pd.DataFrame,
+                                      output_dir: Path,
+                                      r2_floor: float = 0.80) -> None:
+    """
+    Boxplot of pre-pulse model-independent parameters, EP cells only,
+    split by pulse condition × fate.  Answers "were cells that go on to
+    rupture already mechanically distinguishable pre-pulse?"
+
+    Three panels: Linear_Slope, PL_a, PL_b (matching the existing MI
+    parameter boxplot).  Within each pulse condition, intact vs ruptured
+    is tested with Mann-Whitney U + Cliff's delta.
+    """
+    if mechanics_df is None or mechanics_df.empty:
+        logger.warning("Fate-mechanics boxplot skipped: empty mechanics_df.")
+        return
+
+    df = mechanics_df.copy()
+    df['MI_Winner_R2'] = df.apply(_mi_winner_r2, axis=1)
+
+    ep_df = df.loc[
+        (df['Condition_Type'] == 'EP')
+        & df['MI_Best_Model'].notna()
+        & (df['MI_Winner_R2'] >= r2_floor)
+        & df['Fate_Status'].isin(['intact', 'ruptured_post'])
+    ].copy()
+
+    if ep_df.empty:
+        logger.warning("Fate-mechanics boxplot skipped: no EP cells pass MI R² floor.")
+        return
+
+    ep_df['Bucket'] = ep_df.apply(
+        lambda r: _ep_fate_bucket(r.get('Duration_label'), r.get('Fate_Status')),
+        axis=1,
+    )
+
+    # Sorted bucket order: by duration first (100us < 5ms), then intact before ruptured
+    durations = sorted(
+        ep_df['Duration_label'].dropna().unique(),
+        key=_duration_sort_key,
+    )
+    order = []
+    for d in durations:
+        for fate_short in ('intact', 'ruptured'):
+            b = f"{d}_{fate_short}"
+            if b in ep_df['Bucket'].values:
+                order.append(b)
+
+    panels = [
+        ('Linear_Slope', 'Slope (µm/s)',      'Linear Slope',    False),
+        ('PL_a',         'Amplitude a (µm)',  'Power-Law a',     True ),
+        ('PL_b',         'Exponent b',        'Power-Law b',     False),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(max(9, 1.6 * len(order) + 6), 3.6))
+
+    for i, (col, ylabel, title, log_y) in enumerate(panels):
+        ax = axes[i]
+        sub = ep_df.loc[ep_df[col].notna(), ['Bucket', col, 'Fate_Status']]
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+
+        sns.boxplot(data=sub, x='Bucket', y=col, order=order,
+                    ax=ax, showfliers=False, color='lightgray')
+
+        # Colour points by fate
+        for j, bucket in enumerate(order):
+            row_mask = sub['Bucket'] == bucket
+            if not row_mask.any():
+                continue
+            vals = sub.loc[row_mask, col].to_numpy()
+            fate = sub.loc[row_mask, 'Fate_Status'].iloc[0]
+            rng = np.random.default_rng(42 + j)
+            jitter = rng.uniform(-0.15, 0.15, size=len(vals))
+            ax.scatter(np.full(len(vals), j) + jitter, vals,
+                       s=20, color=_FATE_COLOR.get(fate, 'gray'),
+                       edgecolor='white', linewidths=0.4, alpha=0.75, zorder=3)
+
+        if log_y and (sub[col].dropna() > 0).all():
+            ax.set_yscale('log')
+
+        ax.set_title(title, fontsize=10)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel("")
+        ax.tick_params(axis='x', rotation=45)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        # Intact vs ruptured brackets within each pulse condition
+        for d in durations:
+            b_intact = f"{d}_intact"
+            b_rupt   = f"{d}_ruptured"
+            if b_intact not in order or b_rupt not in order:
+                continue
+            v_int = sub.loc[sub['Bucket'] == b_intact, col].dropna().to_numpy()
+            v_rup = sub.loc[sub['Bucket'] == b_rupt,   col].dropna().to_numpy()
+            if len(v_int) == 0 or len(v_rup) == 0:
+                continue
+            stars, label, lw, delta = bp._build_stat_label(v_int, v_rup)
+            logger.info(
+                f"  [{title:<12} {d}] intact vs ruptured: n=({len(v_int)},{len(v_rup)})  "
+                f"stars={stars}  delta={delta:+.3f}"
+            )
+            if label is None:
+                continue
+            x1 = order.index(b_intact)
+            x2 = order.index(b_rupt)
+            y_top = float(np.nanmax(np.concatenate([v_int, v_rup])))
+            bp._add_bracket(ax, x1, x2, y_top, label, lw=lw)
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_EP_Fate_MI_Boxplots.pdf")
+    plt.close()
+    logger.info("Fate-mechanics MI boxplot written.")
+
+
+def plot_thesis_ep_wholetrace_by_fate(grouped_data: Dict,
+                                       mechanics_df: pd.DataFrame,
+                                       output_dir: Path,
+                                       global_whole_dur: Optional[float] = None) -> None:
+    """
+    Whole L(t) trace comparison: ASP baseline vs EP intact vs EP ruptured,
+    two panels (one per pulse condition), all aligned to aspiration entry.
+
+    Pulse timing varies across EP cells (frame index 10-120 across
+    experiments) so it can't sit at a single x-value.  Instead, the
+    median pulse time for each condition is annotated as a vertical
+    dashed line, with the IQR as a shaded band.
+    """
+    if mechanics_df is None or mechanics_df.empty:
+        logger.warning("Whole-trace plot skipped: empty mechanics_df.")
+        return
+
+    # Cohort: intact ASP + intact/ruptured EP
+    asp_pass = mechanics_df.loc[
+        (mechanics_df['Condition_Type'] == 'ASP')
+        & (mechanics_df['Fate_Status'] == 'intact')
+    ]
+    ep_pass = mechanics_df.loc[
+        (mechanics_df['Condition_Type'] == 'EP')
+        & mechanics_df['Fate_Status'].isin(['intact', 'ruptured_post'])
+    ]
+    asp_pairs = set(zip(asp_pass['Experiment_Folder'], asp_pass['Trap_ID']))
+    ep_pairs  = set(zip(ep_pass['Experiment_Folder'],  ep_pass['Trap_ID']))
+
+    # Group traces by (duration_label, kind), where kind is
+    # 'asp_baseline' | 'intact' | 'ruptured_post'
+    traces: Dict[Tuple[str, str], list] = {}
+    pulse_times: Dict[str, list] = {}
+
+    ep_durations_present: set = set()
+
+    for gk, traps in grouped_data.items():
+        if not traps:
+            continue
+        for trap in traps:
+            meta = trap.metadata
+            key = (meta.full_path.name, trap.trap_id)
+            t_zeroed, L = _extract_whole_trace(trap)
+            if t_zeroed is None:
+                continue
+            if global_whole_dur is not None:
+                m = t_zeroed <= global_whole_dur
+                t_zeroed = t_zeroed[m]
+                L = L[m]
+            if len(t_zeroed) < 15:
+                continue
+
+            if meta.condition_type == 'ASP' and key in asp_pairs:
+                # ASP is used as baseline for every EP pulse condition
+                for dl in ep_durations_present.copy():
+                    traces.setdefault((dl, 'asp_baseline'), []).append((t_zeroed, L))
+                # Also keep for later assignment once we know all durations
+                traces.setdefault(('__ALL_ASP__', 'asp_baseline'), []).append((t_zeroed, L))
+            elif meta.condition_type == 'EP' and key in ep_pairs:
+                fate_row = ep_pass.loc[
+                    (ep_pass['Experiment_Folder'] == meta.full_path.name)
+                    & (ep_pass['Trap_ID'] == trap.trap_id)
+                ]
+                if fate_row.empty:
+                    continue
+                fate = fate_row['Fate_Status'].iloc[0]
+                dl   = meta.duration_label
+                ep_durations_present.add(dl)
+                traces.setdefault((dl, fate), []).append((t_zeroed, L))
+
+                pt = _pulse_time_from_entry(trap)
+                if np.isfinite(pt):
+                    pulse_times.setdefault(dl, []).append(pt)
+
+    # Fill in ASP baseline for durations that appeared after ASP was collected
+    asp_all = traces.get(('__ALL_ASP__', 'asp_baseline'), [])
+    for dl in ep_durations_present:
+        if (dl, 'asp_baseline') not in traces:
+            traces[(dl, 'asp_baseline')] = asp_all
+    traces.pop(('__ALL_ASP__', 'asp_baseline'), None)
+
+    durations = sorted(ep_durations_present, key=_duration_sort_key)
+    if not durations:
+        logger.warning("Whole-trace plot skipped: no EP durations present.")
+        return
+
+    # ---- Draw --------------------------------------------------------------
+    n_panels = len(durations)
+    fig, axes = plt.subplots(1, n_panels, figsize=(5.02 * n_panels / 2, 3.0),
+                              sharey=True, squeeze=False)
+    axes = axes[0]
+
+    def _aggregate(trace_list, t_grid):
+        """Interpolate each (t, L) trace to t_grid, return mean and SD."""
+        if not trace_list:
+            return None, None, 0
+        matrix = np.full((len(trace_list), len(t_grid)), np.nan)
+        for i, (t_arr, L_arr) in enumerate(trace_list):
+            if len(t_arr) < 2:
+                continue
+            f = interp1d(t_arr, L_arr, bounds_error=False, fill_value=np.nan,
+                         assume_sorted=True)
+            matrix[i, :] = f(t_grid)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            m  = np.nanmean(matrix, axis=0)
+            sd = np.nanstd(matrix, axis=0)
+        return m, sd, len(trace_list)
+
+    for ax, dl in zip(axes, durations):
+        # Common time grid per panel
+        max_t = 0.0
+        for kind in ('asp_baseline', 'intact', 'ruptured_post'):
+            for t, _L in traces.get((dl, kind), []):
+                if len(t) and t[-1] > max_t:
+                    max_t = float(t[-1])
+        if max_t <= 0:
+            continue
+        common_t = np.linspace(0.0, max_t, 120)
+
+        # Draw pulse timing band first so it sits behind lines
+        pts = pulse_times.get(dl, [])
+        if pts:
+            pts_arr = np.asarray(pts, dtype=float)
+            med = float(np.nanmedian(pts_arr))
+            q1  = float(np.nanpercentile(pts_arr, 25))
+            q3  = float(np.nanpercentile(pts_arr, 75))
+            ax.axvspan(q1, q3, color='0.85', alpha=0.4, zorder=0)
+            ax.axvline(med, color='0.4', lw=0.9, ls='--', zorder=1)
+
+        # Order matters for legend: baseline first, then intact, then ruptured
+        for kind, label in (
+            ('asp_baseline', 'ASP baseline'),
+            ('intact',       'EP intact'),
+            ('ruptured_post','EP ruptured'),
+        ):
+            trace_list = traces.get((dl, kind), [])
+            if not trace_list:
+                continue
+            m, sd, n = _aggregate(trace_list, common_t)
+            if m is None:
+                continue
+            colour = _FATE_COLOR[kind]
+            ax.plot(common_t, m, color=colour, lw=1.5,
+                    label=f"{label} (n={n})")
+            ax.fill_between(common_t, m - sd, m + sd,
+                            color=colour, alpha=0.18, linewidth=0)
+
+        ax.set_title(f"{dl} pulse", fontsize=10)
+        ax.set_xlabel("Time from aspiration entry (s)")
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes[0].set_ylabel(r"Protrusion length $L(t)$ (µm)")
+    axes[0].legend(frameon=False, fontsize=8, loc='lower right')
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_EP_WholeTrace_by_Fate.pdf")
+    plt.close()
+    logger.info("Whole-trace by fate written.")
+
+
+def run_thesis_claim2_plots(grouped_data: Dict,
+                             mechanics_df: pd.DataFrame,
+                             output_dir: Path,
+                             global_whole_dur: Optional[float] = None) -> None:
+    """Convenience runner: Batch 3a Claim 2 core plots."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plot_thesis_ep_wholetrace_by_fate(
+        grouped_data, mechanics_df, output_dir, global_whole_dur)
+    plot_thesis_ep_fate_mi_boxplots(mechanics_df, output_dir)

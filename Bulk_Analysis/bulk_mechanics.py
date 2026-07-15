@@ -601,6 +601,10 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         # off-by-one; see comment in _apply_actin_summaries).
         'Actin_Body_PrePulse_F0Norm'  : None, 'Actin_Body_PostPulse_F0Norm' : None,
         'Actin_Prot_PrePulse_F0Norm'  : None, 'Actin_Prot_PostPulse_F0Norm' : None,
+        # Raw F0 values (per-cell pre-aspiration baselines), passed
+        # through from the actin CSV.  Enable between-condition raw-actin
+        # comparisons that F0-normalisation collapses.
+        'F0_Body': None, 'F0_Prot': None,
         'Cell_Body_Area_um2': None,
         'Cell_Prot_Area_um2': None,
         'Cell_Body_Area_PrePulse_um2': None,
@@ -919,15 +923,23 @@ def _apply_actin_summaries(row: dict,
     f0_body = _scalar_f0('F0_Body')
     f0_prot = _scalar_f0('F0_Prot')
 
+    # Pass through raw F0 baselines so downstream plots have access to
+    # between-condition baseline differences that F0-normalisation collapses.
+    row['F0_Body'] = f0_body
+    row['F0_Prot'] = f0_prot
+
     def _mean_norm(arr, sl, f0):
         if arr is None or f0 is None:
             return None
         window = arr[sl]
         if len(window) == 0:
             return None
-        val = float(np.nanmean(window))
-        if not np.isfinite(val):
+        # Zero values are segmentation failures (empty mask), not real
+        # zero-intensity measurements; drop them before averaging.
+        valid = np.isfinite(window) & (window > 0)
+        if valid.sum() == 0:
             return None
+        val = float(np.mean(window[valid]))
         return val / f0
 
     n = len(body) if body is not None else len(prot)
