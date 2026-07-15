@@ -626,6 +626,158 @@ def _keep_connected_to_pipette_internal(mask: np.ndarray, pip_x: int, tolerance:
             new_mask[labels == i] = 255
     return new_mask
 
+
+# =============================================================================
+# 3b. SHARED SPATIAL-ZONE UTILITIES
+#
+# These are consumed by both ActinQuantification and UptakeQuantification so
+# the two modules use identical geometric definitions for the "tip" region and
+# for the four-zone split.  Keeping the logic here is the single source of
+# truth; any change to how a zone is defined propagates to every downstream
+# quantification module.
+# =============================================================================
+
+def build_zone_masks(mask_prot: np.ndarray,
+                     mask_body: np.ndarray) -> Dict[str, np.ndarray]:
+    """
+    Split the protrusion and body into four spatial zones based on their
+    x-column extents.
+
+    Protrusion (leftward of the pipette entrance):
+        tip  -> left half (deepest in channel, farthest from entrance)
+        base -> right half (nearest to entrance)
+
+    Body (rightward of the pipette entrance):
+        perinuclear -> near 1/3 of the body (adjacent to entrance)
+        distal      -> far  2/3 of the body (away from entrance)
+
+    Empty inputs return zero-filled masks so downstream mean() calls stay
+    graceful.
+    """
+    # --- Protrusion split at midpoint --------------------------------------
+    prot_cols = np.where(mask_prot.any(axis=0))[0]
+    if prot_cols.size >= 2:
+        tip_x_start = int(prot_cols[0])     # deepest column
+        prot_x_end  = int(prot_cols[-1])    # column nearest entrance
+        midpoint    = (tip_x_start + prot_x_end) // 2
+
+        mask_tip  = mask_prot.copy()
+        mask_tip[:, midpoint + 1:] = 0
+
+        mask_base = mask_prot.copy()
+        mask_base[:, :midpoint + 1] = 0
+    else:
+        mask_tip  = np.zeros_like(mask_prot)
+        mask_base = np.zeros_like(mask_prot)
+
+    # --- Body split at 1/3 -------------------------------------------------
+    body_cols = np.where(mask_body.any(axis=0))[0]
+    if body_cols.size >= 2:
+        body_x_start = int(body_cols[0])
+        body_x_end   = int(body_cols[-1])
+        body_extent  = body_x_end - body_x_start
+        split_x      = body_x_start + max(1, body_extent // 3)
+
+        mask_perinuclear = mask_body.copy()
+        mask_perinuclear[:, split_x + 1:] = 0
+
+        mask_distal = mask_body.copy()
+        mask_distal[:, :split_x + 1] = 0
+    else:
+        mask_perinuclear = np.zeros_like(mask_body)
+        mask_distal      = np.zeros_like(mask_body)
+
+    return {
+        'tip':         mask_tip,
+        'base':        mask_base,
+        'perinuclear': mask_perinuclear,
+        'distal':      mask_distal,
+    }
+
+
+def build_tip_mask(mask_prot: np.ndarray) -> np.ndarray:
+    """
+    Convenience wrapper that returns only the protrusion-tip mask (far half
+    of the protrusion, deepest in channel).  Uses the same midpoint split as
+    build_zone_masks so both are consistent by construction.
+    """
+    prot_cols = np.where(mask_prot.any(axis=0))[0]
+    if prot_cols.size < 2:
+        return np.zeros_like(mask_prot)
+
+    tip_x_start = int(prot_cols[0])
+    prot_x_end  = int(prot_cols[-1])
+    midpoint    = (tip_x_start + prot_x_end) // 2
+
+    mask_tip = mask_prot.copy()
+    mask_tip[:, midpoint + 1:] = 0
+    return mask_tip
+
+
+# =============================================================================
+# 3c. PULSE-FRAME INDEX HELPERS
+#
+# The imaging software counts frames starting at either 0 (files t0000, t0001,
+# ...) or 1 (files t0001, t0002, ...).  The config field `pulse_frame` refers
+# to the filename suffix of the pulsed frame -- e.g. pulse_frame: 10 means
+# file t0010 -- but the analysis pipeline needs a 0-based position within the
+# sorted file list.  The offset between "filename suffix" and "list position"
+# equals the first file's numeric suffix, so we detect it once and reuse.
+# =============================================================================
+
+import re as _re  # local alias to avoid re-importing at module top
+
+
+def extract_frame_number_from_filename(filename) -> Optional[int]:
+    """
+    Parse the numeric suffix from a frame filename.
+
+    Recognizes '_t123' (preferred) and, as a fallback, trailing digits before
+    the '.tif' / '.tiff' extension.  Returns None if no number can be parsed.
+    """
+    name = str(filename)
+    # Preferred pattern: '_t' followed by digits
+    m = _re.search(r'_t(\d+)', name)
+    if m:
+        return int(m.group(1))
+    # Fallback: trailing digits before .tif / .tiff
+    m = _re.search(r'(\d+)\.(tif|tiff)$', name, _re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def get_first_frame_number(file_list) -> int:
+    """
+    Return the numeric suffix of the first file in a sorted file list.
+    Defaults to 1 (the historical assumption in this codebase) if the number
+    can't be parsed, since t0001-start is the more common Zeiss convention.
+    """
+    if not file_list:
+        return 1
+    n = extract_frame_number_from_filename(file_list[0])
+    return n if n is not None else 1
+
+
+def pulse_frame_to_index(config_pulse_frame, first_frame_number: int = 1) -> int:
+    """
+    Convert the config's `pulse_frame` (which matches the filename suffix
+    of the pulsed frame) into a 0-based array position within the sorted
+    file list.
+
+    Example:
+        Files start at t0000: first_frame_number = 0
+            pulse_frame = 10 -> file t0010 -> position 10
+        Files start at t0001: first_frame_number = 1
+            pulse_frame = 10 -> file t0010 -> position 9
+
+    General rule: position = pulse_frame - first_frame_number.
+    Clamped to >= 0 for safety.
+    """
+    if config_pulse_frame is None:
+        return 0
+    return max(0, int(config_pulse_frame) - int(first_frame_number))
+
 # =============================================================================
 # 4. INTERACTIVE WINDOW UTILITIES
 # =============================================================================

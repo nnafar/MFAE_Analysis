@@ -124,12 +124,21 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         pip_x = config_dict['tuned_pipette_x']
         thr_prot = config_dict['tuned_threshold_prot']
 
+        # Filename numbering scheme detected once at pipeline setup and
+        # passed through the worker config.  Falls back to 1 (t0001-start,
+        # the historical assumption) if the field is missing.
+        first_frame_number = int(config_dict.get('first_frame_number', 1))
+
         # --- Inject pulse frame index so the rupture detector can use it ---
         dye_params_pre = params.get('dye_uptake_parameters', {})
         if dye_params_pre.get('enable', False):
-            pulse_frame_0based = max(0, int(dye_params_pre.get('pulse_frame', 10)) - 1)
+            pulse_frame_cfg = dye_params_pre.get('pulse_frame', 10)
+            pulse_frame_0based = utils.pulse_frame_to_index(pulse_frame_cfg, first_frame_number)
             # setdefault creates the 'rupture_detection' dict if it doesn't already exist
             params.setdefault('rupture_detection', {})['pulse_frame_idx'] = pulse_frame_0based
+            # Expose the resolved index so downstream analyzers can reuse it
+            # without re-doing the offset calculation.
+            params.setdefault('dye_uptake_parameters', {})['pulse_frame_idx'] = pulse_frame_0based
 
         det_full = LineDetectionMFA(rois, [pip_x, 0], params)
         det_res = det_full.run_detection_with_parameters(pip_x, thr_prot, threshold_body=config_dict.get('tuned_threshold_body'))
@@ -147,8 +156,10 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         pulse_time = None
         dye_params = params.get('dye_uptake_parameters', {})
         if dye_params.get('enable', False) and dye_params.get('has_pulse', True):
-            # pulse_frame is 1-based (matches the imaging software frame counter).
-            p_idx = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
+            # Convert pulse_frame (filename suffix) -> 0-based array index
+            # using the auto-detected first-frame offset.
+            p_idx = utils.pulse_frame_to_index(dye_params.get('pulse_frame', 10),
+                                               first_frame_number)
             if 0 <= p_idx < len(time_data):
                 pulse_time = time_data[p_idx]
         
@@ -162,16 +173,18 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         pulse_blanking   = params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
 
         if pulse_frame_val is not None:
-            pf = int(pulse_frame_val)
-            # One frame before the pulse through the blanking window after it.
-            blanked_frames: set = set(range(pf - 1, pf + pulse_blanking + 1))
+            # Resolve the 0-based array position from the config value using
+            # the same offset rule everywhere in this worker.
+            pf_idx = utils.pulse_frame_to_index(pulse_frame_val, first_frame_number)
+            # One frame before the pulse position through the blanking window after it.
+            blanked_frames: set = set(range(max(0, pf_idx - 1), pf_idx + pulse_blanking + 1))
         else:
+            pf_idx = None
             blanked_frames = set()
-        
+
         # pulse_idx_for_data: 0-based index stored in trap_data for aggregate plots
         # that split metrics at the pulse boundary.
-        pulse_idx_for_data = (max(0, int(pulse_frame_val) - 1)
-                              if pulse_frame_val is not None else None)
+        pulse_idx_for_data = pf_idx
 
         trap_data = {
             'trap_index':    trap_index,
@@ -214,12 +227,22 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             worker_logger.warning(f"Trap {trap_index+1}: Trace plot failed.", exc_info=True)
 
         # 6. Kymograph Generation
+        # Membrane kymograph (centre-line slice of the membrane channel):
+        # produces Trap_XX_Membrane_Kymograph.png and Trap_XX_Membrane_Kymograph.csv.
+        # The dye-channel kymograph is written separately by
+        # DyeUptakeAnalyzer.export_kymograph_csv (see section 8), because it
+        # uses mask-scoped column averages rather than a centre-line slice.
         if params.get('workflow_settings', {}).get('create_kymographs', True):
             try:
-                # Pass dirs['tracking_visuals'] to the Kymograph generator
-                create_kymograph_for_trap(rois, det_res, params, dirs['tracking_visuals'], trap_index + 1, time_data) # <-- UPDATED
+                create_kymograph_for_trap(
+                    rois, det_res, params, dirs['tracking_visuals'],
+                    trap_index + 1, time_data,
+                )
             except Exception:
-                worker_logger.warning(f"Trap {trap_index+1}: Kymograph generation failed.", exc_info=True)
+                worker_logger.warning(
+                    f"Trap {trap_index+1}: Kymograph generation failed.",
+                    exc_info=True,
+                )
 
         # 7. Viscoelastic Fitting
         # Default: protrusion was detected but fitting was not performed.
@@ -307,10 +330,17 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params, frame_masks=det_res.get('frame_masks', []), start_idx=det_res.get('entry_frame_index', 0))
                 dye_results = uptake_analyzer.run(time_data)
                 uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
-                uptake_analyzer.plot_size_uptake_relationship(trap_index + 1, dirs['dye'])
+                uptake_analyzer.export_kymograph_csv(trap_index + 1, dirs['dye'])
                 
-                # Pass pulse_time down to the updated plotter
-                Plotting_MFA.plot_dye_uptake_dashboard(dye_results, trap_index + 1, dirs['dye'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time)
+                # Pass pulse_time AND rupture_time down.  Uptake analysis
+                # no longer truncates at rupture; the dashboard now marks
+                # rupture as a red horizontal line instead.
+                Plotting_MFA.plot_dye_uptake_dashboard(
+                    dye_results, trap_index + 1, dirs['dye'], params,
+                    det_res['pipette_start_x_used'],
+                    pulse_time=pulse_time,
+                    rupture_time=rupture_time,
+                )
                 
                 # Add the missing debug video call here
                 uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])
@@ -337,12 +367,13 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 actin_results = actin_analyzer.run(time_data)
                 actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
+                actin_analyzer.export_kymograph_csv(trap_index + 1, dirs['actin'])
                 actin_analyzer.save_zones_debug_video(trap_index + 1, dirs['actin'])
                 actin_analyzer.save_cortex_debug_video(trap_index + 1, dirs['actin'])
-                Plotting_MFA.plot_actin_dashboard(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
-                Plotting_MFA.plot_actin_kymograph_and_profiles(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
+                # Retained plots: kymograph (image) and zone dynamics.
+                # Removed plots: dashboard (_Ratio), cortex-structure, profiles.
+                Plotting_MFA.plot_actin_kymograph(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
                 Plotting_MFA.plot_actin_zones(actin_results, trap_index + 1, dirs['actin'], params, pulse_time=pulse_time, rupture_time=rupture_time)
-                Plotting_MFA.plot_actin_cortex_structure(actin_results, trap_index + 1, dirs['actin'], params, pulse_time=pulse_time, rupture_time=rupture_time)
             except Exception:
                 worker_logger.warning(f"Trap {trap_index+1}: Actin analysis failed.", exc_info=True)
                 
@@ -662,6 +693,16 @@ class MFAAnalysis:
             if self.params.get('actin_parameters', {}).get('enable', False) and self.file_reader.actin_files:
                 actin_mmap_path, actin_shape, actin_dtype = self._prepare_shared_memory_stack(self.file_reader.actin_files, "Actin")
             
+            # Auto-detect filename numbering scheme so the pulse_frame config
+            # value (which matches the filename suffix, e.g. t0010) maps to
+            # the correct 0-based position in the sorted file list.
+            first_frame_number = utils.get_first_frame_number(self.file_reader.tif_files)
+            logger.info(
+                f"First frame's numeric suffix: {first_frame_number}. "
+                f"pulse_frame in config will be treated as filename suffix "
+                f"and offset by this amount to get the array position."
+            )
+
             # Prepare arguments for each worker process
             worker_args = []
             for config in trap_configs:
@@ -670,6 +711,7 @@ class MFAAnalysis:
                 full_config.update({
                     'params': self.params,
                     'time_data': self.file_reader.time_data,
+                    'first_frame_number': first_frame_number,
                     'rotation_angle': self.cropper.rotation_angle,
                     'roi_coords': self.cropper.all_trap_rois[trap_index],
                     # Pass the specific tuned parameters
@@ -839,9 +881,6 @@ class MFAAnalysis:
 
     def _aggregate_and_export_results(self, all_results: List[Dict[str, Any]]) -> None:
         """Combines results from all workers into Summary CSVs."""
-        self._save_consolidated_protrusions_long(all_results)
-        self._save_consolidated_protrusions_wide(all_results)
-        
         all_fits_data = []
         for res in all_results:
             if 'fit_rows' in res and res['fit_rows']:
@@ -895,57 +934,6 @@ class MFAAnalysis:
             self.subdirs['fitting'] / f"{self.experiment_id}_shear_analysis_card.png"
         )
         
-    def _save_consolidated_protrusions_wide(self, all_results: List[Dict[str, Any]]) -> None:
-        if not self.file_reader.time_data: return
-        df = pd.DataFrame()
-        df['Experiment_ID'] = [self.experiment_id] * len(self.file_reader.time_data)
-        df['Time_s'] = self.file_reader.time_data
-        
-        sorted_results = sorted(all_results, key=lambda x: x['trap_index'])
-        for res in sorted_results:
-            trap_idx = res['trap_index']
-            col_name = f'Trap_{trap_idx+1}_Protrusion_um'
-            if res.get('status') in ('success', 'detection_only', 'fit_failed') and 'data' in res:
-                 protrusions = res['data'].get('protrusions')
-                 if protrusions and len(protrusions) == len(self.file_reader.time_data):
-                     data_arr = np.array(protrusions, dtype=float)
-                     data_arr[data_arr == 0] = np.nan
-                     r_idx = res['data'].get('rupture_idx')
-                     if r_idx is not None: data_arr[r_idx+1:] = np.nan
-                     df[col_name] = data_arr
-                 else: df[col_name] = np.nan
-            else: df[col_name] = np.nan
-
-        df.to_csv(self.results_dir / f"{self.experiment_id}_all_traps_protrusions.csv", index=False)
-
-    def _save_consolidated_protrusions_long(self, all_results: List[Dict[str, Any]]) -> None:
-        records = []
-        pressure_pa = self.params.get('experiment_parameters', {}).get('constant_pressure', 0)
-        for res in all_results:
-            if res.get('status') not in ('success', 'detection_only', 'fit_failed'): continue
-            data = res.get('data', {})
-            t_pts = data.get('time', [])
-            p_pts = data.get('protrusions', [])
-            rupture_idx = data.get('rupture_idx')
-            trap_id = data.get('trap_index') + 1
-            if len(t_pts) != len(p_pts): continue
-            for i in range(len(t_pts)):
-                val = p_pts[i]
-                if val == 0: val = np.nan
-                post_rupture = (rupture_idx is not None) and (i > rupture_idx)
-                records.append({
-                    'Time_s': t_pts[i],
-                    'Experiment_ID': self.experiment_id,
-                    'Trap_Number': trap_id,
-                    'Protrusion_Length_um': val if not post_rupture else np.nan,
-                    'Pressure_Pa': pressure_pa,
-                    'Rupture_Detected': (rupture_idx is not None),
-                    'Is_Post_Rupture': post_rupture
-                })
-        if records:
-            df = pd.DataFrame(records)
-            df.to_csv(self.results_dir / f"{self.experiment_id}_all_traps_protrusions_long.csv", index=False)
-
 def main() -> bool:
     utils.setup_logging(debug_mode=False) 
     parser = argparse.ArgumentParser(description="Run MFA analysis from a configuration file.")

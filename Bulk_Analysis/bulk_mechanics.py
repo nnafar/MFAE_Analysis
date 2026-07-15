@@ -67,8 +67,9 @@ def _burgers(t, r_eff, dp, C, E1, eta1, E2, eta2):
 def _linear(t, m, b):
     return m * t + b
 
-def _power_law(t, a, b):
-    return a * (t + 1e-9) ** b
+def _power_law(t, a, b, c):
+    # Added c to the model as requested
+    return a * (t) ** b + c
 
 def _exp_uptake(t, A, tau):
     return A * (1 - np.exp(-t / tau))
@@ -381,16 +382,15 @@ def fit_model_independent(time: np.ndarray, length: np.ndarray,
         result['linear'] = None
 
     try:
-        a0 = float(l[0]) if l[0] > 0 else 1.0
         popt, _ = curve_fit(_power_law, t, l,
-                            p0=[a0, 0.5],
-                            bounds=([0, 0], [np.inf, 2]),
-                            maxfev=5000)
+                            p0=[float(l[0]), 0.5, 0.0],
+                            bounds=([0, 0, -np.inf], [np.inf, 2, np.inf]),
+                            maxfev=10000)
         l_pred = _power_law(t, *popt)
         result['power_law'] = {
-            'params': {'a': float(popt[0]), 'exponent_b': float(popt[1])},
+            'params': {'a': float(popt[0]), 'exponent_b': float(popt[1]), 'c': float(popt[2])},
             'r2'    : _r_squared(l, l_pred),
-            'aicc'   : _aicc(l, l_pred, n_params=2),
+            'aicc'   : _aicc(l, l_pred, n_params=3), # AICc now uses 3 params
         }
     except Exception:
         result['power_law'] = None
@@ -548,7 +548,7 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         'Duration_ms'       : meta.duration,
         'Duration_label'    : meta.duration_label,
         'Condition_Type'    : meta.condition_type,
-        'Post_Pulse_Entry_Flag' : bool(getattr(trap, 'post_pulse_entry', False)),
+        'Fate_Status'       : getattr(trap, 'fate_status', 'intact'),
         'Condition'         : _make_condition_label(meta),
         'Trap_ID'           : trap.trap_id,
         'Experiment_Folder' : meta.full_path.name,
@@ -593,9 +593,18 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         'Uptake_Body_VolNorm_tau'  : None, 'Uptake_Body_VolNorm_R2'  : None, 'Uptake_Body_VolNorm_A'  : None,
         'Uptake_Prot_VolNorm_tau'  : None, 'Uptake_Prot_VolNorm_R2'  : None, 'Uptake_Prot_VolNorm_A'  : None,
         'Uptake_Total_VolNorm_tau' : None, 'Uptake_Total_VolNorm_R2' : None, 'Uptake_Total_VolNorm_A' : None,
+        # Actin summary columns.  Values are per-region means over the
+        # pre/post-pulse window, F0-normalised (each cell uses its own
+        # F0_Body / F0_Prot as the reference).  For ASP cells the pre-pulse
+        # column holds the whole-trace mean and the post-pulse column is
+        # NaN.  For EP cells the split is at meta.pulse_frame (known
+        # off-by-one; see comment in _apply_actin_summaries).
+        'Actin_Body_PrePulse_F0Norm'  : None, 'Actin_Body_PostPulse_F0Norm' : None,
+        'Actin_Prot_PrePulse_F0Norm'  : None, 'Actin_Prot_PostPulse_F0Norm' : None,
         'Cell_Body_Area_um2': None,
         'Cell_Prot_Area_um2': None,
         'Cell_Body_Area_PrePulse_um2': None,
+        'Cell_Body_Volume_PrePulse_um3': None,
         'Max_Prot_length_PrePulse_um': None,
     }
 
@@ -606,9 +615,12 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         return row
 
     is_asp = (meta.condition_type == "ASP")
-    is_post_pulse = bool(getattr(trap, 'post_pulse_entry', False))
-    is_asp_like = is_asp or is_post_pulse
-    is_ep_standard = (meta.condition_type == "EP") and not is_post_pulse
+    # Post-pulse-entry cells are now excluded at load time (bulk_file_handling),
+    # so is_asp_like collapses to is_asp and is_ep_standard collapses to
+    # 'EP'.  The variables are kept under their old names to minimise churn
+    # in the rest of this function.
+    is_asp_like = is_asp
+    is_ep_standard = (meta.condition_type == "EP")
 
     pf = meta.pulse_frame
     pf_valid = (0 < pf < len(time_raw))
@@ -652,7 +664,15 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
             pre_area = ud_body_area[-10:]
 
         if len(pre_area) > 0:
-            row['Cell_Body_Area_PrePulse_um2'] = float(np.nanmedian(pre_area))
+            median_area = float(np.nanmedian(pre_area))
+            row['Cell_Body_Area_PrePulse_um2'] = median_area
+            # Sphere-equivalent volume from segmented area, matching the
+            # convention used in bulk_file_handling._recompute_volumes_and_norms
+            # for the body region.  V = (4/(3*sqrt(pi))) * A^(3/2)
+            if np.isfinite(median_area) and median_area > 0:
+                row['Cell_Body_Volume_PrePulse_um3'] = (
+                    (4.0 / (3.0 * math.sqrt(math.pi))) * (median_area ** 1.5)
+                )
 
     if pf_valid:
         pre_pulse_lengths = length_raw[:pf]
@@ -774,6 +794,7 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         if mi_whole_fit['power_law']:
             row['MI_Whole_PL_a']  = mi_whole_fit['power_law']['params']['a']
             row['MI_Whole_PL_b']  = mi_whole_fit['power_law']['params']['exponent_b']
+            row['MI_Whole_PL_c'] = mi_whole_fit['power_law']['params']['c']
             row['MI_Whole_PL_R2'] = mi_whole_fit['power_law']['r2']
             row['MI_Whole_PL_AICc'] = mi_whole_fit['power_law']['aicc']
         row['MI_Whole_Window_Duration_s'] = mi_whole_fit.get('window_duration_s')
@@ -845,7 +866,88 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                 row[f'{col_base}_R2']  = fit['r2']
                 row[f'{col_base}_A']   = fit['A']
 
+    # ---------- Actin pre/post-pulse means ----------------------------
+    # For ASP cells: pre = whole-trace mean, post = NaN.
+    # For EP cells:  split at pulse_frame.  Known limitation: pulse_frame
+    # indexing is off-by-one relative to the actual pulse timing
+    # (Zeiss ZEN single-frame TIFFs strip per-frame timestamps, and the
+    # index is reconstructed from the config frame interval).  One frame
+    # of actin data straddles the boundary.  The paired within-cell
+    # numbers should not be quoted in the thesis until this is resolved;
+    # unpaired between-condition means are unaffected.
+    _apply_actin_summaries(row, getattr(trap, 'actin_data', {}), meta)
+
     return row
+
+
+def _apply_actin_summaries(row: dict,
+                           actin_data: Dict[str, np.ndarray],
+                           meta: 'bfh.ExperimentMetadata') -> None:
+    """
+    Populate Actin_{Body,Prot}_{Pre,Post}Pulse_F0Norm on `row` in place.
+
+    Each region's mean intensity over the window is divided by that
+    region's F0 (pre-aspiration baseline stored per-cell in the actin
+    CSV as F0_Body / F0_Prot).  F0-normalisation makes traces comparable
+    across cells and conditions when imaging settings are matched.
+
+    ASP cells: pre = full-trace mean, post columns left as None.
+    EP  cells: split at meta.pulse_frame; one-frame boundary error noted
+               at module level in _run_trap_mechanics.
+
+    Silent no-op if actin_data is missing or lacks the expected columns.
+    """
+    if not actin_data:
+        return
+
+    body = actin_data.get('Actin_Body_Mean')
+    prot = actin_data.get('Actin_Prot_Mean')
+    if body is None and prot is None:
+        return
+
+    # F0 columns hold a per-cell scalar broadcast across all rows.  Pick
+    # the first finite value; treat non-positive / non-finite as missing.
+    def _scalar_f0(key: str) -> Optional[float]:
+        arr = actin_data.get(key)
+        if arr is None or len(arr) == 0:
+            return None
+        for v in arr:
+            if np.isfinite(v) and v > 0:
+                return float(v)
+        return None
+
+    f0_body = _scalar_f0('F0_Body')
+    f0_prot = _scalar_f0('F0_Prot')
+
+    def _mean_norm(arr, sl, f0):
+        if arr is None or f0 is None:
+            return None
+        window = arr[sl]
+        if len(window) == 0:
+            return None
+        val = float(np.nanmean(window))
+        if not np.isfinite(val):
+            return None
+        return val / f0
+
+    n = len(body) if body is not None else len(prot)
+
+    if meta.condition_type == 'ASP':
+        row['Actin_Body_PrePulse_F0Norm']  = _mean_norm(body, slice(0, n), f0_body)
+        row['Actin_Prot_PrePulse_F0Norm']  = _mean_norm(prot, slice(0, n), f0_prot)
+        return
+
+    # EP: split at pulse_frame.  Guard against out-of-range values.
+    pf = meta.pulse_frame
+    if pf <= 0 or pf >= n:
+        row['Actin_Body_PrePulse_F0Norm'] = _mean_norm(body, slice(0, n), f0_body)
+        row['Actin_Prot_PrePulse_F0Norm'] = _mean_norm(prot, slice(0, n), f0_prot)
+        return
+
+    row['Actin_Body_PrePulse_F0Norm']  = _mean_norm(body, slice(0, pf),  f0_body)
+    row['Actin_Body_PostPulse_F0Norm'] = _mean_norm(body, slice(pf, n),  f0_body)
+    row['Actin_Prot_PrePulse_F0Norm']  = _mean_norm(prot, slice(0, pf),  f0_prot)
+    row['Actin_Prot_PostPulse_F0Norm'] = _mean_norm(prot, slice(pf, n),  f0_prot)
 
 def run_all_mechanics(grouped_data: Dict,
                       r_eff: float = DEFAULT_R_EFF,

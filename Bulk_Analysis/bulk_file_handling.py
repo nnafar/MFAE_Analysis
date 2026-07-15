@@ -56,6 +56,91 @@ def _compute_reff(width_um: float, height_um: float) -> float:
     return (numerator / denominator) ** 0.25
 
 
+# ---------------------------------------------------------------------------
+# Filename-tag policy
+# ---------------------------------------------------------------------------
+# Full-protrusion detection CSVs are named
+#     trap_XX_detection_full[_<TAG>].csv
+# where <TAG> is a manual annotation. The loader routes each candidate CSV
+# into one of three outcomes:
+#
+#   * loaded with fate_status = 'intact'          -> mechanics fit as normal
+#   * loaded with fate_status = 'ruptured_post'   -> mechanics fit on the
+#                                                    pre-pulse window; fate
+#                                                    is the outcome variable
+#                                                    for Claim 4
+#   * excluded entirely, counted only in attrition
+#
+# ANALYSIS_TAG_MAP: tag suffix -> fate_status for loaded cells.
+# EXCLUSION_TAG_MAP: tag suffix -> attrition bucket for cells not loaded.
+# Tag matching is case-insensitive and anchored to the end of the file stem
+# to avoid substring collisions (e.g. a hypothetical "_POSTERIOR" matching
+# "_POST").
+ANALYSIS_TAG_MAP: Dict[str, str] = {
+    ''       : 'intact',
+    '_R'     : 'ruptured_post',
+}
+
+EXCLUSION_TAG_MAP: Dict[str, str] = {
+    '_R0'         : 'ruptured_pre_pulse',
+    '_DOA'        : 'not_viable',
+    '_PI'         : 'not_viable',
+    '_R_DOA'      : 'not_viable',
+    '_R0_DOA'     : 'not_viable',
+    '_after'      : 'post_pulse_arrival',
+    '_POST'       : 'post_pulse_arrival',
+    '_MASK'       : 'detection_failure',
+    '_SHAPE'      : 'detection_failure',
+    '_IRREGULAR'  : 'detection_failure',
+}
+
+# Ordered attrition bucket list, used when writing the summary CSV so
+# columns come out in a stable order regardless of insertion order above.
+ATTRITION_BUCKET_ORDER: List[str] = [
+    'analysed_intact',
+    'analysed_ruptured',
+    'ruptured_pre_pulse',
+    'not_viable',
+    'post_pulse_arrival',
+    'detection_failure',
+]
+
+
+def _parse_fate_tag(stem: str) -> Tuple[str, Optional[str]]:
+    """
+    Classify a detection-CSV filename stem by its trailing manual-annotation
+    tag.
+
+    Returns
+    -------
+    (kind, key)
+        kind is one of 'analysis' or 'exclusion'.
+        key is the fate_status (for 'analysis') or the attrition bucket
+        (for 'exclusion').
+        If the tag is unrecognised, returns ('exclusion', 'detection_failure')
+        and logs a debug warning; unknown tags are treated conservatively as
+        detection failures so they still show up in the attrition tally.
+    """
+    # Order tags longest-first so '_R_DOA' matches before '_R', and
+    # '_R0_DOA' before '_R0'. Case-insensitive.
+    all_tags = sorted(
+        list(ANALYSIS_TAG_MAP.keys()) + list(EXCLUSION_TAG_MAP.keys()),
+        key=len,
+        reverse=True,
+    )
+    stem_lc = stem.lower()
+    for tag in all_tags:
+        if not tag:
+            continue
+        if stem_lc.endswith(tag.lower()):
+            if tag in ANALYSIS_TAG_MAP:
+                return 'analysis', ANALYSIS_TAG_MAP[tag]
+            return 'exclusion', EXCLUSION_TAG_MAP[tag]
+
+    # No tag -> intact (untagged is the analysis default)
+    return 'analysis', ANALYSIS_TAG_MAP['']
+
+
 @dataclass
 class ExperimentMetadata:
     date: str
@@ -79,16 +164,48 @@ class TrapData:
     metadata: ExperimentMetadata
     protrusion_data: Dict[str, np.ndarray]
     uptake_data: Dict[str, np.ndarray]
-    post_pulse_entry: bool = False
+    actin_data: Dict[str, np.ndarray] = field(default_factory=dict)
+    fate_status: str = 'intact'   # 'intact' | 'ruptured_post'
 
     def __repr__(self):
-        tags = []
-        if self.post_pulse_entry: tags.append('POST')
-        tag_str = ('|' + '|'.join(tags)) if tags else ''
+        fate_tag = f"|{self.fate_status.upper()}" if self.fate_status != 'intact' else ''
         return (f"TrapData(ID={self.trap_id}, "
                 f"{self.metadata.cell_type}|{self.metadata.treatment}|"
                 f"{self.metadata.voltage}V_{self.metadata.duration_label}"
-                f"{tag_str})")
+                f"{fate_tag})")
+
+
+@dataclass
+class ExperimentAttrition:
+    """Per-experiment tally of candidate detection CSVs by outcome bucket."""
+    experiment_folder: str
+    cell_type: str
+    treatment: str
+    pressure: int
+    voltage: int
+    duration_ms: float
+    duration_label: str
+    condition_type: str
+    bucket_counts: Dict[str, int] = field(default_factory=dict)
+
+    def total(self) -> int:
+        return sum(self.bucket_counts.values())
+
+    def as_row(self) -> Dict[str, object]:
+        row = {
+            'Experiment_Folder': self.experiment_folder,
+            'Cell_Type': self.cell_type,
+            'Treatment': self.treatment,
+            'Pressure_Pa': self.pressure,
+            'Voltage_V': self.voltage,
+            'Duration_ms': self.duration_ms,
+            'Duration_label': self.duration_label,
+            'Condition_Type': self.condition_type,
+            'Total_Candidates': self.total(),
+        }
+        for bucket in ATTRITION_BUCKET_ORDER:
+            row[bucket] = self.bucket_counts.get(bucket, 0)
+        return row
 
 
 class BulkDataLoader:
@@ -125,6 +242,9 @@ class BulkDataLoader:
         if not self.root_dir.exists():
             raise FileNotFoundError(f"Root directory not found: {self.root_dir}")
         self.grouped_data: Dict[Tuple[str, str, int, int, float], List[TrapData]] = {}
+        # Per-experiment attrition tallies, populated during iter_groups().
+        # Serialised via get_attrition_df() after loading is complete.
+        self.attrition_records: List[ExperimentAttrition] = []
 
         self.W_um: float = float(channel_width_um)
         self.H_um: float = float(channel_height_um)
@@ -223,8 +343,13 @@ class BulkDataLoader:
     # Per-experiment loading
     # -------------------------------------------------------------------
     def _load_experiment_traps(self, meta: ExperimentMetadata) -> List[TrapData]:
-        loaded_traps = []
+        loaded_traps: List[TrapData] = []
 
+        # Attrition tally for this experiment. Every candidate CSV lands in
+        # exactly one bucket, so the counts sum to Total_Candidates.
+        bucket_counts: Dict[str, int] = {b: 0 for b in ATTRITION_BUCKET_ORDER}
+
+        # ---- f* from shear CSV (unchanged) ----------------------------
         dir_fitting = meta.full_path / "Fitting results"
         if dir_fitting.exists():
             shear_files = list(dir_fitting.glob("*_shear_analysis.csv"))
@@ -239,56 +364,114 @@ class BulkDataLoader:
 
         dir_uptake = meta.full_path / "Dye Uptake"
         dir_full   = meta.full_path / "Full protrusion detection"
+        dir_actin  = meta.full_path / "Actin Quantification"
 
-        _EXCLUDE_TAGS = ('_ruptured', '_irregular', '_doa')
-        all_full_candidates = sorted(dir_full.glob("trap_*_detection_full*.csv")) if dir_full.exists() else []
+        all_full_candidates = (
+            sorted(dir_full.glob("trap_*_detection_full*.csv"))
+            if dir_full.exists() else []
+        )
 
-        n_excluded = n_post_pulse = 0
         for f_file in all_full_candidates:
-            stem_lower = f_file.stem.lower()
-            if any(tag in stem_lower for tag in _EXCLUDE_TAGS):
-                n_excluded += 1
-                logger.debug(f"  Skipping flagged full file: {f_file.name}")
+            stem = f_file.stem
+            # Strip the fixed prefix so _parse_fate_tag only sees the trailing
+            # annotation. Expected stem shape: 'trap_XX_detection_full[_TAG]'.
+            prefix_match = re.match(
+                r"^trap_\d+_detection_full", stem, re.IGNORECASE
+            )
+            if not prefix_match:
+                logger.debug(f"  Unrecognised filename shape, skipping: {f_file.name}")
+                bucket_counts['detection_failure'] += 1
                 continue
 
-            is_post_pulse_entry = '_after' in stem_lower
-            if is_post_pulse_entry:
-                n_post_pulse += 1
+            trailing = stem[prefix_match.end():]  # '' or '_TAG'
+            kind, key = _parse_fate_tag(trailing)
 
+            if kind == 'exclusion':
+                bucket_counts[key] += 1
+                logger.debug(f"  Excluded ({key}): {f_file.name}")
+                continue
+
+            # ---- Passed the exclusion gate ------------------------------
             id_match = re.search(r"trap_(\d+)_", f_file.name, re.IGNORECASE)
-            if not id_match: continue
-
+            if not id_match:
+                bucket_counts['detection_failure'] += 1
+                logger.debug(f"  No trap ID in filename, skipping: {f_file.name}")
+                continue
             trap_id = int(id_match.group(1))
 
+            # Load protrusion
             prot_dict = self._csv_to_dict(f_file)
 
-            u_file_name = f"Trap_{trap_id:02d}_Uptake_Data.csv"
-            u_file = dir_uptake / u_file_name
-            uptake_dict = {}
-
-            if u_file.exists():
-                uptake_dict = self._csv_to_dict(u_file, comment='#')
-            else:
-                u_file_alt = dir_uptake / f"Trap_{trap_id}_Uptake_Data.csv"
-                if u_file_alt.exists():
-                    uptake_dict = self._csv_to_dict(u_file_alt, comment='#')
+            # Load uptake (support zero-padded and unpadded trap IDs)
+            uptake_dict: Dict[str, np.ndarray] = {}
+            u_candidates = [
+                dir_uptake / f"Trap_{trap_id:02d}_Uptake_Data.csv",
+                dir_uptake / f"Trap_{trap_id}_Uptake_Data.csv",
+            ]
+            for u_file in u_candidates:
+                if u_file.exists():
+                    uptake_dict = self._csv_to_dict(u_file, comment='#')
+                    break
 
             if uptake_dict:
                 self._recompute_volumes_and_norms(uptake_dict, prot_dict)
+
+            # Load actin (same padding fallback pattern)
+            actin_dict: Dict[str, np.ndarray] = {}
+            a_candidates = [
+                dir_actin / f"Trap_{trap_id:02d}_Actin_Data.csv",
+                dir_actin / f"Trap_{trap_id}_Actin_Data.csv",
+            ]
+            for a_file in a_candidates:
+                if a_file.exists():
+                    actin_dict = self._csv_to_dict(a_file, comment='#')
+                    break
+            if not actin_dict:
+                logger.debug(
+                    f"  No actin CSV found for trap {trap_id} in {dir_actin.name}; "
+                    "actin columns will be NaN for this trap."
+                )
 
             trap_data = TrapData(
                 trap_id=trap_id,
                 metadata=copy(meta),
                 protrusion_data=prot_dict,
                 uptake_data=uptake_dict,
-                post_pulse_entry=is_post_pulse_entry
+                actin_data=actin_dict,
+                fate_status=key,   # 'intact' or 'ruptured_post'
             )
             loaded_traps.append(trap_data)
 
-        if n_excluded:
-            logger.info(f"  Excluded {n_excluded} flagged trap(s).")
-        if n_post_pulse:
-            logger.info(f"  Loaded {n_post_pulse} post-pulse entry trap(s).")
+            if key == 'intact':
+                bucket_counts['analysed_intact'] += 1
+            elif key == 'ruptured_post':
+                bucket_counts['analysed_ruptured'] += 1
+
+        # Persist the tally for this experiment
+        self.attrition_records.append(ExperimentAttrition(
+            experiment_folder=meta.full_path.name,
+            cell_type=meta.cell_type,
+            treatment=meta.treatment,
+            pressure=meta.pressure,
+            voltage=meta.voltage,
+            duration_ms=meta.duration,
+            duration_label=meta.duration_label,
+            condition_type=meta.condition_type,
+            bucket_counts=bucket_counts,
+        ))
+
+        # Summary log at INFO; per-file rejections already logged at DEBUG above.
+        total = sum(bucket_counts.values())
+        n_loaded = bucket_counts['analysed_intact'] + bucket_counts['analysed_ruptured']
+        logger.info(
+            f"  Attrition: {n_loaded}/{total} loaded  "
+            f"(intact={bucket_counts['analysed_intact']}, "
+            f"ruptured={bucket_counts['analysed_ruptured']}, "
+            f"R0={bucket_counts['ruptured_pre_pulse']}, "
+            f"non-viable={bucket_counts['not_viable']}, "
+            f"post-pulse arrival={bucket_counts['post_pulse_arrival']}, "
+            f"detection failures={bucket_counts['detection_failure']})"
+        )
 
         return loaded_traps
 
@@ -304,6 +487,21 @@ class BulkDataLoader:
             return {}
 
     # -------------------------------------------------------------------
+    # Attrition serialisation
+    # -------------------------------------------------------------------
+    def get_attrition_df(self) -> pd.DataFrame:
+        """
+        Return per-experiment attrition tally as a DataFrame.
+
+        One row per experiment folder, with columns for total candidate
+        detection CSVs and counts in each attrition bucket. Empty if no
+        experiments have been iterated yet.
+        """
+        if not self.attrition_records:
+            return pd.DataFrame()
+        return pd.DataFrame([rec.as_row() for rec in self.attrition_records])
+
+    # -------------------------------------------------------------------
     # Volume recomputation with region-appropriate geometry
     # -------------------------------------------------------------------
     def _recompute_volumes_and_norms(
@@ -312,28 +510,78 @@ class BulkDataLoader:
         prot_dict: Dict[str, np.ndarray],
     ) -> None:
         """
-        Recompute per-frame volumes and volume-normalized intensities using
-        region-appropriate geometry, overwriting whatever was loaded from disk.
+        Recompute per-frame areas, volumes, and volume-normalized dye
+        intensities from the trimmed uptake CSV schema.
 
-        Body  : sphere-equivalent           V_body = (4/(3*sqrt(pi))) * A_body^(3/2)
-        Prot  : cylinder + hemisphere cap   V_prot = pi * r_eff^2 * L + (2/3)*pi*r_eff^3
-        Total : additive                    V_total = V_body + V_prot
+        Input CSV columns (from UptakeQuantification.export_csv):
+            Body_Intensity, Prot_Intensity, Tip_Intensity
+            Body_Mask_Count, Prot_Mask_Count, Tip_Mask_Count
+            F0_Body, F0_Prot, F0_Tip
+            Time_s
+
+        Bulk pipeline is now the single source of truth for size and
+        volume math.  Derived quantities are installed on uptake_dict in
+        place, matching the historical column names so downstream code
+        (bulk_mechanics, thesis_plotting) needs no further changes:
+
+            Body_Area_um2, Prot_Area_um2, Total_Area_um2
+            Volume_Body_um3, Volume_Prot_um3, Volume_Total_um3
+            Body_VolNorm, Protrusion_VolNorm, Total_VolNorm
+            Total_Intensity (= Body_Intensity + Prot_Intensity weighted by area)
+
+        Geometry
+        --------
+        Body : sphere-equivalent     V_body = (4/(3*sqrt(pi))) * A_body^(3/2)
+        Prot : cylinder + hemi cap   V_prot = pi * r_eff^2 * L + (2/3)*pi*r_eff^3
+        Total : additive             V_total = V_body + V_prot
 
         L(t) is taken from the detection CSV column 'Protrusion_Length_um'
         (sub-pixel protrusion length from the kymograph pipeline).
-        Body and prot CSVs come from the same acquisition stack, so their row
-        counts should match; if they don't we truncate to the shorter and warn.
         """
-        # --- Body volume: sphere-equivalent from segmented area --------------
-        A_body = uptake_dict.get('Body_Area_um2')
+        # --- Detect schema and derive areas ---------------------------------
+        # New schema uses mask counts + a broadcast scale factor column;
+        # historical schema stored the areas directly.  Support both so
+        # older CSVs still load.  Scale factor is per-acquisition and
+        # varies between experiments, so we prefer the CSV's own value
+        # over any global default.
+        sf_arr = uptake_dict.get('Scale_Factor_um_per_px')
+        if sf_arr is not None and len(sf_arr) > 0 and np.isfinite(sf_arr[0]):
+            sf_um_per_px = float(sf_arr[0])
+        else:
+            # Fall back to the historical hard-coded value.  Logged once at
+            # debug level to avoid spam when the whole cohort predates the
+            # column.
+            sf_um_per_px = 0.629
+            logger.debug(
+                "Scale_Factor_um_per_px missing from uptake CSV; "
+                "assuming 0.629 um/px."
+            )
+        sf2 = sf_um_per_px ** 2
+
+        def _area_from_counts(count_key: str, legacy_area_key: str):
+            """Return an area array in um^2 from either new or legacy CSVs."""
+            if count_key in uptake_dict:
+                counts = np.asarray(uptake_dict[count_key], dtype=float)
+                return counts * sf2
+            if legacy_area_key in uptake_dict:
+                return np.asarray(uptake_dict[legacy_area_key], dtype=float)
+            return None
+
+        A_body = _area_from_counts('Body_Mask_Count', 'Body_Area_um2')
+        A_prot = _area_from_counts('Prot_Mask_Count', 'Protrusion_Area_um2')
+
         if A_body is None:
-            logger.debug("Body_Area_um2 missing; skipping volume recomputation.")
+            logger.debug(
+                "Uptake CSV lacks Body_Mask_Count and Body_Area_um2; "
+                "skipping volume recomputation."
+            )
             return
 
-        # V_body = (4 / (3*sqrt(pi))) * A_body^(3/2)
-        # Prefactor from V = (4/3) pi r^3 with r = sqrt(A/pi).
+        # Volume: sphere-equivalent from segmented area.
+        # V_body = (4 / (3*sqrt(pi))) * A_body^(3/2)   [prefactor from
+        # V = (4/3) pi r^3 with r = sqrt(A/pi)]
         sphere_prefactor = 4.0 / (3.0 * math.sqrt(math.pi))
-        V_body = sphere_prefactor * np.power(A_body, 1.5)
+        V_body = sphere_prefactor * np.power(np.clip(A_body, 0.0, None), 1.5)
 
         # --- Protrusion volume: cylinder + hemispherical cap -----------------
         L_um = prot_dict.get('Protrusion_Length_um')
@@ -351,8 +599,12 @@ class BulkDataLoader:
                 f"Frame-count mismatch between detection ({len(L_um)}) and "
                 f"uptake ({len(V_body)}) CSVs; truncating to {n}."
             )
-        L_aligned = L_um[:n]
+        L_aligned = np.asarray(L_um[:n], dtype=float)
         V_body    = V_body[:n]
+        if A_body is not None:
+            A_body = np.asarray(A_body[:n], dtype=float)
+        if A_prot is not None:
+            A_prot = np.asarray(A_prot[:n], dtype=float)
 
         # Guard against NaN L (rare, from failed detection frames): treat as 0
         L_safe = np.where(np.isfinite(L_aligned), L_aligned, 0.0)
@@ -360,22 +612,53 @@ class BulkDataLoader:
         V_prot  = math.pi * (self.r_eff_um ** 2) * L_safe + self.V_prot_cap_um3
         V_total = V_body + V_prot
 
-        # Overwrite / install volume columns
+        # Install area columns so downstream code that expects the old names
+        # keeps working.  Prot / total areas are also derived here so mask
+        # counts do not need to leak into other modules.
+        uptake_dict['Body_Area_um2']  = A_body
+        if A_prot is not None:
+            uptake_dict['Protrusion_Area_um2'] = A_prot
+            uptake_dict['Total_Area_um2']      = A_body + A_prot
+
         uptake_dict['Volume_Body_um3']  = V_body
         uptake_dict['Volume_Prot_um3']  = V_prot
         uptake_dict['Volume_Total_um3'] = V_total
 
+        # --- Total intensity (area-weighted) ---------------------------------
+        # The trimmed CSV does not carry Total_Intensity because it isn't a
+        # measured quantity; it's a derived summary.  Compute it here from
+        # the mean intensities and mask counts using an area-weighted mean.
+        if ('Body_Intensity' in uptake_dict and 'Prot_Intensity' in uptake_dict
+                and A_prot is not None):
+            body_int = np.asarray(uptake_dict['Body_Intensity'][:n], dtype=float)
+            prot_int = np.asarray(uptake_dict['Prot_Intensity'][:n], dtype=float)
+            denom    = A_body + A_prot
+            with np.errstate(divide='ignore', invalid='ignore'):
+                total_int = np.where(
+                    denom > 0,
+                    (body_int * A_body + prot_int * A_prot) / denom,
+                    0.0,
+                )
+            uptake_dict['Total_Intensity'] = total_int
+            # Also trim Body_Intensity / Prot_Intensity / Tip_Intensity to n
+            # so all per-frame columns have consistent lengths.
+            uptake_dict['Body_Intensity'] = body_int
+            uptake_dict['Prot_Intensity'] = prot_int
+            if 'Tip_Intensity' in uptake_dict:
+                uptake_dict['Tip_Intensity'] = np.asarray(
+                    uptake_dict['Tip_Intensity'][:n], dtype=float)
+
         # --- Volume-normalized intensities -----------------------------------
         pairs = [
             ('Body_VolNorm',       'Body_Intensity',       'Volume_Body_um3'),
-            ('Protrusion_VolNorm', 'Protrusion_Intensity', 'Volume_Prot_um3'),
+            ('Protrusion_VolNorm', 'Prot_Intensity',       'Volume_Prot_um3'),
             ('Total_VolNorm',      'Total_Intensity',      'Volume_Total_um3'),
         ]
         for out_col, int_col, vol_col in pairs:
             if int_col not in uptake_dict:
                 continue
-            intensity = uptake_dict[int_col][:n]
-            volume    = uptake_dict[vol_col]
+            intensity = np.asarray(uptake_dict[int_col][:n], dtype=float)
+            volume    = np.asarray(uptake_dict[vol_col],   dtype=float)
             with np.errstate(divide='ignore', invalid='ignore'):
                 uptake_dict[out_col] = np.where(volume > 0, intensity / volume, 0.0)
 

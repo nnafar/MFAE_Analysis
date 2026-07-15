@@ -19,8 +19,8 @@ from scipy.stats import mannwhitneyu
 
 import bulk_file_handling as bfh
 import bulk_mechanics as bm
-import Utils_MFA as utils
-from Utils_MFA import MFA_COLORS
+import bulk_utils as utils
+from bulk_utils import MFA_COLORS
 
 logger = logging.getLogger(__name__)
 
@@ -1143,7 +1143,7 @@ def plot_model_independent_fits_multipanel(
 
                 if mi_fit['power_law']:
                     p = mi_fit['power_law']['params']
-                    ax.plot(t_smooth, bm._power_law(t_smooth, p['a'], p['exponent_b']),
+                    ax.plot(t_smooth, bm._power_law(t_smooth, p['a'], p['exponent_b'], p['c']),
                             color=MI_MODEL_PALETTE['Power-Law'], lw=1.5, alpha=0.8)
 
                 winner = mi_fit.get('best_model')

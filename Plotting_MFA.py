@@ -23,133 +23,36 @@ logger = logging.getLogger(__name__)
 UNITS = {'E': 'Pa', 'E1': 'Pa', 'E2': 'Pa', 'eta': 'Pa·s', 'eta1': 'Pa·s', 'eta2': 'Pa·s', 'm': 'μm/s', 'b': 'μm', 'a': 'μm/sᵇ', 'c': 'μm'}
 
 # --- 1. DYE UPTAKE DASHBOARD ---
-def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None, pulse_time: Optional[float] = None):
+def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path,
+                              params: Dict[str, Any], pipette_x: Optional[float] = None,
+                              pulse_time: Optional[float] = None,
+                              rupture_time: Optional[float] = None):
     """
-    Generates the suite of Dye Uptake plots with Shaded SEM for ALL metrics including Min-Max.
+    Per-trap dye-uptake diagnostic plots.
+
+    Retained:
+        Trap_XX_Uptake_Kymograph.png   -- spatial dye intensity over time
+        Trap_XX_Diffusion_Profiles.png -- selected time-slice profiles
+
+    Removed:
+        Trap_XX_Uptake_Heterogeneity.png (std / CV panel)
+        Trap_XX_Uptake_Normalized.png    (dF/F0 3-panel)
+        Trap_XX_Uptake_MinMax.png        (min-max-scaled 3-panel)
+
+    Rupture handling: uptake analysis now runs past the detected rupture
+    frame, so both retained plots draw a red horizontal marker at
+    rupture_time to make the rupture visible without cutting the trace.
     """
     utils.set_paper_style()
     output_dir = Path(output_dir)
     t = np.array(results['time_s'])
-    if len(t) == 0: return
+    if len(t) == 0:
+        return
 
     colors = utils.MFA_COLORS
-    
-    if pipette_x is None: pipette_x = results.get('pipette_x_px', 0)
 
-    # --- Common Plotting Settings ---
-    marker_style = 'o-'
-    ms = 4
-
-    # --- Helper: Calculate SEM ---
-    def get_sem(std_key, count_key):
-        if std_key in results and count_key in results:
-            std = np.array(results[std_key])
-            count = np.array(results[count_key])
-            # Avoid division by zero
-            with np.errstate(divide='ignore', invalid='ignore'):
-                sem = std / np.sqrt(count)
-                sem[count == 0] = 0
-            return sem
-        return None
-
-    # def plot_3panel_metric(fig_name: str, title: str, ylabel: str, suffix: str):
-    #     """Helper to create a 1x3 horizontal panel plot with shared Y-axis."""
-    #     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-        
-    #     for ax in [ax1, ax2, ax3]:
-    #         ax.axvline(pulse_time, color=colors['pulse'], linestyle='--', linewidth=2.5, label='Pulse')
-
-    #     # --- Panel 1: Protrusion (and Tip) ---
-    #     m_p = np.array(results.get(f'uptake_protrusion{suffix}', []))
-    #     s_p = get_sem(f'uptake_protrusion{suffix}_std', 'count_protrusion')
-    #     if len(m_p) > 0:
-    #         ax1.plot(t, m_p, marker_style, color=colors['secondary'], linewidth=2, markersize=ms, label='Protrusion')
-    #         if s_p is not None: 
-    #             ax1.fill_between(t, m_p - s_p, m_p + s_p, color=colors['secondary'], alpha=0.25)
-                
-    #     m_tip = np.array(results.get(f'uptake_tip{suffix}', []))
-    #     s_tip = get_sem(f'uptake_tip{suffix}_std', 'count_tip')
-    #     if len(m_tip) > 0:
-    #         ax1.plot(t, m_tip, marker_style, color=colors['quaternary'], linewidth=2, markersize=ms, label='Tip (Top 5%)')
-    #         if s_tip is not None: 
-    #             ax1.fill_between(t, m_tip - s_tip, m_tip + s_tip, color=colors['quaternary'], alpha=0.25)
-
-    #     # --- Panel 2: Cell Body ---
-    #     m_b = np.array(results.get(f'uptake_cell_body{suffix}', []))
-    #     s_b = get_sem(f'uptake_cell_body{suffix}_std', 'count_cell_body')
-    #     if len(m_b) > 0:
-    #         ax2.plot(t, m_b, marker_style, color=colors['tertiary'], linewidth=2, markersize=ms, label='Cell Body')
-    #         if s_b is not None: 
-    #             ax2.fill_between(t, m_b - s_b, m_b + s_b, color=colors['tertiary'], alpha=0.25)
-
-    #     # --- Panel 3: Total Cell ---
-    #     m_t = np.array(results.get(f'uptake_total{suffix}', []))
-    #     s_t = get_sem(f'uptake_total{suffix}_std', 'count_total')
-    #     if len(m_t) > 0:
-    #         ax3.plot(t, m_t, marker_style, color=colors['primary'], linewidth=2, markersize=ms, label='Total Cell')
-    #         if s_t is not None: 
-    #             ax3.fill_between(t, m_t - s_t, m_t + s_t, color=colors['primary'], alpha=0.25)
-
-    #     # --- Formatting & Styling ---
-    #     ax1.set_title("Protrusion")
-    #     ax2.set_title("Cell Body")
-    #     ax3.set_title("Total Cell")
-    #     ax1.set_ylabel(ylabel)
-        
-    #     for ax in [ax1, ax2, ax3]:
-    #         ax.set_xlabel("Time (s)")
-    #         ax.grid(True, alpha=0.3)
-    #         ax.legend(loc='upper left')
-
-    #     fig.suptitle(f"Trap {trap_idx}: {title}", y=1.05, fontsize=16, weight='bold')
-    #     plt.tight_layout()
-    #     utils.save_plot_pdf(output_dir / fig_name)
-    #     plt.close(fig)
-
-    # # --- Generate the three 3-panel plots ---
-    # plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_Absolute.png", "Dye Uptake (Absolute)", "Mean Intensity (a.u.) ± SEM", "")
-    # plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_Normalized.png", "Normalized Uptake", "Normalized Fluorescence ($\Delta F/F_0$) ± SEM", "_norm")
-    # if 'uptake_total_minmax' in results:
-    #     plot_3panel_metric(f"Trap_{trap_idx:02d}_Uptake_MinMax.png", "Min-Max Normalized Uptake", "Normalized Intensity (0-1) ± SEM", "_minmax")
-
-    # --- D. Heterogeneity Analysis (StdDev & CV) ---
-    if 'uptake_total_std' in results:
-        fig_het, (ax_std, ax_cv) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
-        
-        # 1. Standard Deviation Plot
-        if pulse_time is not None:
-            ax_std.axvline(pulse_time, color=colors['pulse'], linestyle='--', alpha=0.5)
-        ax_std.plot(t, results['uptake_total_std'], marker_style, color=colors['primary'], label='Total')
-        ax_std.plot(t, results['uptake_protrusion_std'], marker_style, color=colors['secondary'], label='Protrusion')
-        ax_std.plot(t, results['uptake_cell_body_std'], marker_style, color=colors['tertiary'], label='Body')
-        ax_std.set_ylabel("Standard Deviation (a.u.)")
-        ax_std.set_title(f"Trap {trap_idx}: Spatial Heterogeneity (Physical Variation)")
-        ax_std.legend(loc='upper left')
-        
-        # 2. CV Plot
-        def safe_cv(mean_arr, std_arr):
-            m = np.array(mean_arr); s = np.array(std_arr)
-            with np.errstate(divide='ignore', invalid='ignore'):
-                cv = s / m
-                cv[m < 10] = 0
-            return cv
-
-        cv_tot = safe_cv(results['uptake_total'], results['uptake_total_std'])
-        cv_prot = safe_cv(results['uptake_protrusion'], results['uptake_protrusion_std'])
-        cv_body = safe_cv(results['uptake_cell_body'], results['uptake_cell_body_std'])
-
-        if pulse_time is not None:
-            ax_cv.axvline(pulse_time, color=colors['pulse'], linestyle='--', alpha=0.5)
-        ax_cv.plot(t, cv_tot, marker_style, color=colors['primary'], label='Total')
-        ax_cv.plot(t, cv_prot, marker_style, color=colors['secondary'], label='Protrusion')
-        ax_cv.plot(t, cv_body, marker_style, color=colors['tertiary'], label='Body')
-        
-        ax_cv.set_ylabel(r"Coefficient of Variation ($\sigma/\mu$)")
-        ax_cv.set_xlabel("Time (s)")
-        ax_cv.set_title("Relative Uniformity (Lower = More Uniform)")
-        
-        utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Uptake_Heterogeneity.png")
-        plt.close(fig_het)
+    if pipette_x is None:
+        pipette_x = results.get('pipette_x_px', 0)
 
     # --- E. Kymograph & Diffusion ---
     profiles = results['spatial_profiles']
@@ -157,77 +60,139 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         # Kymograph
         max_w = max(len(p) for p in profiles)
         kymo = np.zeros((len(profiles), max_w))
-        for i, p in enumerate(profiles): kymo[i, :len(p)] = p
-        
+        for i, p in enumerate(profiles):
+            kymo[i, :len(p)] = p
+
         fig, ax = plt.subplots(figsize=(10, 6))
         scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
         mfa_cmap = utils.get_mfa_continuous_cmap()
-        
-        im = ax.imshow(kymo, aspect='auto', extent=extent, cmap=mfa_cmap, interpolation='nearest')
-        ax.axvline(0, color=colors['pulse'], linestyle='--', linewidth=1, label='Pipette Entrance')
-        
+
+        im = ax.imshow(kymo, aspect='auto', extent=extent,
+                       cmap=mfa_cmap, interpolation='nearest')
+        ax.axvline(0, color=colors['pulse'], linestyle='--',
+                   linewidth=1, label='Pipette Entrance')
+
         dye_params = params.get('dye_uptake_parameters', {})
         if dye_params.get('has_pulse', True) and pulse_time is not None:
-            ax.axhline(pulse_time, color='white', linestyle='--', linewidth=1, label='Pulse')
-        
+            ax.axhline(pulse_time, color='white', linestyle='--',
+                       linewidth=1, label='Pulse')
+
+        # Rupture marker: red horizontal line spanning the plot.  Uptake
+        # analysis is no longer truncated at rupture, so this is purely a
+        # visual annotation.
+        if rupture_time is not None:
+            ax.axhline(rupture_time, color=colors['rupture'],
+                       linestyle='--', linewidth=2, label='Rupture')
+
         plt.colorbar(im, ax=ax, label="Intensity")
-        ax.set_xlabel("Position relative to channel entrance (µm)")
+        ax.set_xlabel("Position relative to channel entrance (\u00b5m)")
         ax.set_ylabel("Time (s)")
         ax.set_title(f"Trap {trap_idx}: Uptake Kymograph")
+        if pulse_time is not None or rupture_time is not None:
+            ax.legend(loc='upper right')
         utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Uptake_Kymograph.png")
         plt.close(fig)
 
         # Diffusion Profiles
         fig, ax = plt.subplots(figsize=(10, 6))
         n_curves = 7
-        indices = np.linspace(0, len(t)-1, n_curves, dtype=int)
+        indices = np.linspace(0, len(t) - 1, n_curves, dtype=int)
         time_colors = utils.get_time_colormap(len(indices))
         max_w = max(len(p) for p in profiles)
-        x_axis = (pipette_x - np.arange(max_w)) * params.get('scale_factor', 0.629)
-        
-        for i, idx in enumerate(indices):
-            if idx >= len(profiles): continue
-            p = profiles[idx]
-            y = np.zeros(max_w); y[:len(p)] = p
-            ax.plot(x_axis, y, color=time_colors[i], linewidth=2.5, label=f"{t[idx]:.1f}s")
+        x_axis = (pipette_x - np.arange(max_w)) * params.get(
+            'experiment_parameters', {}
+        ).get('scale_factor', 0.629)
 
-        ax.axvline(0, color=colors['pulse'], linestyle='--', alpha=0.6, label='Entrance')
-        ax.invert_xaxis() 
-        ax.set_xlabel("Position relative to channel entrance (µm)")
+        for i, idx in enumerate(indices):
+            if idx >= len(profiles):
+                continue
+            p = profiles[idx]
+            y = np.zeros(max_w)
+            y[:len(p)] = p
+            ax.plot(x_axis, y, color=time_colors[i], linewidth=2.5,
+                    label=f"{t[idx]:.1f}s")
+
+        ax.axvline(0, color=colors['pulse'], linestyle='--',
+                   alpha=0.6, label='Entrance')
+
+        # Rupture marker on the diffusion profile plot: the profile is
+        # spatial (x = position) rather than temporal, so we cannot mark
+        # rupture as a time line.  Instead, if any of the plotted slices
+        # is after rupture, we tag them in the legend with an asterisk and
+        # add a note.  This keeps the marker visible without cluttering
+        # the axis.
+        if rupture_time is not None:
+            post_indices = [i for i, idx in enumerate(indices)
+                            if idx < len(t) and t[idx] > rupture_time]
+            if post_indices:
+                handles, labels = ax.get_legend_handles_labels()
+                # Prepend an asterisk to labels for post-rupture curves.
+                for i in post_indices:
+                    labels[i] = f"* {labels[i]}"
+                # Append a legend entry explaining the asterisk.
+                from matplotlib.lines import Line2D
+                handles.append(Line2D([0], [0], color=colors['rupture'],
+                                      linestyle='--', linewidth=2))
+                labels.append(f"* = after rupture (t = {rupture_time:.1f}s)")
+                ax.legend(handles, labels, title="Time")
+            else:
+                ax.legend(title="Time")
+        else:
+            ax.legend(title="Time")
+
+        ax.invert_xaxis()
+        ax.set_xlabel("Position relative to channel entrance (\u00b5m)")
         ax.set_ylabel("Intensity")
-        ax.legend(title="Time")
         utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Diffusion_Profiles.png")
         plt.close(fig)
 
-# --- 2. KYMOGRAPH PLOT (Unchanged) ---
-def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Path, 
-                   pipette_x: int, protrusions_px: List[float], time_data: List[float], params: Dict[str, Any]):
+# --- 2. KYMOGRAPH PLOT ---
+def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Path,
+                   pipette_x: int, protrusions_px: List[float], time_data: List[float],
+                   params: Dict[str, Any], channel_label: Optional[str] = None):
+    """
+    Save a kymograph image.  When channel_label is provided (e.g. "Membrane"
+    or "Dye"), the filename and title include that label so multiple channels
+    can coexist in the same output folder without overwriting one another.
+    Legacy calls without a channel label continue to produce the original
+    filename for backward compatibility.
+    """
     if kymograph_matrix is None: return
     utils.set_paper_style()
     colors = utils.MFA_COLORS
     scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
-    
+
     h, w = kymograph_matrix.shape
     total_time = time_data[-1] if time_data else h
-    
+
     fig, ax = plt.subplots(figsize=(8, 6))
     extent = [(pipette_x) * scale, (pipette_x - w) * scale, total_time, 0]
-    
+
     ax.imshow(kymograph_matrix, cmap='gray', aspect='auto', extent=extent)
-    
+
     if protrusions_px and len(protrusions_px) == h:
         y_times = np.array(time_data) if len(time_data) == h else np.arange(h)
         tip_x_um = [l * scale for l in protrusions_px]
         ax.plot(tip_x_um, y_times, color=colors['secondary'], linewidth=2.0, label='Detected Tip', alpha=0.9)
-    
+
     ax.axvline(0, color=colors['pulse'], linestyle='--', linewidth=1.0, label='Entrance')
-    ax.set_title(f'Trap #{trap_index} Kymograph')
+
+    title_bits = [f'Trap #{trap_index}']
+    if channel_label:
+        title_bits.append(channel_label)
+    title_bits.append('Kymograph')
+    ax.set_title(' '.join(title_bits))
+
     ax.set_xlabel('Position relative to channel entrance (µm)')
     ax.set_ylabel('Time (s)')
     ax.legend(loc='upper right')
-    
-    utils.save_plot_pdf(Path(output_dir) / f"trap_{trap_index:02d}_kymograph.png")
+
+    if channel_label:
+        fname = f"Trap_{trap_index:02d}_{channel_label}_Kymograph.png"
+    else:
+        fname = f"trap_{trap_index:02d}_kymograph.png"
+    utils.save_plot_pdf(Path(output_dir) / fname)
     plt.close(fig)
 
 # --- 3. PROTRUSION TRACE PLOT ---
@@ -350,172 +315,67 @@ class MFAPlotter:
         utils.save_plot_pdf(save_path)
         plt.close(fig)
         
-# --- 4. ACTIN PLOT ---
-def plot_actin_dashboard(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: Optional[float] = None, pulse_time: Optional[float] = None, rupture_time: Optional[float] = None):
+# --- 4. ACTIN PLOTS ---
+#
+# Only two actin plots are retained in the per-trap output:
+#   plot_actin_kymograph -- image of the spatial actin profile over time.
+#   plot_actin_zones     -- normalised zone-mean traces and dI/dt.
+#
+# The dashboard (_Ratio), cortex-structure, and standalone profiles plots
+# were removed because their content is either redundant with the kymograph
+# and zone plots or was derived from CSV columns (relative signal, structure
+# labels, cortex CV) that the pipeline no longer exports.
+# ---------------------------------------------------------------------------
+
+def plot_actin_kymograph(results: Dict[str, Any], trap_idx: int, output_dir: Path,
+                         params: Dict[str, Any], pipette_x: float,
+                         pulse_time: Optional[float] = None,
+                         rupture_time: Optional[float] = None):
     """
-    Two-panel dashboard per trap:
-        Top    – protrusion/body actin ratio over time (original plot).
-        Bottom – body cortex vs. lumen ratio + cortex CV, with structure labels
-                 annotated as a coloured background band.
+    Save a kymograph of the actin channel: spatial intensity profile (rows =
+    frames, columns = position along the aspiration axis) as an image.
+
+    The underlying data comes from results['spatial_profiles'], which is a
+    list of variable-length 1D arrays (one per frame) already computed by
+    ActinQuantification.  Rows shorter than the maximum width are zero-padded
+    on the right so imshow sees a rectangular matrix.
     """
     utils.set_paper_style()
     output_dir = Path(output_dir)
-    
-    t = np.array(results.get('time_s', []))
-    if len(t) == 0: return
-    
-    # Check both enable AND has_pulse
-    dye_params = params.get('dye_uptake_parameters', {})
-    has_pulse = dye_params.get('has_pulse', True)
-    
-    pulse_idx = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
-    pulse_time = t[pulse_idx] if (has_pulse and 0 <= pulse_idx < len(t)) else None
 
-    colors = utils.MFA_COLORS
-    if pipette_x is None: pipette_x = results.get('pipette_x_px', 0)
-
-    # Structure label → background colour mapping (subtle fills)
-    label_colors = {
-        'cortex':   colors['pale_blue'],
-        'patches':  colors['pale_red'],
-        'uniform':  colors['light_grey'],
-        'interior': colors['light_blue'],
-        'unknown':  colors['white'],
-    }
-
-    fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
-    fig.suptitle(f"Trap {trap_idx}: Actin Distribution", fontweight='bold')
-
-    # ---- Panel 1: protrusion / body ratio ----
-    ax1 = axes[0]
-    ax1.plot(t, results.get('actin_ratio_pb', []), 'o-',
-             color=colors['secondary'], linewidth=2, markersize=4)
-    ax1.set_ylabel("Actin Ratio (Protrusion / Body)")
-    ax1.set_title("Protrusion / Body Ratio")
-
-    # ---- Panel 2: body cortex vs. lumen ----
-    ax2 = axes[1]
-    cl_ratio = np.array(results.get('actin_body_cortex_lumen_ratio', []))
-    cv_vals  = np.array(results.get('actin_body_cortex_cv', []))
-    labels   = results.get('actin_body_structure_label', [])
-
-    # Shade the background by structure label so you can see how classification
-    # changes over time without reading individual values.
-    if labels:
-        prev_label = labels[0]
-        seg_start  = t[0]
-        for k in range(1, len(labels)):
-            if labels[k] != prev_label or k == len(labels) - 1:
-                seg_end = t[k]
-                ax2.axvspan(seg_start, seg_end,
-                            color=label_colors.get(prev_label, 'white'),
-                            alpha=0.35, linewidth=0)
-                prev_label = labels[k]
-                seg_start  = t[k]
-
-    if len(cl_ratio) == len(t):
-        ax2.plot(t, cl_ratio, 'o-', color=colors['dark_red'],
-                 linewidth=2, markersize=4, label='Cortex / Lumen ratio')
-
-    if len(cv_vals) == len(t):
-        ax2_cv = ax2.twinx()
-        ax2_cv.plot(t, cv_vals, 's--', color=colors['medium_blue'],
-                    linewidth=1.5, markersize=3, alpha=0.8, label='Cortex CV')
-        ax2_cv.set_ylabel("Cortex CV", color=colors['medium_blue'])
-        ax2_cv.tick_params(axis='y', labelcolor=colors['medium_blue'])
-        ax2_cv.axhline(params.get('actin_parameters', {}).get('cortex_cv_threshold', 0.4),
-                       color=colors['medium_blue'], linestyle=':', linewidth=1,
-                       alpha=0.6, label='CV threshold')
-        ax2_cv.legend(loc='upper right', fontsize=10)
-
-    ax2.axhline(1.0, color=colors['primary'], linestyle=':', linewidth=1, alpha=0.5)
-    ax2.set_ylabel("Cortex / Lumen Ratio")
-    ax2.set_xlabel("Time (s)")
-    ax2.set_title("Body Cortex Structure")
-
-    # Single combined legend: ratio line + structure label patches
-    from matplotlib.patches import Patch
-    from matplotlib.lines import Line2D
-    legend_handles = [
-        Line2D([0], [0], color=colors['dark_red'], linewidth=2, label='Cortex / Lumen ratio'),
-        Patch(facecolor=label_colors['cortex'],   alpha=0.6, label='Cortex (even ring)'),
-        Patch(facecolor=label_colors['patches'],  alpha=0.6, label='Patches (spotty ring)'),
-        Patch(facecolor=label_colors['uniform'],  alpha=0.6, label='Uniform'),
-        Patch(facecolor=label_colors['interior'], alpha=0.6, label='Interior enriched'),
-    ]
-    ax2.legend(handles=legend_handles, loc='upper left', fontsize=9, title='Structure', title_fontsize=9)
-
-    # Shared pulse / rupture lines
-    for ax in axes:
-        if has_pulse and pulse_time is not None:
-            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':',
-                       linewidth=2, label='Pulse Applied')
-                   
-        if rupture_time is not None:
-            ax.axvline(rupture_time, color=colors['rupture'], linestyle='--',
-                       linewidth=2, label='Rupture Detected')
-
-    fig.tight_layout()
-    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Ratio.png")
-    plt.close(fig)
-
-
-def plot_actin_kymograph_and_profiles(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pipette_x: float, pulse_time: Optional[float] = None, rupture_time: Optional[float] = None):
-    utils.set_paper_style()
-    output_dir = Path(output_dir)
     t = np.array(results.get('time_s', []))
     profiles = results.get('spatial_profiles', [])
-    if len(t) == 0 or not profiles: return
+    if len(t) == 0 or not profiles:
+        return
 
     colors = utils.MFA_COLORS
     scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
     max_w = max(len(p) for p in profiles)
-    
-    # Kymograph
+
     kymo = np.zeros((len(profiles), max_w))
-    for i, p in enumerate(profiles): kymo[i, :len(p)] = p
-    
-    fig_kymo, ax_kymo = plt.subplots(figsize=(10, 6))
+    for i, p in enumerate(profiles):
+        kymo[i, :len(p)] = p
+
+    fig, ax = plt.subplots(figsize=(10, 6))
     extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
-    
-    im = ax_kymo.imshow(kymo, aspect='auto', extent=extent, cmap='RdBu_r', interpolation='nearest')
-    ax_kymo.axvline(0, color='white', linestyle='--', linewidth=1, label='Entrance', alpha=0.7)
-    
+
+    im = ax.imshow(kymo, aspect='auto', extent=extent, cmap='RdBu_r', interpolation='nearest')
+    ax.axvline(0, color='white', linestyle='--', linewidth=1, label='Entrance', alpha=0.7)
+
     if rupture_time is not None:
-        ax_kymo.axhline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2, label='Rupture')
+        ax.axhline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2, label='Rupture')
     if pulse_time is not None:
-        ax_kymo.axhline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2, label='Pulse')
+        ax.axhline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2, label='Pulse')
 
-    plt.colorbar(im, ax=ax_kymo, label="Actin Intensity")
-    ax_kymo.set_xlabel("Position relative to channel entrance (µm)")
-    ax_kymo.set_ylabel("Time (s)")
-    ax_kymo.set_title(f"Trap {trap_idx}: Actin Uptake Kymograph")
+    plt.colorbar(im, ax=ax, label="Actin Intensity")
+    ax.set_xlabel("Position relative to channel entrance (µm)")
+    ax.set_ylabel("Time (s)")
+    ax.set_title(f"Trap {trap_idx}: Actin Kymograph")
     if rupture_time is not None or pulse_time is not None:
-        ax_kymo.legend()
+        ax.legend()
+
     utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Kymograph.png")
-    plt.close(fig_kymo)
-
-    # --- 2. Actin Profiles over time ---
-    fig_prof, ax_prof = plt.subplots(figsize=(10, 6))
-    n_curves = 6
-    indices = np.linspace(0, len(t)-1, n_curves, dtype=int)
-    time_colors = utils.get_time_colormap(len(indices))
-    
-    x_axis = (pipette_x - np.arange(max_w)) * scale
-    
-    for i, idx in enumerate(indices):
-        if idx >= len(profiles): continue
-        p = profiles[idx]
-        y = np.zeros(max_w); y[:len(p)] = p
-        ax_prof.plot(x_axis, y, color=time_colors[i], linewidth=2.5, label=f"{t[idx]:.1f}s")
-
-    ax_prof.axvline(0, color=colors['primary'], linestyle='--', alpha=0.6, label='Entrance')
-    ax_prof.invert_xaxis() 
-    ax_prof.set_xlabel("Position relative to channel entrance (µm)")
-    ax_prof.set_ylabel("Mean Actin Intensity")
-    ax_prof.legend(title="Time", bbox_to_anchor=(1.05, 1), loc='upper left')
-    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Profiles.png")
-    plt.close(fig_prof)
+    plt.close(fig)
 
 
 def plot_actin_zones(results: Dict[str, Any], trap_idx: int, output_dir: Path, params: Dict[str, Any], pulse_time: Optional[float] = None, rupture_time: Optional[float] = None):
@@ -603,130 +463,6 @@ def plot_actin_zones(results: Dict[str, Any], trap_idx: int, output_dir: Path, p
     utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Zones.png")
     plt.close(fig)
 
-
-def plot_actin_cortex_structure(results: Dict[str, Any], trap_idx: int, output_dir: Path,
-                                params: Dict[str, Any], pulse_time: Optional[float] = None,
-                                rupture_time: Optional[float] = None) -> None:
-    """
-    Six-panel plot for body AND protrusion cortex actin organisation.
-
-    Left column (body):
-        Panel 1 - Body cortex vs. lumen mean intensity.
-        Panel 2 - Body cortex CV with threshold line.
-        Panel 3 - Body structure label colour track.
-
-    Right column (protrusion):
-        Panel 4 - Protrusion cortex vs. lumen mean intensity.
-        Panel 5 - Protrusion cortex CV with threshold line.
-        Panel 6 - Protrusion structure label colour track.
-                  The protrusion is narrow, so the lumen mask may be empty on
-                  frames where cortex_thickness_px exceeds half the channel
-                  width. Those frames show 0.0 for lumen mean.
-
-    Saved as Trap_XX_Actin_Structure.png.
-    """
-    utils.set_paper_style()
-    output_dir = Path(output_dir)
-    t = np.array(results.get('time_s', []))
-    if len(t) == 0:
-        return
-
-    colors    = utils.MFA_COLORS
-    cv_thresh = params.get('actin_parameters', {}).get('cortex_cv_threshold', 0.4)
-
-    label_to_hex = {
-        'cortex':   colors['dark_blue'],
-        'patches':  colors['dark_red'],
-        'uniform':  colors['light_grey'],
-        'interior': colors['light_blue'],
-        'unknown':  colors['white'],
-    }
-
-    def _cortex_panels(axes_col, cortex_mean, lumen_mean, cv_vals, labels,
-                       region_name, cortex_colour, lumen_colour):
-        """Draw the three-panel cortex block for one region into axes_col."""
-        ax1, ax2, ax3 = axes_col
-
-        if len(cortex_mean) == len(t):
-            ax1.plot(t, cortex_mean, '-', color=cortex_colour,
-                     linewidth=2, label='Cortex shell')
-        if len(lumen_mean) == len(t):
-            ax1.plot(t, lumen_mean, '-', color=lumen_colour,
-                     linewidth=2, label='Lumen interior')
-        ax1.set_ylabel("Mean Actin Intensity (a.u.)")
-        ax1.set_title(f"{region_name}: Cortex vs. Lumen")
-        ax1.legend(fontsize=9)
-
-        if len(cv_vals) == len(t):
-            point_colors = [label_to_hex.get(lbl, colors['white']) for lbl in labels]
-            ax2.plot(t, cv_vals, '-', color=colors['light_grey'], linewidth=1.5, zorder=1)
-            ax2.scatter(t, cv_vals, c=point_colors, s=20, zorder=2, linewidths=0)
-        ax2.axhline(cv_thresh, color=colors['dark_red'], linestyle='--',
-                    linewidth=1.5, label=f'CV threshold ({cv_thresh})')
-        ax2.fill_between(t,
-                         cv_thresh,
-                         cv_vals if len(cv_vals) == len(t) else cv_thresh,
-                         where=(cv_vals > cv_thresh) if len(cv_vals) == len(t) else False,
-                         color=colors['pale_red'], alpha=0.3, label='Patches zone')
-        ax2.fill_between(t,
-                         cv_vals if len(cv_vals) == len(t) else 0,
-                         cv_thresh,
-                         where=(cv_vals <= cv_thresh) if len(cv_vals) == len(t) else False,
-                         color=colors['pale_blue'], alpha=0.3, label='Cortex zone')
-        ax2.set_ylabel("Cortex CV (σ / μ)")
-        ax2.set_title(f"{region_name}: Cortex CV")
-        ax2.legend(fontsize=8, loc='upper right')
-
-        if labels and len(t) >= 2:
-            widths = np.append(np.diff(t), np.diff(t)[-1])
-            for t_k, w_k, lbl in zip(t, widths, labels):
-                ax3.barh(0, w_k, left=t_k, height=1,
-                         color=label_to_hex.get(lbl, colors['white']), linewidth=0)
-        ax3.set_yticks([])
-        ax3.set_xlabel("Time (s)")
-        ax3.set_title(f"{region_name}: Structure per Frame")
-
-    fig, axes = plt.subplots(3, 2, figsize=(18, 12), sharex=True,
-                             gridspec_kw={'height_ratios': [3, 3, 1]})
-    fig.suptitle(f"Trap {trap_idx}: Body Actin Structure", fontweight='bold')
-
-    _cortex_panels(
-        axes[:, 0],
-        np.array(results.get('actin_body_cortex_mean', [])),
-        np.array(results.get('actin_body_lumen_mean',  [])),
-        np.array(results.get('actin_body_cortex_cv',   [])),
-        results.get('actin_body_structure_label', []),
-        "Body", colors['dark_red'], colors['medium_blue']
-    )
-    _cortex_panels(
-        axes[:, 1],
-        np.array(results.get('actin_prot_cortex_mean', [])),
-        np.array(results.get('actin_prot_lumen_mean',  [])),
-        np.array(results.get('actin_prot_cortex_cv',   [])),
-        results.get('actin_prot_structure_label', []),
-        "Protrusion", colors['medium_red'], colors['medium_blue']
-    )
-
-    from matplotlib.patches import Patch
-    track_legend = [
-        Patch(color=label_to_hex['cortex'],   label='Cortex (edge enriched, low CV)'),
-        Patch(color=label_to_hex['patches'],  label='Patches (edge enriched, high CV)'),
-        Patch(color=label_to_hex['uniform'],  label='Uniform'),
-        Patch(color=label_to_hex['interior'], label='Interior enriched'),
-    ]
-    for col in [0, 1]:
-        axes[2, col].legend(handles=track_legend, loc='lower right', ncol=2,
-                             fontsize=8, framealpha=0.9)
-
-    for ax in axes.flat:
-        if pulse_time is not None:
-            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2)
-        if rupture_time is not None:
-            ax.axvline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2)
-
-    fig.tight_layout()
-    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Structure.png")
-    plt.close(fig)
 
 
 def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[float], output_dir: Path, experiment_id: str):
@@ -1080,13 +816,11 @@ def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Pa
             utils.save_plot_pdf(output_dir / f"{experiment_id}_Aggregate_Uptake{filename_suffix}.png")
         plt.close(fig)
 
-    # Trigger the 3 versions
+    # Only the absolute aggregate uptake plot is retained.  The _Normalized
+    # (dF/F0) and _MinMax variants were removed because normalization is
+    # now the responsibility of downstream / bulk code, and rescaling here
+    # was creating three variants of essentially the same information.
     _plot_aggregated_3panel("", "Dye Uptake (Absolute)", "Mean Intensity (a.u.)", "_Absolute")
-    _plot_aggregated_3panel("_norm", "Normalized Uptake", r"Normalized Fluorescence ($\Delta$F/F0)", "_Normalized")
-    
-    # Safe check for MinMax incase it gets disabled in config
-    if f'uptake_total_minmax' in valid_results[0]['dye_data']:
-        _plot_aggregated_3panel("_minmax", "Min-Max Normalized Uptake", "Normalized Intensity (0-1)", "_MinMax")
         
 def plot_shear_analysis_card(metrics: Dict[str, float], save_path: Path):
     utils.set_paper_style(base_fontsize=12)

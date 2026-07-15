@@ -89,8 +89,26 @@ class ActinAnalyzer:
         # Number of frames before the pulse used to compute I_0.
         self.baseline_len = int(dye_p.get('baseline_frames', 5))
 
-        # Pulse frame (0-based index).  Mirrors how DyeUptakeAnalyzer reads it.
-        self.pulse_frame = int(max(0, dye_p.get('pulse_frame', 10) - 1))
+        # Pulse frame (0-based array index into the acquisition stack).
+        #
+        # MFA_analysis resolves this once per experiment using the auto-
+        # detected filename numbering scheme and stores the result under
+        # dye_uptake_parameters -> pulse_frame_idx.  We prefer that resolved
+        # value when it exists.  When it does not (e.g. this class is being
+        # used standalone or the pipeline predates the fix), we fall back to
+        # the legacy "subtract one" rule, which is correct only when
+        # filenames start at t0001.  A single warning is emitted in that
+        # branch to make the assumption visible.
+        resolved = dye_p.get('pulse_frame_idx', None)
+        if resolved is not None:
+            self.pulse_frame = int(max(0, resolved))
+        else:
+            self.pulse_frame = int(max(0, dye_p.get('pulse_frame', 10) - 1))
+            logger.warning(
+                "ActinQuantification: pulse_frame_idx not provided; assuming "
+                "filenames start at 1.  If the acquisition starts at t0000 "
+                "the pulse baseline window will be off by one frame."
+            )
 
         # ---- Cortex parameters ----
         # How many pixels to erode inward when drawing the cortex shell.
@@ -116,7 +134,14 @@ class ActinAnalyzer:
         self.results: Dict[str, Any] = {
             'time_s': [],
 
-            # --- 1. Whole-region relative means (I_t / I_0) ---
+            # --- 1. Whole-region absolute means (raw per-pixel intensity) ---
+            # These are the primary CSV outputs.  The relative and integrated
+            # quantities below are still computed for use by the retained
+            # plots (zone plot, kymograph) but no longer exported.
+            'actin_prot_mean':                [],
+            'actin_body_mean':                [],
+
+            # --- 1b. Whole-region relative means (I_t / I_0) [INTERNAL ONLY] ---
             'actin_prot_rel':                 [],
             'actin_body_rel':                 [],
             'actin_total_rel':                [],
@@ -212,6 +237,7 @@ class ActinAnalyzer:
         base_prot, base_body, base_total      = [], [], []
         base_tip, base_base_z, base_pn, base_dist = [], [], [], []
         base_prot_cortex, base_prot_lumen = [], []
+        base_body_cortex, base_body_lumen = [], []
 
         for k in range(baseline_start, baseline_end):
             mem_img = self.mem_imgs[k]
@@ -243,6 +269,15 @@ class ActinAnalyzer:
             base_prot_cortex.append(self._masked_mean(act_f, _pc))
             base_prot_lumen.append( self._masked_mean(act_f, _pl))
 
+            # Body cortex / lumen baselines.
+            # Only the body mask is eroded to build the cortex shell (the
+            # protrusion is too narrow for a meaningful cortex ring).  We
+            # store these so f0 is available for downstream re-normalization
+            # if the relative signal is ever recomputed from the raw CSV.
+            _bc, _bl = utils.generate_cortex_masks(mask_body, self.cortex_thickness_px)
+            base_body_cortex.append(self._masked_mean(act_f, _bc))
+            base_body_lumen.append( self._masked_mean(act_f, _bl))
+
         # Convert to scalar I_0 values (mean across baseline frames).
         # max(..., epsilon) prevents division-by-zero later.
         f0_prot  = max(np.mean(base_prot)    if base_prot    else 1.0, epsilon)
@@ -254,6 +289,24 @@ class ActinAnalyzer:
         f0_dist         = max(np.mean(base_dist)        if base_dist        else 1.0, epsilon)
         f0_prot_cortex  = max(np.mean(base_prot_cortex) if base_prot_cortex else 1.0, epsilon)
         f0_prot_lumen   = max(np.mean(base_prot_lumen)  if base_prot_lumen  else 1.0, epsilon)
+        f0_body_cortex  = max(np.mean(base_body_cortex) if base_body_cortex else 1.0, epsilon)
+        f0_body_lumen   = max(np.mean(base_body_lumen)  if base_body_lumen  else 1.0, epsilon)
+
+        # Persist F0 on self so export_csv can broadcast the scalars into the
+        # rectangular output table without recomputing the baselines.
+        self.f0 = {
+            'body':         f0_body,
+            'prot':         f0_prot,
+            'total':        f0_total,
+            'tip':          f0_tip,
+            'base':         f0_base_z,
+            'perinuclear':  f0_pn,
+            'distal':       f0_dist,
+            'body_cortex':  f0_body_cortex,
+            'body_lumen':   f0_body_lumen,
+            'prot_cortex':  f0_prot_cortex,
+            'prot_lumen':   f0_prot_lumen,
+        }
 
         # ----------------------------------------------------------------
         # STEP 2 — Per-frame analysis
@@ -280,6 +333,12 @@ class ActinAnalyzer:
             mean_total = cv2.mean(act_img, mask=mask_total)[0]
             area_um2   = cv2.countNonZero(mask_total) * (self.scale_factor ** 2)
 
+            # Absolute whole-region means -- primary CSV outputs.
+            self.results['actin_prot_mean'].append(mean_prot)
+            self.results['actin_body_mean'].append(mean_body)
+
+            # Relative versions (kept internally for the zone plot and any
+            # legacy downstream code; no longer written to disk).
             self.results['actin_prot_rel'].append(  mean_prot  / f0_prot  )
             self.results['actin_body_rel'].append(  mean_body  / f0_body  )
             self.results['actin_total_rel'].append( mean_total / f0_total )
@@ -913,78 +972,151 @@ class ActinAnalyzer:
 
     def export_csv(self, trap_idx: int, output_dir: Path) -> None:
         """
-        Saves all actin metrics to a CSV file.
+        Save absolute per-region actin means + F0 baselines to CSV.
 
-        Scalar remodelling scores (one value per trap) are broadcast to every
-        row so the table is rectangular and easy to read in Excel or pandas.
+        Rationale
+        ---------
+        The relative signal (I_t / I_0) is per-cell normalised and therefore
+        cannot show between-cell differences in absolute cortical actin
+        content (e.g. WT vs. CytD).  We now export the raw absolute per-pixel
+        means alongside the pre-pulse baseline (F0) for every region, and
+        leave any relative normalization to downstream code that can decide
+        whether to apply it.
+
+        Columns
+        -------
+        Time_s
+            Per-frame timestamp in seconds.
+
+        Actin_Body_Mean, Actin_Prot_Mean
+            Whole-region mean intensity of the actin channel over the body
+            and protrusion masks respectively.
+
+        Actin_Zone_{Tip|Base|Perinuclear|Distal}_Mean
+            Mean intensity in each of the four spatial zones.
+
+        Actin_Body_Cortex_Mean, Actin_Body_Lumen_Mean
+            Mean intensity in the eroded cortex shell and inner lumen of the
+            body mask.
+
+        Actin_Prot_Cortex_Mean, Actin_Prot_Lumen_Mean
+            Same, computed for the protrusion mask.
+
+        F0_*
+            Pre-pulse baseline (mean over baseline frames) for the matching
+            region.  Scalar per trap, broadcast to every row.
         """
         n = len(self.results['time_s'])
 
         def _col(key: str) -> list:
-            """
-            Safely fetch a result list.
-            If it is a single-element list (scalar result), broadcast it to
-            length n so every row has the same value.
-            """
+            """Fetch a per-frame result list, padding with None if short."""
             v = self.results.get(key, [])
-            if isinstance(v, list) and len(v) == 1 and n > 1:
-                return v * n           # e.g. [1.23] → [1.23, 1.23, ..., 1.23]
             return list(v) + [None] * max(0, n - len(v))
 
+        def _f0_col(region: str) -> list:
+            """Broadcast a scalar F0 to n rows."""
+            val = getattr(self, 'f0', {}).get(region, None)
+            return [val] * n
+
         df = pd.DataFrame({
-            'Time_s':                         _col('time_s'),
+            'Time_s':                    _col('time_s'),
 
-            # Whole-region relatives
-            'Actin_Total_Rel':                _col('actin_total_rel'),
-            'Actin_Prot_Rel':                 _col('actin_prot_rel'),
-            'Actin_Body_Rel':                 _col('actin_body_rel'),
-            'Actin_Integrated_Density':       _col('actin_integrated_density_total'),
-            'Actin_Ratio_PB':                 _col('actin_ratio_pb'),
+            # --- Whole-region absolute means ---
+            'Actin_Body_Mean':           _col('actin_body_mean'),
+            'Actin_Prot_Mean':           _col('actin_prot_mean'),
 
-            # Body cortex vs. lumen
-            'Body_Cortex_Mean':               _col('actin_body_cortex_mean'),
-            'Body_Lumen_Mean':                _col('actin_body_lumen_mean'),
-            'Body_Cortex_Lumen_Ratio':        _col('actin_body_cortex_lumen_ratio'),
-            'Body_Cortex_CV':                 _col('actin_body_cortex_cv'),
-            'Body_Structure_Label':           _col('actin_body_structure_label'),
+            # --- Zone absolute means ---
+            'Actin_Zone_Tip_Mean':         _col('zone_tip_mean'),
+            'Actin_Zone_Base_Mean':        _col('zone_base_mean'),
+            'Actin_Zone_Perinuclear_Mean': _col('zone_perinuclear_mean'),
+            'Actin_Zone_Distal_Mean':      _col('zone_distal_mean'),
 
-            # Protrusion cortex vs. lumen
-            'Prot_Cortex_Mean':               _col('actin_prot_cortex_mean'),
-            'Prot_Lumen_Mean':                _col('actin_prot_lumen_mean'),
-            'Prot_Cortex_Lumen_Ratio':        _col('actin_prot_cortex_lumen_ratio'),
-            'Prot_Cortex_CV':                 _col('actin_prot_cortex_cv'),
-            'Prot_Structure_Label':           _col('actin_prot_structure_label'),
+            # --- Cortex / lumen absolute means (body) ---
+            'Actin_Body_Cortex_Mean':    _col('actin_body_cortex_mean'),
+            'Actin_Body_Lumen_Mean':     _col('actin_body_lumen_mean'),
 
-            # Zone means (absolute)
-            'Zone_Tip_Mean':                  _col('zone_tip_mean'),
-            'Zone_Base_Mean':                 _col('zone_base_mean'),
-            'Zone_Perinuclear_Mean':          _col('zone_perinuclear_mean'),
-            'Zone_Distal_Mean':               _col('zone_distal_mean'),
+            # --- Cortex / lumen absolute means (protrusion) ---
+            'Actin_Prot_Cortex_Mean':    _col('actin_prot_cortex_mean'),
+            'Actin_Prot_Lumen_Mean':     _col('actin_prot_lumen_mean'),
 
-            # Zone means (normalised to pre-pulse baseline)
-            'Zone_Tip_Norm':                  _col('zone_tip_norm'),
-            'Zone_Base_Norm':                 _col('zone_base_norm'),
-            'Zone_Perinuclear_Norm':          _col('zone_perinuclear_norm'),
-            'Zone_Distal_Norm':               _col('zone_distal_norm'),
-
-            # Rate of change [a.u./s]
-            'Zone_Tip_dIdt':                  _col('zone_tip_didt'),
-            'Zone_Base_dIdt':                 _col('zone_base_didt'),
-            'Zone_Perinuclear_dIdt':          _col('zone_perinuclear_didt'),
-            'Zone_Distal_dIdt':               _col('zone_distal_didt'),
-
-            # Pulse remodelling scores (broadcast from single value)
-            'Pulse_Remodel_Ratio_Tip':        _col('pulse_remodel_ratio_tip'),
-            'Pulse_Remodel_Ratio_Base':       _col('pulse_remodel_ratio_base'),
-            'Pulse_Remodel_Ratio_Perinuclear':_col('pulse_remodel_ratio_perinuclear'),
-            'Pulse_Remodel_Ratio_Distal':     _col('pulse_remodel_ratio_distal'),
-            'Pulse_Remodel_Diff_Tip':         _col('pulse_remodel_diff_tip'),
-            'Pulse_Remodel_Diff_Base':        _col('pulse_remodel_diff_base'),
-            'Pulse_Remodel_Diff_Perinuclear': _col('pulse_remodel_diff_perinuclear'),
-            'Pulse_Remodel_Diff_Distal':      _col('pulse_remodel_diff_distal'),
+            # --- F0 pre-pulse baselines (scalar per region) ---
+            'F0_Body':          _f0_col('body'),
+            'F0_Prot':          _f0_col('prot'),
+            'F0_Zone_Tip':         _f0_col('tip'),
+            'F0_Zone_Base':        _f0_col('base'),
+            'F0_Zone_Perinuclear': _f0_col('perinuclear'),
+            'F0_Zone_Distal':      _f0_col('distal'),
+            'F0_Body_Cortex':   _f0_col('body_cortex'),
+            'F0_Body_Lumen':    _f0_col('body_lumen'),
+            'F0_Prot_Cortex':   _f0_col('prot_cortex'),
+            'F0_Prot_Lumen':    _f0_col('prot_lumen'),
         })
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Data.csv"
         df.to_csv(save_path, index=False)
         logger.info(f"Actin data saved: {save_path.name}")
+
+    # ---------------------------------------------------------------------
+    # Kymograph CSV export
+    # ---------------------------------------------------------------------
+    def export_kymograph_csv(self, trap_idx: int, output_dir: Path) -> None:
+        """
+        Save the actin kymograph values in long format.
+
+        Columns
+        -------
+        Time_s
+            Per-frame timestamp (repeated for every position column).
+        Position_um
+            Distance from the pipette entrance in micrometres.  Negative =
+            inside the channel (deeper), positive = outside.  Sign
+            convention matches the kymograph plot and the membrane/dye
+            kymograph CSVs so all three can be overlaid.
+        Intensity
+            Column-averaged actin intensity within the cell mask, taken
+            straight from spatial_profiles (no 8-bit normalization applied).
+
+        Frames with a shorter spatial profile than the max width are padded
+        with NaN on the right so the exported table has a consistent
+        Position axis per frame.
+        """
+        profiles = self.results.get('spatial_profiles', [])
+        times    = self.results.get('time_s', [])
+        if not profiles or not times:
+            logger.debug("No actin spatial profiles to export as kymograph CSV.")
+            return
+
+        n_frames = min(len(profiles), len(times))
+        max_w    = max((len(p) for p in profiles[:n_frames]), default=0)
+        if max_w == 0:
+            return
+
+        # Position axis: same convention as the kymograph plot.  Column 0 of
+        # each profile corresponds to the leftmost pixel of the ROI, so we
+        # convert to distance from the pipette in the same way.
+        pip_x = float(self.pipette_x)
+        col_indices = np.arange(max_w, dtype=float)
+        position_um = (col_indices - pip_x) * self.scale_factor
+
+        # Build the intensity matrix with NaN padding for short rows.
+        kymo = np.full((n_frames, max_w), np.nan, dtype=float)
+        for i in range(n_frames):
+            p = np.asarray(profiles[i], dtype=float)
+            kymo[i, :len(p)] = p
+
+        t_axis = np.asarray(times[:n_frames], dtype=float)
+        time_col = np.repeat(t_axis, max_w)
+        pos_col  = np.tile(position_um, n_frames)
+        int_col  = kymo.reshape(-1)
+
+        df = pd.DataFrame({
+            'Time_s':      time_col,
+            'Position_um': pos_col,
+            'Intensity':   int_col,
+        })
+
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Kymograph.csv"
+        df.to_csv(save_path, index=False)
+        logger.info(f"Actin kymograph CSV saved: {save_path.name}")

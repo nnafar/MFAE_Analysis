@@ -55,15 +55,43 @@ class DyeUptakeAnalyzer:
         
         # Extract specific dye parameters from config
         dye_params = params.get('dye_uptake_parameters', {})
-        self.pulse_frame = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
+        # Pulse frame (0-based array index into the acquisition stack).
+        # MFA_analysis resolves this once per experiment using the auto-
+        # detected filename numbering scheme and stores the result under
+        # dye_uptake_parameters -> pulse_frame_idx.  Prefer that resolved
+        # value; fall back to the legacy "subtract one" rule with a warning.
+        resolved_pf = dye_params.get('pulse_frame_idx', None)
+        if resolved_pf is not None:
+            self.pulse_frame = int(max(0, resolved_pf))
+        else:
+            self.pulse_frame = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
+            logger.warning(
+                "DyeUptakeAnalyzer: pulse_frame_idx not provided; assuming "
+                "filenames start at 1.  If the acquisition starts at t0000 "
+                "the baseline window and pulse timing will be off by one frame."
+            )
         self.baseline_len = dye_params.get('baseline_frames', 5)
         self.scale_factor = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
         
         # Initialize results dictionary
         self.results = {
             'time_s': [],
-            
-            # Absolute Means (Corrected Intensity)
+
+            # ----- Primary CSV outputs (raw absolute intensities) -----
+            # Un-subtracted mean per-pixel dye intensity in each region and
+            # the raw pixel count for that region's mask.  These plus the
+            # scalar F0 stored on self are the only quantities exported to
+            # Trap_XX_Uptake_Data.csv.  All the other lists below are still
+            # populated internally for the retained dashboard / debug plots.
+            'raw_mean_body': [],
+            'raw_mean_prot': [],
+            'raw_mean_tip':  [],
+            'mask_count_body': [],
+            'mask_count_prot': [],
+            'mask_count_tip':  [],
+
+            # Baseline-subtracted intensities used by the dashboard plot.
+            # Kept in memory only; not exported to CSV.
             'uptake_protrusion': [],
             'uptake_cell_body': [],
             'uptake_total': [],
@@ -163,12 +191,18 @@ class DyeUptakeAnalyzer:
     def run(self, time_data: List[float]) -> Dict[str, Any]:
         """
         Main execution loop with region-specific baseline correction and normalization.
+
+        The analysis now processes every acquired frame regardless of whether
+        a rupture was detected; the rupture frame is used only as a display
+        annotation in the downstream plots.  Previously the frame loop was
+        truncated at ``rupture_idx + 1``, which cut the kymograph and dye
+        traces short and made post-rupture dye equilibration invisible.
         """
-        
+
         # 1. Determine Processing Range
+        # Cover the full acquisition (both channels).  rupture_idx is retained
+        # on self so plots can still draw a red marker line.
         valid_frames = min(len(self.mem_imgs), len(self.dye_imgs))
-        if self.rupture_idx is not None:
-             valid_frames = min(valid_frames, self.rupture_idx + 1)
         
         # 2. Calculate Baseline (Cell-Specific F0 for each region)
         dye_params = self.params.get('dye_uptake_parameters', {})
@@ -186,7 +220,8 @@ class DyeUptakeAnalyzer:
         base_vals_prot = []
         base_vals_body = []
         base_vals_total = []
-        
+        base_vals_tip = []
+
         for k in range(baseline_start, baseline_end):
             mem_ref_img = self.mem_imgs[k]
             dye_ref_img = self.dye_imgs[k]
@@ -195,28 +230,46 @@ class DyeUptakeAnalyzer:
             if mem_ref_img is None or dye_ref_img is None:
                 logger.warning(f"Baseline frame {k} is missing. Skipping.")
                 continue
-            
+
             # Define the masks for baseline
             mask_prot_ref, mask_body_ref = self._get_masks(k, mem_ref_img)
-            
+
             # Define mask_total for the baseline period
             mask_total_ref = cv2.bitwise_or(mask_prot_ref, mask_body_ref)
-            
+
+            # Geometric tip = far half of the protrusion mask (deepest in
+            # channel).  Uses the shared helper so ActinQuantification and
+            # DyeUptakeAnalyzer stay geometrically consistent.
+            mask_tip_ref = utils.build_tip_mask(mask_prot_ref)
+
             # Collect mean intensities for region-specific F0
             base_vals_prot.append(cv2.mean(dye_ref_img, mask=mask_prot_ref)[0])
             base_vals_body.append(cv2.mean(dye_ref_img, mask=mask_body_ref)[0])
             base_vals_total.append(cv2.mean(dye_ref_img, mask=mask_total_ref)[0])
-            
+            if cv2.countNonZero(mask_tip_ref) > 0:
+                base_vals_tip.append(cv2.mean(dye_ref_img, mask=mask_tip_ref)[0])
+
         # --- Compute the F0 values ---
         bg_total = np.mean(base_vals_total) if base_vals_total else 0.0
         bg_body = np.mean(base_vals_body) if base_vals_body else bg_total
         bg_prot = np.mean(base_vals_prot) if base_vals_prot else bg_total
+        bg_tip  = np.mean(base_vals_tip)  if base_vals_tip  else bg_prot
 
         if bg_total == 0.0:
             logger.warning("Complete baseline failure. Fallback to global mean.")
             valid_imgs = [img for img in self.dye_imgs[baseline_start:baseline_end] if img is not None]
-            bg_total = bg_body = bg_prot = np.mean([np.mean(img) for img in valid_imgs]) if valid_imgs else 0.0
-        
+            fallback = np.mean([np.mean(img) for img in valid_imgs]) if valid_imgs else 0.0
+            bg_total = bg_body = bg_prot = bg_tip = fallback
+
+        # Persist F0 for downstream code (kept as a dict for parity with
+        # ActinQuantification).
+        self.f0 = {
+            'body':  float(bg_body),
+            'prot':  float(bg_prot),
+            'tip':   float(bg_tip),
+            'total': float(bg_total),
+        }
+
         # Store for export
         self.results['baseline_intensity'] = bg_total
         
@@ -276,26 +329,44 @@ class DyeUptakeAnalyzer:
             
             # C. Quantify Dye Signal with Region-Specific Background Subtraction
             dye_float = current_dye.astype(float)
+
+            # D. Raw and baseline-subtracted means.
+            # The raw values feed the trimmed CSV; the baseline-subtracted
+            # values feed the retained dashboard plot.
+            raw_prot  = float(np.mean(dye_float[mask_prot  > 0])) if n_prot  > 0 else 0.0
+            raw_body  = float(np.mean(dye_float[mask_body  > 0])) if n_body  > 0 else 0.0
+            raw_total = float(np.mean(dye_float[mask_total > 0])) if n_total > 0 else 0.0
+
+            val_prot  = raw_prot  - bg_prot  if n_prot  > 0 else 0.0
+            val_body  = raw_body  - bg_body  if n_body  > 0 else 0.0
+            val_total = raw_total - bg_total if n_total > 0 else 0.0
+
+            std_prot  = float(np.std(dye_float[mask_prot  > 0])) if n_prot  > 0 else 0.0
+            std_body  = float(np.std(dye_float[mask_body  > 0])) if n_body  > 0 else 0.0
+            std_total = float(np.std(dye_float[mask_total > 0])) if n_total > 0 else 0.0
+
+            # Store the raw versions -- these are the ones exported to CSV.
+            self.results['raw_mean_body'].append(raw_body)
+            self.results['raw_mean_prot'].append(raw_prot)
+            self.results['mask_count_body'].append(int(n_body))
+            self.results['mask_count_prot'].append(int(n_prot))
             
-            # D. Calculate Means and Standard Deviations Inline
-            val_prot = (np.mean(dye_float[mask_prot > 0]) - bg_prot) if n_prot > 0 else 0.0
-            val_body = (np.mean(dye_float[mask_body > 0]) - bg_body) if n_body > 0 else 0.0
-            val_total = (np.mean(dye_float[mask_total > 0]) - bg_total) if n_total > 0 else 0.0
-            
-            std_prot = np.std(dye_float[mask_prot > 0]) if n_prot > 0 else 0.0
-            std_body = np.std(dye_float[mask_body > 0]) if n_body > 0 else 0.0
-            std_total = np.std(dye_float[mask_total > 0]) if n_total > 0 else 0.0
-            
-            # Isolate the leading edge (Top 5% brightest pixels in the protrusion)
-            if n_prot > 10:
-                prot_pixels = dye_float[mask_prot > 0]
-                threshold_95 = np.percentile(prot_pixels, 95)
-                tip_pixels = prot_pixels[prot_pixels >= threshold_95]
-                val_tip = np.mean(tip_pixels) - bg_prot
-                std_tip = np.std(tip_pixels)
-                n_tip = len(tip_pixels)
+            # Geometric tip = far half of the protrusion mask.  Same
+            # definition used by ActinQuantification.  Replaces the older
+            # "top 5% brightest pixels" heuristic so tip intensity is a
+            # physical region rather than a signal-selected subset.
+            mask_tip = utils.build_tip_mask(mask_prot)
+            n_tip = cv2.countNonZero(mask_tip)
+            if n_tip > 0:
+                tip_pixels = dye_float[mask_tip > 0]
+                raw_tip = float(np.mean(tip_pixels))
+                val_tip = raw_tip - bg_tip
+                std_tip = float(np.std(tip_pixels))
             else:
-                val_tip, std_tip, n_tip = 0.0, 0.0, 0
+                raw_tip, val_tip, std_tip = 0.0, 0.0, 0.0
+
+            self.results['raw_mean_tip'].append(raw_tip)
+            self.results['mask_count_tip'].append(int(n_tip))
             
             # E. Store Absolute Values
             self.results['uptake_protrusion'].append(val_prot)
@@ -378,6 +449,10 @@ class DyeUptakeAnalyzer:
     def _record_empty_frame(self):
         """Appends zero values for all metrics when a frame is missing or invalid."""
         keys_to_zero = [
+            # New primary CSV outputs
+            'raw_mean_body', 'raw_mean_prot', 'raw_mean_tip',
+            'mask_count_body', 'mask_count_prot', 'mask_count_tip',
+            # Legacy internal metrics (still populated for the retained plots)
             'count_protrusion', 'count_cell_body', 'count_total', 'count_tip',
             'area_protrusion_um2', 'area_cell_body_um2', 'area_total_um2',
             'linear_size_prot_um', 'linear_size_body_um', 'linear_size_total_um',
@@ -397,231 +472,215 @@ class DyeUptakeAnalyzer:
     # =========================================================================
         
     def save_debug_video(self, trap_idx: int, output_dir: Path):
-        """Saves a video overlaying the generated masks onto the dye channel."""
-        if not self.results['time_s']: return
+        """
+        Save a video overlaying the generated masks onto the dye channel.
+
+        The video now runs through every frame (rupture no longer
+        truncates the loop).  When the acquisition reaches the detected
+        rupture frame, a red vertical bar on the left edge and the label
+        'RUPTURED' are drawn on every subsequent frame so the rupture
+        onset is visible without cutting the sequence short.
+        """
+        if not self.results['time_s']:
+            return
         save_path = output_dir / f"Trap_{trap_idx:02d}_Mask_Debug.avi"
-        
-        if not self.mem_imgs: return
+
+        if not self.mem_imgs:
+            return
         h, w = self.mem_imgs[0].shape[:2]
         fps = 5
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(str(save_path), fourcc, fps, (w, h), isColor=True)
-        num_frames = len(self.results['uptake_total'])
-        
-        color_prot = utils.get_bgr_color('secondary') 
+        num_frames = len(self.results['time_s'])
+
+        color_prot = utils.get_bgr_color('secondary')
         color_body = utils.get_bgr_color('tertiary')
-        color_line = utils.get_bgr_color('text') 
-        if color_line == (0,0,0): color_line = (255,255,255)
-        
+        color_line = utils.get_bgr_color('text')
+        if color_line == (0, 0, 0):
+            color_line = (255, 255, 255)
+        # BGR red for the rupture marker.  Kept independent of the palette
+        # so it stays visible regardless of any theme swap.
+        color_rupture = (0, 0, 255)
+
+        # Rupture frame in the same index space we iterate over below.
+        # self.rupture_idx is an index into the full mem/dye stack.
+        rupture_local = None
+        if self.rupture_idx is not None and self.rupture_idx < len(self.mem_imgs):
+            rupture_local = self.rupture_idx - self.start_idx
+
         for i in range(num_frames):
             actual_idx = self.start_idx + i
-            if actual_idx >= len(self.mem_imgs): break
+            if actual_idx >= len(self.mem_imgs):
+                break
             mem_img = self.mem_imgs[actual_idx]
             dye_img = self.dye_imgs[actual_idx]
-            if mem_img is None or dye_img is None: continue
+            if mem_img is None or dye_img is None:
+                continue
 
             mask_prot, mask_body = self._get_masks(actual_idx, mem_img)
-            
+
             norm_dye = cv2.normalize(dye_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             display = cv2.cvtColor(norm_dye, cv2.COLOR_GRAY2BGR)
-            
+
             overlay = display.copy()
             overlay[mask_prot > 0] = color_prot
             overlay[mask_body > 0] = color_body
             cv2.addWeighted(overlay, 0.3, display, 0.7, 0, display)
-            
-            cv2.line(display, (int(self.pipette_x), 0), (int(self.pipette_x), h), color_line, 1)
-            
+
+            cv2.line(display, (int(self.pipette_x), 0),
+                     (int(self.pipette_x), h), color_line, 1)
+
+            # Post-rupture annotation.
+            if rupture_local is not None and i >= rupture_local:
+                # 4-px-wide red bar down the left edge of the frame.
+                display[:, :4] = color_rupture
+                cv2.putText(display, "RUPTURED", (10, h - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_rupture, 1)
+
             if i < len(self.results['time_s']):
                 time_s = self.results['time_s'][i]
-                cv2.putText(display, f"t={time_s:.1f}s", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_line, 1)
-            
+                cv2.putText(display, f"t={time_s:.1f}s", (5, 15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_line, 1)
+
             out.write(display)
-            
+
         out.release()
         logger.info(f"Saved mask debug video: {save_path.name}")
 
     def export_csv(self, trap_idx: int, output_dir: Path):
-        """Saves the primary uptake kinetics to CSV."""
+        """
+        Save the trimmed uptake measurement to CSV.
+
+        Columns
+        -------
+        Time_s
+            Per-frame timestamp.
+        Body_Intensity, Prot_Intensity, Tip_Intensity
+            Raw un-subtracted mean dye intensity per pixel inside the
+            corresponding mask.  Un-subtracted so downstream code can
+            decide whether to apply an F0 correction.
+        Body_Mask_Count, Prot_Mask_Count, Tip_Mask_Count
+            Number of pixels contributing to the mean for each region.
+            Multiply by scale_factor^2 to recover the mask area in um^2.
+        F0_Body, F0_Prot, F0_Tip
+            Per-cell pre-pulse (or post-entry, for control experiments)
+            baseline of the dye signal in each region.  Scalar per trap,
+            broadcast across all rows.  Divide Intensity by F0 to get the
+            dF/F0 signal; subtract F0 from Intensity to get dF.
+
+        What was removed
+        ----------------
+        All area, linear-size, volume, volume-normalized, dF/F0, min-max,
+        Total-region, and standard-deviation columns.  Volume normalization
+        moves to bulk_file_handling, which now derives area from the mask
+        counts and applies region-appropriate geometry there.
+        """
+        n = len(self.results.get('time_s', []))
+        if n == 0:
+            logger.warning(f"Trap {trap_idx}: no uptake frames to export.")
+            return
+
+        def _col(key: str) -> list:
+            v = self.results.get(key, [])
+            return list(v) + [np.nan] * max(0, n - len(v))
+
+        def _scalar(key: str) -> list:
+            val = float(getattr(self, 'f0', {}).get(key, np.nan))
+            return [val] * n
+
         df = pd.DataFrame({
-            'Time_s': self.results['time_s'],
+            'Time_s':          self.results['time_s'],
 
-            # Region sizes — same formulas as LineDetection._calculate_morphology
-            'Protrusion_Area_um2':      self.results['area_protrusion_um2'],
-            'Body_Area_um2':            self.results['area_cell_body_um2'],
-            'Total_Area_um2':           self.results['area_total_um2'],
-            'Linear_Size_Prot_um':      self.results['linear_size_prot_um'],
-            'Linear_Size_Body_um':      self.results['linear_size_body_um'],
-            'Linear_Size_Total_um':     self.results['linear_size_total_um'],
-            'Volume_Prot_um3':          self.results['volume_prot_um3'],
-            'Volume_Body_um3':          self.results['volume_body_um3'],
-            'Volume_Total_um3':         self.results['volume_total_um3'],
+            # Raw absolute intensities (mean per pixel in each mask)
+            'Body_Intensity':  _col('raw_mean_body'),
+            'Prot_Intensity':  _col('raw_mean_prot'),
+            'Tip_Intensity':   _col('raw_mean_tip'),
 
-            # Absolute Values (Background Subtracted)
-            'Total_Intensity': self.results['uptake_total'],
-            'Protrusion_Intensity': self.results['uptake_protrusion'],
-            'Tip_Intensity': self.results['uptake_tip'],
-            'Body_Intensity': self.results['uptake_cell_body'],
+            # Mask sizes (pixel counts) -- feed downstream area / volume math
+            'Body_Mask_Count': _col('mask_count_body'),
+            'Prot_Mask_Count': _col('mask_count_prot'),
+            'Tip_Mask_Count':  _col('mask_count_tip'),
 
-            # Baseline Normalized (dF/F0)
-            'Total_Normalized_dF_F0': self.results['uptake_total_norm'],
-            'Protrusion_Normalized_dF_F0': self.results['uptake_protrusion_norm'],
-            'Tip_Normalized_dF_F0': self.results['uptake_tip_norm'],
-            'Body_Normalized_dF_F0': self.results['uptake_cell_body_norm'],
+            # Per-region pre-pulse baseline (scalar broadcast to every row)
+            'F0_Body':         _scalar('body'),
+            'F0_Prot':         _scalar('prot'),
+            'F0_Tip':          _scalar('tip'),
 
-            # Min-Max Normalized (0-1)
-            'Total_MinMax': self.results['uptake_total_minmax'],
-            'Protrusion_MinMax': self.results['uptake_protrusion_minmax'],
-            'Tip_MinMax': self.results['uptake_tip_minmax'],
-            'Body_MinMax': self.results['uptake_cell_body_minmax'],
-
-            # Volume-Normalized (a.u./μm³)
-            # Preferred metric for bulk analysis: removes cell-size confound.
-            'Body_VolNorm':       self.results.get('uptake_cell_body_vol_norm', []),
-            'Protrusion_VolNorm': self.results.get('uptake_protrusion_vol_norm', []),
-            'Total_VolNorm':      self.results.get('uptake_total_vol_norm', []),
+            # Scale factor (um/px) is broadcast to every row so downstream
+            # code can convert mask counts to area without loading the
+            # experiment's config.  Constant per acquisition.
+            'Scale_Factor_um_per_px': [float(self.scale_factor)] * n,
         })
-        
+
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         save_path = output_dir / f"Trap_{trap_idx:02d}_Uptake_Data.csv"
         df.to_csv(save_path, index=False)
-   
-    # =========================================================================
-    # VOLUME CORRECTION
-    # =========================================================================
+        logger.info(f"Uptake data saved: {save_path.name}")
 
-    def plot_size_uptake_relationship(self, trap_idx: int, output_dir: Path):
+    def export_kymograph_csv(self, trap_idx: int, output_dir: Path) -> None:
         """
-        Diagnostic 4-panel figure: uptake vs. cell size for Protrusion and Cell Body.
+        Save the dye kymograph values in long format.
 
-        Layout (2 rows × 2 columns):
-            Row 0 — uptake vs. L  (linear size, μm)    [sqrt(count_px) × sf]
-            Row 1 — uptake vs. L² (area, μm²)          [count_px × sf²]
+        Format
+        ------
+        Time_s, Position_um, Intensity
 
-        Each panel overlays a power-law fit (log-log regression) and colour-codes
-        points by frame index so temporal drift is visible.
+        Data source
+        -----------
+        results['spatial_profiles'] -- one 1D array per frame containing the
+        mean dye intensity per pixel column, averaged within the total
+        (body + protrusion) mask.  This is the same data underlying the
+        Trap_XX_Uptake_Kymograph.png plot from plot_dye_uptake_dashboard,
+        so the CSV and the image show the same signal.
 
-        Call after run().
+        The Position axis is in micrometres relative to the pipette
+        entrance, using the same sign convention as the actin and
+        membrane kymograph CSVs: negative = inside the channel (deeper),
+        positive = outside.  This keeps the three kymograph CSVs directly
+        overlayable frame by frame.
         """
-        import warnings
+        profiles = self.results.get('spatial_profiles', [])
+        times    = self.results.get('time_s', [])
+        if not profiles or len(times) == 0:
+            logger.debug("No dye spatial profiles to export as kymograph CSV.")
+            return
 
-        # ------------------------------------------------------------------
-        # Pull the three size arrays and the two uptake arrays from results.
-        # ------------------------------------------------------------------
-        # L  = linear size (μm)  — already stored from LineDetection
-        lin_prot = np.array(self.results['linear_size_prot_um'], dtype=float)
-        lin_body = np.array(self.results['linear_size_body_um'], dtype=float)
+        n_frames = min(len(profiles), len(times))
+        # Frames omitted from the loop (e.g. baseline-only frames) still
+        # produce an entry in spatial_profiles via _record_empty_frame(),
+        # so the row count matches results['time_s'] one-to-one.
+        max_w = max((len(p) for p in profiles[:n_frames]), default=0)
+        if max_w == 0:
+            return
 
-        # L² = area (μm²)  — also stored; equals count_px × sf²
-        area_prot = np.array(self.results['area_protrusion_um2'], dtype=float)
-        area_body = np.array(self.results['area_cell_body_um2'],  dtype=float)
+        pip_x = float(self.pipette_x)
+        col_indices = np.arange(max_w, dtype=float)
+        position_um = (col_indices - pip_x) * self.scale_factor
 
-        # Raw (background-subtracted) uptake intensity per region
-        uptake_prot = np.array(self.results['uptake_protrusion'], dtype=float)
-        uptake_body = np.array(self.results['uptake_cell_body'],  dtype=float)
+        kymo = np.full((n_frames, max_w), np.nan, dtype=float)
+        for i in range(n_frames):
+            p = np.asarray(profiles[i], dtype=float)
+            kymo[i, :len(p)] = p
 
-        # ------------------------------------------------------------------
-        # Helper: fit a power law  y = A · x^n  by linear regression in
-        # log-log space.  Returns (exponent, prefactor, boolean mask of
-        # valid (positive) points).  Requires at least 5 valid frames.
-        # ------------------------------------------------------------------
-        def fit_power_law(x_arr, y_arr):
-            """
-            x_arr, y_arr — 1-D numpy arrays of the same length.
-            Returns (exponent, prefactor A, valid_mask).
-            exponent and A are None when the fit cannot be computed.
-            """
-            valid = (x_arr > 0) & (y_arr > 0)
-            if valid.sum() < 5:
-                return None, None, valid
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", _NP_RANK_WARNING)
-                # np.polyfit on log-transformed data gives a straight line:
-                #   log(y) = n·log(x) + log(A)
-                # So coeffs[0] = n  and  exp(coeffs[1]) = A.
-                coeffs = np.polyfit(np.log(x_arr[valid]), np.log(y_arr[valid]), deg=1)
-            return coeffs[0], np.exp(coeffs[1]), valid
+        t_axis = np.asarray(times[:n_frames], dtype=float)
+        time_col = np.repeat(t_axis, max_w)
+        pos_col  = np.tile(position_um, n_frames)
+        int_col  = kymo.reshape(-1)
 
-        # ------------------------------------------------------------------
-        # Run fits for all four panels upfront so we can log them together.
-        # ------------------------------------------------------------------
-        # (row, col) → (sizes, uptakes, x_label, row_title)
-        panel_data = {
-            (0, 0): (lin_prot,  uptake_prot, "Linear size  L  [μm]",  "Protrusion"),
-            (0, 1): (lin_body,  uptake_body, "Linear size  L  [μm]",  "Cell Body"),
-            (1, 0): (area_prot, uptake_prot, "Area  L²  [μm²]",       "Protrusion"),
-            (1, 1): (area_body, uptake_body, "Area  L²  [μm²]",       "Cell Body"),
-        }
+        df = pd.DataFrame({
+            'Time_s':      time_col,
+            'Position_um': pos_col,
+            'Intensity':   int_col,
+        })
 
-        fits = {}  # (row, col) → (exp, A, valid_mask)
-        for key, (x_arr, y_arr, _, _) in panel_data.items():
-            fits[key] = fit_power_law(x_arr, y_arr)
-
-        # ------------------------------------------------------------------
-        # Build the figure.
-        # ------------------------------------------------------------------
-        fig, axes = plt.subplots(2, 2, figsize=(11, 9))
-        fig.suptitle(f"Trap {trap_idx:02d} — Uptake vs. Cell Size  (L and L²)", fontsize=13)
-
-        # Row labels on the left side so it's clear which metric each row uses
-        row_labels = ["vs. Linear Size  (L)", "vs. Area  (L²)"]
-        for row_idx, label in enumerate(row_labels):
-            axes[row_idx, 0].set_ylabel(f"Uptake intensity [a.u.]\n{label}", fontsize=9)
-
-        for (row, col), (x_arr, y_arr, x_label, region_label) in panel_data.items():
-            ax = axes[row, col]
-            exp, A, valid = fits[(row, col)]
-
-            # Scatter: colour = frame index so you can see whether the
-            # size–uptake relationship is consistent across time or drifts.
-            n_frames = len(x_arr)
-            sc = ax.scatter(
-                x_arr, y_arr,
-                c=np.arange(n_frames), cmap='viridis',
-                s=18, alpha=0.7, zorder=3,
-            )
-            plt.colorbar(sc, ax=ax, label="Frame index")
-
-            # Power-law fit line
-            if exp is not None:
-                x_line = np.linspace(x_arr[valid].min(), x_arr[valid].max(), 200)
-                ax.plot(
-                    x_line, A * x_line ** exp,
-                    color='tomato', lw=1.8,
-                    label=f"Fit: uptake ~ size^{exp:.2f}",
-                )
-                ax.legend(fontsize=8)
-
-            ax.set_xlabel(x_label, fontsize=9)
-            title_suffix = f"\nexponent = {exp:.2f}" if exp is not None else "\n(fit failed)"
-            ax.set_title(f"{region_label}{title_suffix}", fontsize=10)
-            ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        save_path = output_dir / f"Trap_{trap_idx:02d}_Size_Uptake_Relationship.png"
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        logger.info(f"Saved size-uptake diagnostic: {save_path.name}")
+        save_path = output_dir / f"Trap_{trap_idx:02d}_Uptake_Kymograph.csv"
+        df.to_csv(save_path, index=False)
+        logger.info(f"Uptake kymograph CSV saved: {save_path.name}")
 
-        # ------------------------------------------------------------------
-        # Log a human-readable interpretation of each exponent.
-        # ------------------------------------------------------------------
-        for (row, col), (exp, _, _) in fits.items():
-            _, _, _, region_label = panel_data[(row, col)]
-            size_label = "L" if row == 0 else "L²"
-            if exp is not None:
-                interp = (
-                    "≈ area (x²)"   if abs(exp - 2) < 0.5 else
-                    "≈ linear (x¹)" if abs(exp - 1) < 0.5 else
-                    "unclear — check plot"
-                )
-                logger.info(f"  {region_label} vs {size_label}: exponent = {exp:.2f}  → {interp}")
-            else:
-                logger.info(f"  {region_label} vs {size_label}: fit failed (too few valid frames)")
-
+   
     def compute_volume_correction(self):
         """
         Adds volume-corrected uptake to self.results.

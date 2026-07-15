@@ -13,13 +13,13 @@
 paths:
   # Folder containing your raw image sequence (.tif/.tiff)
 
-  data_folder: 'D:\MFAE\5ms_100V\260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10'
+  data_folder: 'D:\MFAE\5ms_100V\260114_MDAMB231_WT_Chip1_Experiment5-1100Pa-100V-5ms-frame10'
 
   # Name for this analysis run. New output folders will be created with this name.
   # For bulk analysis name the output folder as:
   # Electroporated: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-XXXV-Xms-frameXX [replace X with an integer]
   # Aspirated Only: YYMMDD_CellType_Condition_DeviceNumber_ExperimentID-XXXXPa-0V-0ms-frame0
-  experiment_id: "260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
+  experiment_id: "260114_MDAMB231_WT_Chip1_Experiment5-1100Pa-100V-5ms-frame10"
 
 # ===================================================================
 # --- 2. MICROSCOPE & EXPERIMENT SETUP ---
@@ -99,7 +99,7 @@ model_parameters:
 
 rupture_detection:
   # Main Switch: Set to True to enable rupture check. Set False for raw data only.
-  enable: True
+  enable: False
   
   # --- SPATIAL MONITORING ("The Eyes") ---
   # Where to look inside the pipette (ahead of the cell tip)
@@ -197,12 +197,12 @@ rupture_detection:
   
   # 1. SPIKE DETECTION (Transient Bursts)
   #    Formula: Signal > (Mean + Sigma * Threshold)
-  enable_spike_check: True
+  enable_spike_check: False
   spike_sigma_threshold: 3.5        # Sensitivity: Lower (3.0) = More sensitive, Higher (6.0) = Safer
 
   # 2. STEP DETECTION (Fast Leaks)
   #    Faster reaction time than CUSUM for catastrophic failure.
-  enable_step_check: True
+  enable_step_check: False
   step_sigma_threshold: 4.0         # Sensitivity: Needs a distinct jump to trigger.
 
   # 3. DIRECT DIFFERENCE (Sudden Haze Jumps)
@@ -241,7 +241,7 @@ rupture_detection:
   #     event is considered a genuine rupture. 0.90 means the protrusion must
   #     be at least 10% shorter after the event. Raise toward 0.95 if you are
   #     missing slow retractions; lower toward 0.85 for stricter filtering.
-  enable_length_veto: True
+  enable_length_veto: False
   length_veto_window: 10             # Frames each side of candidate to average
   rupture_length_drop_ratio: 0.90    # post/pre ratio threshold; below this = real rupture
 

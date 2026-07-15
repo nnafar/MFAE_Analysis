@@ -34,7 +34,7 @@ import bulk_mechanics     as bm
 import bulk_plotting      as bp
 import thesis_plotting    as tp  
 import bulk_spatial       as bs
-import Utils_MFA as utils
+import bulk_utils as utils
 
 logging.basicConfig(
     level=logging.INFO,

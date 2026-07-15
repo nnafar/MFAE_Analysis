@@ -16,7 +16,7 @@ from scipy.interpolate import interp1d
 import bulk_file_handling as bfh
 import bulk_mechanics as bm
 import bulk_plotting as bp
-import Utils_MFA as utils
+import bulk_utils as utils
 
 logger = logging.getLogger(__name__)
 utils.set_paper_style()
@@ -144,6 +144,7 @@ def plot_asp_protrusion_dynamics(grouped_data: Dict, output_dir: Path, global_as
                             jitter=True, edgecolor='black', linewidth=0.8, alpha=0.7, order=trap_order, ax=ax)
 
             ax.set_xlabel('Trap ID')
+            ax.set_ylim(0, 40)
             ax.set_ylabel('Max Protrusion Length (µm)')
             ax.tick_params(axis='x', rotation=45)
 
@@ -1183,7 +1184,7 @@ def plot_thesis_mi_wholetrace_best_fit_multipanel(mi_whole_grouped_data: Dict,
                 if mi_fit['power_law']:
                     p = mi_fit['power_law']['params']
                     ax.plot(t_smooth,
-                            bm._power_law(t_smooth, p['a'], p['exponent_b']),
+                            bm._power_law(t_smooth, p['a'], p['exponent_b'], p['c']),
                             color=bp.MI_MODEL_PALETTE['Power-Law'], lw=1.5, alpha=0.85)
 
                 winner = mi_fit.get('best_model')
@@ -1208,10 +1209,9 @@ def plot_thesis_mi_wholetrace_best_fit_multipanel(mi_whole_grouped_data: Dict,
             
 def plot_thesis_mechanics_vs_uptake_mi(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     import scipy.stats as stats
-    logger.info("Generating Thesis Plot: Mechanics vs Uptake (MI Parameters)...")
+    logger.info("Generating Thesis Plot: Mechanics vs Uptake (MI Parameters & Trap ID)...")
 
     df = mechanics_df.copy()
-    # Apply the same fitting criteria filter as the parameter boxplots
     df = df[df['MI_Best_Model'].notna() & (df['MI_R2_Flag'] == True)].copy()
     
     if 'Post_Pulse_Entry_Flag' in df.columns:
@@ -1225,56 +1225,65 @@ def plot_thesis_mechanics_vs_uptake_mi(mechanics_df: pd.DataFrame, output_dir: P
 
     df['Bucket'] = df.apply(_row_bucket, axis=1)
     
-    mech_cols = [
-        ('Linear_Slope', 'Linear Slope (µm/s)'), 
-        ('PL_a', 'Power-Law a (µm)'),
-        ('PL_b', 'Power-Law b')
-    ]
-    uptake_cols = [
-        ('Uptake_Body_VolNorm_A', 'Body Uptake Plateau (ADU/µm³)'), 
-        ('Uptake_Prot_VolNorm_A', 'Protrusion Uptake Plateau (ADU/µm³)')
+    # Explicit 2x2 layout: pairing (x_col, x_label, y_col, y_label)
+    panels = [
+        ('Trap_ID', 'Trap ID (1=Far, 18=Near)', 'Uptake_Body_VolNorm_A', 'Body Uptake Plateau\n(ADU/µm³) [log]'),
+        ('Linear_Slope', 'Linear Slope (µm/s)', 'Uptake_Prot_VolNorm_A', 'Protrusion Uptake Plateau\n(ADU/µm³) [log]'),
+        ('PL_a', 'Power-Law a (µm)',            'Uptake_Prot_VolNorm_A', 'Protrusion Uptake Plateau\n(ADU/µm³) [log]'),
+        ('PL_b', 'Power-Law b',                 'Uptake_Prot_VolNorm_A', 'Protrusion Uptake Plateau\n(ADU/µm³) [log]')
     ]
                    
     for bucket, sub_df in df.groupby('Bucket'):
-        # Require at least 5 data points to generate meaningful correlations
         if len(sub_df) < 5:
             continue
             
-        fig, axes = plt.subplots(len(mech_cols), len(uptake_cols), figsize=(10, 12))
-        fig.suptitle(f"Mechanics vs. Uptake: {bucket}", fontweight='bold', y=1.02)
+        fig, axes = plt.subplots(2, 2, figsize=(11, 10))
+        fig.suptitle(f"Mechanics & Spatial Position vs. Uptake: {bucket}", fontweight='bold', y=1.02)
         
-        # Match colors to existing MI plots
         if bucket == 'ASP':
             color = MI_ASP_COLOR
         else:
             color = MI_EP_COLOR_RAMP[0] if MI_EP_COLOR_RAMP else 'red'
         
-        for i, (m_col, m_label) in enumerate(mech_cols):
-            for j, (u_col, u_label) in enumerate(uptake_cols):
-                ax = axes[i, j]
+        axes_flat = axes.flatten()
+        for k, (x_col, x_label, y_col, y_label) in enumerate(panels):
+            ax = axes_flat[k]
+            
+            valid = sub_df[x_col].notna() & sub_df[y_col].notna()
+            if valid.sum() < 5:
+                ax.set_visible(False)
+                continue
                 
-                valid = sub_df[m_col].notna() & sub_df[u_col].notna()
-                if valid.sum() < 5:
-                    ax.set_visible(False)
-                    continue
+            x = sub_df.loc[valid, x_col].values
+            y = sub_df.loc[valid, y_col].values
+            
+            # Floor values at 1e-3 to prevent log(0) errors
+            y_safe = np.where(y > 1e-3, y, 1e-3)
+            
+            # For Trap ID, apply jitter to the x-axis so overlapping cells are visible
+            x_plot = x
+            if x_col == 'Trap_ID':
+                rng = np.random.default_rng(seed=42)
+                x_plot = x + rng.uniform(-0.25, 0.25, size=len(x))
+            
+            sns.regplot(
+                x=x_plot, y=y_safe, ax=ax, 
+                scatter_kws={'alpha': 0.6, 'color': color, 'edgecolor': 'white', 'linewidths': 0.5}, 
+                line_kws={'color': 'black', 'lw': 1.5, 'ls': '--'}
+            )
+            
+            rho, p = stats.spearmanr(x, y)
+            p_str = f"p={p:.3f}" if p >= 0.001 else "p<0.001"
+            ax.text(0.05, 0.95, f"$\\rho$={rho:.2f}\n{p_str}", transform=ax.transAxes, 
+                    ha='left', va='top', fontsize=9, 
+                    bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.8, ec='gray'))
                     
-                x = sub_df.loc[valid, m_col].values
-                y = sub_df.loc[valid, u_col].values
-                
-                sns.regplot(
-                    x=x, y=y, ax=ax, 
-                    scatter_kws={'alpha': 0.6, 'color': color, 'edgecolor': 'white', 'linewidths': 0.5}, 
-                    line_kws={'color': 'black', 'lw': 1.5, 'ls': '--'}
-                )
-                
-                rho, p = stats.spearmanr(x, y)
-                p_str = f"p={p:.3f}" if p >= 0.001 else "p<0.001"
-                ax.text(0.05, 0.95, f"$\\rho$={rho:.2f}\n{p_str}", transform=ax.transAxes, 
-                        ha='left', va='top', fontsize=9, 
-                        bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.8, ec='gray'))
-                        
-                ax.set_xlabel(m_label)
-                ax.set_ylabel(u_label)
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
+            ax.set_yscale('log')
+            if x_col == 'Trap_ID':
+                ax.set_xticks(range(2, 19, 2))
+                ax.set_xlim(0, 19)
         
         plt.tight_layout()
         utils.save_plot_pdf(output_dir / f"Thesis_Mechanics_vs_Uptake_{_safe_filename(bucket)}.pdf")
@@ -1283,10 +1292,9 @@ def plot_thesis_mechanics_vs_uptake_mi(mechanics_df: pd.DataFrame, output_dir: P
         
 def plot_thesis_spatial_mechanics_uptake(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     import scipy.stats as stats
-    logger.info("Generating Thesis Plot: Spatial Mechanics vs Uptake (Dual Axis)...")
+    logger.info("Generating Thesis Plot: Spatial Mechanics vs Uptake (3D)...")
 
     df = mechanics_df.copy()
-    # Apply fitting criteria filter
     df = df[df['MI_Best_Model'].notna() & (df['MI_R2_Flag'] == True)].copy()
     
     if 'Post_Pulse_Entry_Flag' in df.columns:
@@ -1300,84 +1308,560 @@ def plot_thesis_spatial_mechanics_uptake(mechanics_df: pd.DataFrame, output_dir:
 
     df['Bucket'] = df.apply(_row_bucket, axis=1)
     
+    # Evaluate all 3 Protrusion mechanics parameters here
     mech_cols = [
         ('Linear_Slope', 'Linear Slope (µm/s)'), 
         ('PL_a', 'Power-Law a (µm)'),
         ('PL_b', 'Power-Law b')
     ]
-    uptake_cols = [
-        ('Uptake_Body_VolNorm_A', 'Body Uptake Plateau (ADU/µm³)'), 
-        ('Uptake_Prot_VolNorm_A', 'Protrusion Uptake Plateau (ADU/µm³)')
-    ]
+    uptake_col = 'Uptake_Prot_VolNorm_A'
+    u_label = 'Log10 Protrusion Uptake\nPlateau (ADU/µm³)'
                    
     for bucket, sub_df in df.groupby('Bucket'):
-        # Require at least 5 data points
         if len(sub_df) < 5:
             continue
             
-        # Increased figsize to prevent label collision
-        fig, axes = plt.subplots(len(mech_cols), len(uptake_cols), figsize=(14, 12))
-        fig.suptitle(f"Spatial Trends: Mechanics & Uptake\n{bucket}", fontweight='bold', y=1.02)
+        # Adjusted figsize for a 1x3 layout
+        fig = plt.figure(figsize=(22, 7))
+        fig.suptitle(f"Protrusion Spatial Trends: {bucket}", fontweight='bold', y=0.98, fontsize=14)
         
-        for i, (m_col, m_label) in enumerate(mech_cols):
-            for j, (u_col, u_label) in enumerate(uptake_cols):
-                ax1 = axes[i, j]
+        if bucket == 'ASP':
+            color = MI_ASP_COLOR
+        else:
+            color = MI_EP_COLOR_RAMP[0] if MI_EP_COLOR_RAMP else 'red'
+            
+        for plot_idx, (m_col, m_label) in enumerate(mech_cols, start=1):
+            ax = fig.add_subplot(1, 3, plot_idx, projection='3d')
+            
+            valid = sub_df['Trap_ID'].notna() & sub_df[m_col].notna() & sub_df[uptake_col].notna()
+            if valid.sum() < 3:
+                ax.axis('off')
+                continue
                 
-                valid = sub_df['Trap_ID'].notna() & sub_df[m_col].notna() & sub_df[u_col].notna()
-                if valid.sum() < 3:
-                    ax1.set_visible(False)
-                    continue
-                    
-                trap_ids = sub_df.loc[valid, 'Trap_ID'].values.astype(float)
-                mech_vals = sub_df.loc[valid, m_col].values
-                uptake_vals = sub_df.loc[valid, u_col].values
+            trap_ids = sub_df.loc[valid, 'Trap_ID'].values.astype(float)
+            mech_vals = sub_df.loc[valid, m_col].values
+            uptake_vals = sub_df.loc[valid, uptake_col].values
+            
+            # Floor values to prevent log(0) errors, then take log10 manually for Z-axis
+            uptake_vals_safe = np.where(uptake_vals > 1e-3, uptake_vals, 1e-3)
+            z_vals = np.log10(uptake_vals_safe)
+            
+            rng = np.random.default_rng(seed=42)
+            jitter_x = rng.uniform(-0.25, 0.25, size=len(trap_ids))
+            
+            ax.scatter(
+                trap_ids + jitter_x, mech_vals, z_vals, 
+                c=color, s=50, alpha=0.75, edgecolor='white', linewidths=0.5, depthshade=True
+            )
+            
+            rho_m, _ = stats.spearmanr(trap_ids, mech_vals)
+            rho_u, _ = stats.spearmanr(trap_ids, uptake_vals)
+            ax.set_title(f"$\\rho_{{Trap,Mech}}$={rho_m:.2f}  |  $\\rho_{{Trap,Uptk}}$={rho_u:.2f}", fontsize=11, pad=10)
+            
+            ax.set_xlabel("Trap ID", labelpad=12, fontweight='bold')
+            ax.set_ylabel(m_label, labelpad=12, fontweight='bold')
+            ax.set_zlabel(u_label, labelpad=12, fontweight='bold')
+            
+            ax.set_xticks(range(2, 19, 2))
+            ax.set_xlim(0, 19)
+            
+            ax.view_init(elev=20, azim=45)
                 
-                # Apply deterministic jitter to discrete trap IDs to separate overlapping points
-                rng = np.random.default_rng(seed=42)
-                jitter_m = rng.uniform(-0.15, 0.15, size=len(trap_ids))
-                jitter_u = rng.uniform(-0.15, 0.15, size=len(trap_ids))
-                
-                # 1. Plot Mechanics on the Left Y-Axis (Blue)
-                color_m = '#1f77b4' 
-                sns.regplot(
-                    x=trap_ids + jitter_m, y=mech_vals, ax=ax1, 
-                    color=color_m, scatter_kws={'alpha': 0.5, 's': 30, 'edgecolor': 'white', 'linewidths': 0.5}, 
-                    line_kws={'lw': 2}
-                )
-                ax1.set_ylabel(m_label, color=color_m, fontweight='bold')
-                ax1.tick_params(axis='y', labelcolor=color_m)
-                
-                # 2. Plot Uptake on the Right Y-Axis (Red)
-                ax2 = ax1.twinx()
-                color_u = '#d62728' 
-                sns.regplot(
-                    x=trap_ids + jitter_u, y=uptake_vals, ax=ax2, 
-                    color=color_u, scatter_kws={'alpha': 0.5, 's': 30, 'edgecolor': 'white', 'linewidths': 0.5}, 
-                    line_kws={'lw': 2, 'ls': '--'}
-                )
-                ax2.set_ylabel(u_label, color=color_u, fontweight='bold')
-                ax2.tick_params(axis='y', labelcolor=color_u)
-                ax2.grid(False) # Turn off grid for second axis to prevent crossing gridlines
-                
-                # 3. Calculate spatial correlations to quantify the trend
-                rho_m, p_m = stats.spearmanr(trap_ids, mech_vals)
-                rho_u, p_u = stats.spearmanr(trap_ids, uptake_vals)
-                
-                annot_text = (
-                    f"Mech vs Trap: $\\rho$={rho_m:.2f} (p={p_m:.2f})\n"
-                    f"Uptk vs Trap: $\\rho$={rho_u:.2f} (p={p_u:.2f})"
-                )
-                
-                ax1.text(0.05, 0.95, annot_text, transform=ax1.transAxes, 
-                        ha='left', va='top', fontsize=9, 
-                        bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.85, ec='gray'), zorder=10)
-                
-                ax1.set_xlabel("Trap ID (1 = Far, 18 = Near Electrode)")
-                
-                # Fix the overlapping x-ticks by forcing intervals of 2
-                ax1.set_xticks(range(2, 19, 2))
-                ax1.set_xlim(0, 19)
-                
-        plt.tight_layout()
-        utils.save_plot_pdf(output_dir / f"Thesis_Spatial_Mech_Uptake_{_safe_filename(bucket)}.pdf")
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        utils.save_plot_pdf(output_dir / f"Thesis_Spatial_Mech_Uptake_3D_{_safe_filename(bucket)}.pdf")
         plt.close()
+        
+
+
+# --------------------------------------------------------------------------
+# Fate cohort histogram
+# --------------------------------------------------------------------------
+def plot_thesis_fate_counts(mechanics_df: pd.DataFrame,
+                             attrition_df: pd.DataFrame,
+                             output_dir: Path) -> None:
+    """
+    Grouped bar chart: count of intact (no label) vs ruptured-post (_R) cells
+    per pulse condition, with the pre-pulse-rupture (_R0) count shown as a
+    third bar for context.
+
+    Only two categories affect the analysis cohort:
+        intact          <- mechanics_df where Fate_Status == 'intact'
+        ruptured_post   <- mechanics_df where Fate_Status == 'ruptured_post'
+
+    A third informational bar is drawn from the attrition tally:
+        ruptured_pre_pulse (_R0)  <- pre-aspiration rupture, excluded from
+                                     analysis but relevant to the
+                                     "fraction ruptured per pulse regime"
+                                     framing.
+
+    All other attrition buckets (non_viable, post_pulse_arrival,
+    detection_failure) are excluded per the current chapter scope.
+
+    ASP cells are dropped because "pulse regime" is the grouping axis;
+    ASP has no pulse.
+    """
+    if mechanics_df is None or mechanics_df.empty:
+        logger.warning("Fate histogram skipped: mechanics_df is empty.")
+        return
+    if 'Fate_Status' not in mechanics_df.columns:
+        logger.warning("Fate histogram skipped: no Fate_Status column.")
+        return
+
+    ep_mech = mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP'].copy()
+    if ep_mech.empty:
+        logger.warning("Fate histogram skipped: no EP cells in mechanics_df.")
+        return
+
+    # Count intact / ruptured_post per Duration_label
+    counts_analysis = (
+        ep_mech.groupby(['Duration_label', 'Fate_Status'])
+        .size()
+        .unstack(fill_value=0)
+    )
+    # Ensure both columns exist so downstream indexing is safe
+    for col in ('intact', 'ruptured_post'):
+        if col not in counts_analysis.columns:
+            counts_analysis[col] = 0
+
+    # Pull _R0 counts from attrition, restricted to EP experiments
+    r0_counts = pd.Series(dtype=int)
+    if attrition_df is not None and not attrition_df.empty:
+        ep_att = attrition_df.loc[attrition_df['Condition_Type'] == 'EP']
+        if not ep_att.empty and 'ruptured_pre_pulse' in ep_att.columns:
+            r0_counts = ep_att.groupby('Duration_label')['ruptured_pre_pulse'].sum()
+
+    # Combine into a single tidy DataFrame keyed by Duration_label
+    durations = sorted(
+        set(counts_analysis.index) | set(r0_counts.index),
+        key=_duration_sort_key,
+    )
+    tidy = pd.DataFrame({
+        'intact'            : [counts_analysis.get('intact',        pd.Series()).get(d, 0) for d in durations],
+        'ruptured_post'     : [counts_analysis.get('ruptured_post', pd.Series()).get(d, 0) for d in durations],
+        'ruptured_pre_pulse': [int(r0_counts.get(d, 0))                                     for d in durations],
+    }, index=durations)
+
+    # ---- Draw ------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(5.02, 3.2))
+    x       = np.arange(len(durations))
+    width   = 0.27
+
+    colours = {
+        'intact'            : '#4C78A8',   # analysis-in blue
+        'ruptured_post'     : '#E15759',   # ruptured red
+        'ruptured_pre_pulse': '#B0B0B0',   # excluded grey
+    }
+    labels = {
+        'intact'            : 'Intact',
+        'ruptured_post'     : 'Ruptured (post-pulse)',
+        'ruptured_pre_pulse': 'Ruptured (pre-pulse, excluded)',
+    }
+
+    for i, key in enumerate(('intact', 'ruptured_post', 'ruptured_pre_pulse')):
+        offset = (i - 1) * width
+        bars = ax.bar(x + offset, tidy[key].to_numpy(),
+                      width=width, color=colours[key], label=labels[key],
+                      edgecolor='white', linewidth=0.6)
+        # Value labels above each bar
+        for rect, val in zip(bars, tidy[key].to_numpy()):
+            if val > 0:
+                ax.text(rect.get_x() + rect.get_width() / 2,
+                        rect.get_height(),
+                        f"{int(val)}",
+                        ha='center', va='bottom', fontsize=8)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(durations)
+    ax.set_xlabel("Pulse duration")
+    ax.set_ylabel("Cell count")
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend(frameon=False, fontsize=8, loc='upper right')
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_Fate_Counts_by_Pulse.pdf")
+    plt.close()
+
+    # Also drop the counts alongside the figure so the numbers can be quoted
+    tidy_out = tidy.copy()
+    tidy_out.index.name = 'Duration_label'
+    tidy_out['analysis_total']       = tidy_out['intact'] + tidy_out['ruptured_post']
+    tidy_out['fraction_ruptured']    = np.where(
+        tidy_out['analysis_total'] > 0,
+        tidy_out['ruptured_post'] / tidy_out['analysis_total'],
+        np.nan,
+    )
+    tidy_out.to_csv(output_dir / "Thesis_Fate_Counts_by_Pulse.csv")
+    logger.info(f"Fate histogram written; fractions ruptured: "
+                + ", ".join(f"{d}={f:.2f}" for d, f in tidy_out['fraction_ruptured'].items()
+                            if np.isfinite(f)))
+
+
+def _duration_sort_key(label: str) -> float:
+    """Sort duration labels so 100us < 5ms < 10ms < 100ms etc."""
+    label = str(label).strip().lower()
+    for unit, factor in (('us', 1e-3), ('ms', 1.0), ('s', 1e3)):
+        if label.endswith(unit):
+            try:
+                return float(label[:-len(unit)]) * factor
+            except ValueError:
+                return float('inf')
+    return float('inf')
+
+
+# ==========================================================================
+# BATCH 2 — Claim 2 (sensitivity to biological perturbation)
+# ==========================================================================
+# Colours: WT gets the cool end of the palette, CytD the warm end.
+_TREATMENT_COLOR = {
+    'WT'  : utils.MFA_COLORS['dark_blue'],
+    'CytD': utils.MFA_COLORS['medium_red'],
+}
+_TREATMENT_ORDER = ['WT', 'CytD']
+
+
+def _actin_f0_trace(trap: bfh.TrapData, region: str):
+    """
+    Return (t_seconds, I_over_F0) for one region of one trap, or (None, None).
+
+    region is 'Body' or 'Prot' (matches the CSV column suffix).
+    Time is zero-referenced to the first frame so cross-cell interpolation
+    can share a common axis.
+    """
+    ad = getattr(trap, 'actin_data', {}) or {}
+    if 'Time_s' not in ad:
+        return None, None
+    mean_key = f'Actin_{region}_Mean'
+    f0_key   = f'F0_{region}'
+    if mean_key not in ad or f0_key not in ad:
+        return None, None
+
+    t   = np.asarray(ad['Time_s'], dtype=float)
+    I   = np.asarray(ad[mean_key], dtype=float)
+    F0  = np.asarray(ad[f0_key],   dtype=float)
+
+    if len(t) < 5 or len(I) < 5 or len(F0) == 0:
+        return None, None
+
+    # F0 is stored broadcast; take the first finite positive value.
+    f0_scalar = next((float(v) for v in F0 if np.isfinite(v) and v > 0), None)
+    if f0_scalar is None:
+        return None, None
+
+    valid = np.isfinite(t) & np.isfinite(I)
+    if valid.sum() < 5:
+        return None, None
+    t = t[valid]; I = I[valid]
+
+    return t - t[0], I / f0_scalar
+
+
+def plot_thesis_asp_actin_trace_by_condition(grouped_data: Dict,
+                                              mechanics_df: pd.DataFrame,
+                                              output_dir: Path,
+                                              global_asp_dur: Optional[float] = None) -> None:
+    """
+    Mean ± SD of F0-normalised actin fluorescence during aspiration,
+    WT vs CytD, for the body and protrusion regions.
+
+    Body region is the primary panel (no geometric confound during
+    aspiration).  Protrusion is plotted alongside with a caveat: as L(t)
+    grows, protrusion actin gets stretched along a longer tube, so a
+    drop in the trace mixes actin content changes with geometric dilution.
+    The comparison remains valid across matched conditions.
+    """
+    # Restrict to ASP intact cells only — mechanics_df is the filter.
+    if mechanics_df is None or mechanics_df.empty:
+        logger.warning("Actin trace plot skipped: empty mechanics_df.")
+        return
+
+    asp_pass = mechanics_df.loc[
+        (mechanics_df['Condition_Type'] == 'ASP')
+        & (mechanics_df['Fate_Status'] == 'intact')
+    ]
+    accepted = set(zip(asp_pass['Experiment_Folder'], asp_pass['Trap_ID']))
+    if not accepted:
+        logger.warning("Actin trace plot skipped: no ASP intact cells in mechanics_df.")
+        return
+
+    # Collect per-condition traces
+    by_treatment: Dict[str, Dict[str, list]] = {
+        t: {'Body': [], 'Prot': []} for t in _TREATMENT_ORDER
+    }
+    max_t_seen: float = 0.0
+
+    for gk, traps in grouped_data.items():
+        if not traps or traps[0].metadata.condition_type != 'ASP':
+            continue
+        for trap in traps:
+            key = (trap.metadata.full_path.name, trap.trap_id)
+            if key not in accepted:
+                continue
+            treatment = trap.metadata.treatment
+            if treatment not in by_treatment:
+                continue
+            for region in ('Body', 'Prot'):
+                t, y = _actin_f0_trace(trap, region)
+                if t is None:
+                    continue
+                by_treatment[treatment][region].append((t, y))
+                if len(t) and t[-1] > max_t_seen:
+                    max_t_seen = float(t[-1])
+
+    # Apply the same cross-condition duration cap the mechanics pipeline uses.
+    t_cap = global_asp_dur if global_asp_dur is not None else max_t_seen
+    if t_cap <= 0:
+        logger.warning("Actin trace plot skipped: no valid duration.")
+        return
+
+    # Interpolate each trace onto a common grid, then aggregate.
+    common_t = np.linspace(0.0, t_cap, 60)
+
+    def _aggregate(traces):
+        if not traces:
+            return None, None
+        stack = []
+        for t, y in traces:
+            if t[-1] < t_cap * 0.5:
+                continue   # too short to contribute
+            f = interp1d(t, y, bounds_error=False, fill_value=np.nan,
+                         assume_sorted=True)
+            stack.append(f(common_t))
+        if not stack:
+            return None, None
+        arr = np.vstack(stack)
+        return np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
+
+    # ---- Draw --------------------------------------------------------------
+    fig, axes = plt.subplots(1, 2, figsize=(5.02, 2.8), sharey=True)
+    region_titles = {'Body': 'Body', 'Prot': 'Protrusion'}
+
+    for ax, region in zip(axes, ('Body', 'Prot')):
+        for treatment in _TREATMENT_ORDER:
+            traces = by_treatment[treatment][region]
+            mu, sd = _aggregate(traces)
+            n = len(traces)
+            if mu is None:
+                continue
+            colour = _TREATMENT_COLOR[treatment]
+            ax.plot(common_t, mu, color=colour, lw=1.5,
+                    label=f"{treatment} (n={n})")
+            ax.fill_between(common_t, mu - sd, mu + sd,
+                            color=colour, alpha=0.20, linewidth=0)
+
+        ax.axhline(1.0, color='0.6', lw=0.8, ls='--', zorder=0)
+        ax.set_title(region_titles[region], fontsize=10)
+        ax.set_xlabel("Time from aspiration onset (s)")
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes[0].set_ylabel(r"Actin intensity $I(t)/F_0$")
+    axes[0].legend(frameon=False, fontsize=8, loc='best')
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_Actin_Trace_by_Condition.pdf")
+    plt.close()
+    logger.info("Actin trace plot written.")
+
+
+def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
+                                        output_dir: Path) -> None:
+    """
+    Scatter: pre-pulse actin (F0-normalised) vs elastic modulus E, per cell.
+    Two panels: body and protrusion.  Spearman ρ annotated per treatment.
+
+    Filters to ASP intact cells with a valid viscoelastic fit.
+    """
+    from scipy import stats
+    if mechanics_df is None or mechanics_df.empty:
+        return
+
+    df = mechanics_df.loc[
+        (mechanics_df['Condition_Type'] == 'ASP')
+        & (mechanics_df['Fate_Status'] == 'intact')
+        & mechanics_df['E_Pa'].notna()
+        & (mechanics_df['Visco_R2_Flag'] == True)
+    ].copy()
+
+    if df.empty:
+        logger.warning("Actin-vs-E plot skipped: no ASP intact cells with valid E.")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(5.02, 2.8), sharey=False)
+    for ax, region in zip(axes, ('Body', 'Prot')):
+        actin_col = f'Actin_{region}_PrePulse_F0Norm'
+        if actin_col not in df.columns:
+            continue
+
+        for treatment in _TREATMENT_ORDER:
+            sub = df.loc[df['Treatment'] == treatment,
+                         [actin_col, 'E_Pa']].dropna()
+            if sub.empty:
+                continue
+            colour = _TREATMENT_COLOR[treatment]
+            ax.scatter(sub[actin_col], sub['E_Pa'], s=22,
+                       color=colour, edgecolor='white', linewidths=0.4,
+                       alpha=0.75, label=f"{treatment} (n={len(sub)})")
+
+            if len(sub) >= 5:
+                rho, p = stats.spearmanr(sub[actin_col], sub['E_Pa'])
+                y_anchor = 0.95 if treatment == 'WT' else 0.88
+                ax.text(0.03, y_anchor,
+                        rf"$\rho_{{{treatment}}}={rho:.2f}$ (p={p:.2g})",
+                        transform=ax.transAxes, fontsize=8, color=colour,
+                        va='top')
+
+        ax.set_yscale('log')
+        ax.set_xlabel(rf"Actin $I/F_0$ ({region.lower()}, pre-pulse)")
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes[0].set_ylabel(r"$E$ (Pa)")
+    axes[0].legend(frameon=False, fontsize=8, loc='lower right')
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_Actin_vs_E.pdf")
+    plt.close()
+    logger.info("Actin-vs-E scatter written.")
+
+
+def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
+                                     output_dir: Path) -> None:
+    """
+    Three-panel scatter of ASP quantities vs Trap_ID:
+    (1) Max pre-pulse protrusion length
+    (2) Elastic modulus E
+    (3) Flow viscosity η₁
+
+    Coloured by treatment, Spearman ρ annotated per treatment per panel.
+    Trap number is a proxy for aspiration pressure (3 kPa at trap 1 →
+    1 kPa at trap 18) and for electrode distance.  A flat regression here
+    is what supports the "no meaningful pressure gradient effect" claim.
+    """
+    from scipy import stats
+    if mechanics_df is None or mechanics_df.empty:
+        return
+
+    df = mechanics_df.loc[
+        (mechanics_df['Condition_Type'] == 'ASP')
+        & (mechanics_df['Fate_Status'] == 'intact')
+    ].copy()
+
+    if df.empty:
+        logger.warning("ASP trap dependency plot skipped: no ASP intact cells.")
+        return
+
+    panels = [
+        ('Max_Prot_length_PrePulse_um', 'Protrusion length (µm)',           False),
+        ('E_Pa',                        r"$E$ (Pa)",                        True ),
+        ('eta1_Pa_s',                   r"$\eta_1$ (Pa$\cdot$s)",           True ),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(7.5, 2.6), sharex=True)
+    for ax, (col, ylabel, use_log) in zip(axes, panels):
+        if col not in df.columns:
+            continue
+
+        for treatment in _TREATMENT_ORDER:
+            sub = df.loc[df['Treatment'] == treatment,
+                         ['Trap_ID', col]].dropna()
+            if sub.empty:
+                continue
+            colour = _TREATMENT_COLOR[treatment]
+            ax.scatter(sub['Trap_ID'], sub[col], s=20,
+                       color=colour, edgecolor='white', linewidths=0.4,
+                       alpha=0.75, label=f"{treatment} (n={len(sub)})")
+
+            if len(sub) >= 5:
+                rho, p = stats.spearmanr(sub['Trap_ID'], sub[col])
+                y_anchor = 0.95 if treatment == 'WT' else 0.88
+                ax.text(0.03, y_anchor,
+                        rf"$\rho_{{{treatment}}}={rho:.2f}$ (p={p:.2g})",
+                        transform=ax.transAxes, fontsize=7.5, color=colour,
+                        va='top')
+
+        if use_log:
+            ax.set_yscale('log')
+        ax.set_xlabel("Trap ID")
+        ax.set_ylabel(ylabel)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    axes[0].legend(frameon=False, fontsize=8, loc='best')
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_Trap_Dependency.pdf")
+    plt.close()
+    logger.info("ASP trap-dependency scatter written.")
+
+
+def plot_thesis_asp_body_volume_vs_E(mechanics_df: pd.DataFrame,
+                                      output_dir: Path) -> None:
+    """
+    Sanity check: pre-pulse cell body volume vs elastic modulus E.
+
+    If E correlates with body volume, the "stiffness" readout could
+    partly be picking up cell-size availability of cortical material for
+    the protrusion rather than intrinsic mechanics.  A flat regression
+    supports the intrinsic-mechanics interpretation.
+    """
+    from scipy import stats
+    if mechanics_df is None or mechanics_df.empty:
+        return
+
+    df = mechanics_df.loc[
+        (mechanics_df['Condition_Type'] == 'ASP')
+        & (mechanics_df['Fate_Status'] == 'intact')
+        & mechanics_df['E_Pa'].notna()
+        & (mechanics_df['Visco_R2_Flag'] == True)
+        & mechanics_df['Cell_Body_Volume_PrePulse_um3'].notna()
+    ].copy()
+
+    if df.empty:
+        logger.warning("Body volume vs E plot skipped: no eligible cells.")
+        return
+
+    fig, ax = plt.subplots(figsize=(3.6, 2.8))
+    for treatment in _TREATMENT_ORDER:
+        sub = df.loc[df['Treatment'] == treatment,
+                     ['Cell_Body_Volume_PrePulse_um3', 'E_Pa']].dropna()
+        if sub.empty:
+            continue
+        colour = _TREATMENT_COLOR[treatment]
+        ax.scatter(sub['Cell_Body_Volume_PrePulse_um3'], sub['E_Pa'],
+                   s=22, color=colour, edgecolor='white', linewidths=0.4,
+                   alpha=0.75, label=f"{treatment} (n={len(sub)})")
+
+        if len(sub) >= 5:
+            rho, p = stats.spearmanr(
+                sub['Cell_Body_Volume_PrePulse_um3'], sub['E_Pa'])
+            y_anchor = 0.95 if treatment == 'WT' else 0.88
+            ax.text(0.03, y_anchor,
+                    rf"$\rho_{{{treatment}}}={rho:.2f}$ (p={p:.2g})",
+                    transform=ax.transAxes, fontsize=8, color=colour,
+                    va='top')
+
+    ax.set_xlabel(r"Body volume (µm$^3$, pre-pulse)")
+    ax.set_ylabel(r"$E$ (Pa)")
+    ax.set_yscale('log')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend(frameon=False, fontsize=8, loc='best')
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_BodyVolume_vs_E.pdf")
+    plt.close()
+    logger.info("Body volume vs E scatter written.")
+
+
+def run_thesis_claim2_plots(grouped_data: Dict,
+                             mechanics_df: pd.DataFrame,
+                             output_dir: Path,
+                             global_asp_dur: Optional[float] = None) -> None:
+    """Convenience runner: all Claim 2 (sensitivity) plots."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plot_thesis_asp_actin_trace_by_condition(
+        grouped_data, mechanics_df, output_dir, global_asp_dur)
+    plot_thesis_asp_actin_vs_mechanics(mechanics_df, output_dir)
+    plot_thesis_asp_trap_dependency(mechanics_df, output_dir)
+    plot_thesis_asp_body_volume_vs_E(mechanics_df, output_dir)

@@ -31,7 +31,7 @@ import pandas as pd
 
 if TYPE_CHECKING:
     from FileHandling_MFA import FileRead
-    import Utils_MFA as utils
+    import bulk_utils as utils
 
 logger = logging.getLogger(__name__)
 

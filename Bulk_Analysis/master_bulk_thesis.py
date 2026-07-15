@@ -15,7 +15,7 @@ import pandas as pd
 import bulk_file_handling as bfh
 import bulk_mechanics     as bm
 import thesis_plotting    as tp  
-import Utils_MFA as utils
+import bulk_utils as utils
 
 logging.basicConfig(
     level=logging.INFO,
@@ -221,13 +221,19 @@ def main():
              tp.run_thesis_plots, filtered_grouped_data, mechanics_df, asp_visco_dir, r_eff, global_asp_dur)
 
     # ------------------------------------------------------------------
+    # Claim 2 completion — actin, trap-dependency, body-volume sanity
+    # ------------------------------------------------------------------
+    claim2_dir = results_dir / "claim2_sensitivity"
+    if filtered_grouped_data.keys():
+        _try("Thesis Claim 2 Plots",
+             tp.run_thesis_claim2_plots,
+             filtered_grouped_data, mechanics_df, claim2_dir, global_asp_dur)
+
+    # ------------------------------------------------------------------
     # MI cohort filter (both ASP and EP-pre)
     # ------------------------------------------------------------------
     mi_pass_mask = mechanics_df['MI_Best_Model'].notna() & (mechanics_df['MI_R2_Flag'] == True)
-    
-    if 'Post_Pulse_Entry_Flag' in mechanics_df.columns:
-        mi_pass_mask = mi_pass_mask & (~mechanics_df['Post_Pulse_Entry_Flag'].astype(bool))
-        
+
     ep_treatments = set(
         mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP', 'Treatment'].dropna().unique()
     )
@@ -281,13 +287,40 @@ def main():
         if kept:
             mi_whole_filtered_grouped_data.update({gk: kept})
 
+    # ------------------------------------------------------------------
+    # Attrition CSV (per-experiment tally of every candidate detection file)
+    # ------------------------------------------------------------------
+    attrition_df = loader.get_attrition_df()
+    if not attrition_df.empty:
+        attrition_path = results_dir / "attrition_per_experiment.csv"
+        attrition_df.to_csv(attrition_path, index=False)
+        logger.info(f"Saved attrition tally: {attrition_path.name}  "
+                    f"({len(attrition_df)} experiments)")
+
     if mi_filtered_grouped_data.keys():
         _try("Thesis MI Pre-Pulse Plot Suite",
              tp.run_thesis_mi_prepulse_plots,
              mi_filtered_grouped_data, mechanics_df, mi_prepulse_dir, global_pre_dur)
 
-    if mi_whole_filtered_grouped_data.keys():
-        _try("Thesis MI Whole-Trace Plot Suite",
+    # ------------------------------------------------------------------
+    # Fate cohort histogram: intact vs ruptured counts per pulse condition.
+    # Draws from mechanics_df + attrition_df; no cohort filtering needed.
+    # ------------------------------------------------------------------
+    fate_dir = results_dir / "fate"
+    fate_dir.mkdir(parents=True, exist_ok=True)
+    _try("Fate Histogram", tp.plot_thesis_fate_counts,
+         mechanics_df, attrition_df, fate_dir)
+
+    # ------------------------------------------------------------------
+    # SUPPLEMENTARY: MI whole-trace plots.
+    # With post-pulse-entry cells now excluded upstream, the whole-trace
+    # comparison collapses to a two-bucket (ASP vs EP) view rather than
+    # the three-bucket (ASP / EP-pre / EP-post) view it was designed for.
+    # Kept here behind RUN_SUPPLEMENTARY so it can be produced on demand,
+    # but not part of the default chapter figure set.
+    RUN_SUPPLEMENTARY = False
+    if RUN_SUPPLEMENTARY and mi_whole_filtered_grouped_data.keys():
+        _try("SUPPLEMENTARY: MI Whole-Trace Plot Suite",
              tp.run_thesis_mi_wholetrace_plots,
              mi_whole_filtered_grouped_data, mechanics_df, mi_wholetrace_dir, global_whole_dur)
 

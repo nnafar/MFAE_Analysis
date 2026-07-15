@@ -33,6 +33,63 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _draw_dashed_line(
+    img: np.ndarray,
+    pt1: Tuple[int, int],
+    pt2: Tuple[int, int],
+    color: Tuple[int, int, int],
+    thickness: int = 1,
+    dash_length: int = 8,
+    gap_length: int = 6,
+) -> None:
+    """Draw a dashed straight line between pt1 and pt2 on `img`.
+
+    OpenCV has no native dashed-line primitive, so we walk from pt1 toward pt2
+    in steps of (dash_length + gap_length), drawing a solid segment of length
+    dash_length each step.
+    """
+    x1, y1 = pt1
+    x2, y2 = pt2
+    dx = x2 - x1
+    dy = y2 - y1
+    total_len = float(np.hypot(dx, dy))
+    if total_len < 1e-6:
+        return
+    # Unit vector along the line.
+    ux = dx / total_len
+    uy = dy / total_len
+    step = dash_length + gap_length
+    n_steps = int(total_len // step) + 1
+    for i in range(n_steps):
+        start_dist = i * step
+        end_dist = min(start_dist + dash_length, total_len)
+        seg_start = (int(round(x1 + ux * start_dist)), int(round(y1 + uy * start_dist)))
+        seg_end = (int(round(x1 + ux * end_dist)), int(round(y1 + uy * end_dist)))
+        cv2.line(img, seg_start, seg_end, color, thickness)
+
+
+def _draw_dashed_rectangle(
+    img: np.ndarray,
+    top_left: Tuple[int, int],
+    bottom_right: Tuple[int, int],
+    color: Tuple[int, int, int],
+    thickness: int = 2,
+    dash_length: int = 8,
+    gap_length: int = 6,
+) -> None:
+    """Draw a dashed rectangle by dashing each of its four sides."""
+    x1, y1 = top_left
+    x2, y2 = bottom_right
+    corners = [
+        ((x1, y1), (x2, y1)),  # top
+        ((x2, y1), (x2, y2)),  # right
+        ((x2, y2), (x1, y2)),  # bottom
+        ((x1, y2), (x1, y1)),  # left
+    ]
+    for p1, p2 in corners:
+        _draw_dashed_line(img, p1, p2, color, thickness, dash_length, gap_length)
+
+
 class _RoiSelector:
     """
     Helper class to manage the interactive dragging/resizing of the ROI box.
@@ -816,29 +873,53 @@ class CropImage():
 
 
     def save_trap_map(self, results_dir: Path) -> None:
-        """Saves an image showing the final positions of all confirmed ROIs."""
-        #frame = self.file_reader.read_img(self.file_reader.tif_files[self.setup_frame_index])
+        """Saves an image showing the final positions of all confirmed ROIs.
+
+        Styling rules:
+          - Traps that were selected for analysis are drawn in blue; traps that
+            were detected but not selected for analysis are drawn in gray.
+          - Trap #1 (index 0) is drawn with a dashed border regardless of whether
+            it was selected. Its color follows the rule above.
+        """
         frame = self.file_reader.read_img(self.file_reader.tif_files[0])
         rotated = utils.rotate_image(frame, self.rotation_angle)
-        
+
         # Use the default, not the manually adjusted, enhancement for saving
         self.display_alpha = 1.0
         self.display_beta = 0
         enhanced_frame = self._adjust_brightness_contrast(rotated)
         display = cv2.cvtColor(enhanced_frame, cv2.COLOR_GRAY2BGR)
-        
+
         # Pre-fetch colors
-        c_ref = utils.get_bgr_color('secondary') # Red
-        c_normal = utils.get_ui_color('guide')   # Blue
+        c_processed = utils.get_ui_color('guide')  # Blue — traps chosen for analysis
+        c_unprocessed = (150, 150, 150)            # Neutral gray — traps skipped
+
+        # `selected_traps` may not exist if setup was skipped; treat as empty set.
+        processed = set(getattr(self, 'selected_traps', None) or [])
+
+        thickness = 2
 
         for trap_idx, roi in enumerate(self.all_trap_rois):
-            if roi is None: continue
+            if roi is None:
+                continue
             y_min, y_max, x_min, x_max = roi
-            
-            # Use Red for the first trap (Reference), Blue for others
-            color = c_ref if trap_idx == 0 else c_normal
-            cv2.rectangle(display, (x_min, y_min), (x_max, y_max), color, 2)
-            cv2.putText(display, f"Trap #{trap_idx+1}", (x_min, y_min - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            is_first = (trap_idx == 0)
+            color = c_processed if trap_idx in processed else c_unprocessed
+
+            if is_first:
+                # Dashed border for the first trap.
+                _draw_dashed_rectangle(
+                    display, (x_min, y_min), (x_max, y_max),
+                    color, thickness=thickness, dash_length=8, gap_length=6
+                )
+            else:
+                cv2.rectangle(display, (x_min, y_min), (x_max, y_max), color, thickness)
+
+            cv2.putText(
+                display, f"Trap #{trap_idx+1}",
+                (x_min, y_min - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
+            )
 
         save_path = results_dir / "trap_map.png"
         cv2.imwrite(str(save_path), display)
