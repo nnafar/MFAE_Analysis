@@ -1060,6 +1060,255 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     plt.close()
 
 
+def plot_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
+    """
+    Two-panel per-cell F0 boxplot for the ASP visco-pass cohort:
+    body region (F0_Body) and protrusion region (F0_Prot), split by
+    condition. Uses the same cohort filter as
+    `plot_asp_parameter_boxplots`, so the F0 figure can sit alongside
+    the mechanical boxplots without cohort mismatch.
+    """
+    logger.info("Generating: ASP Actin F0 Boxplots (visco-pass cohort)...")
+
+    df = mechanics_df[
+        (mechanics_df['Condition_Type'] == 'ASP') &
+        mechanics_df['Best_Model'].notna() &
+        mechanics_df['E_Pa'].notna() &
+        (mechanics_df['Visco_R2_Flag'] == True)
+    ].copy()
+
+    if df.empty:
+        logger.info("  No fitted ASP data — skipping.")
+        return
+
+    df['Category'] = df.apply(_asp_category_label_from_row, axis=1)
+    sorted_cats_full = sorted(df['Category'].unique())
+
+    label_map = _reduce_labels(sorted_cats_full)
+    df['Category'] = df['Category'].map(label_map)
+    sorted_cats = [label_map[c] for c in sorted_cats_full]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    panels = [
+        ('F0_Body', r'$F_{0,\mathrm{body}}$ (ADU)', r'Cell-Body Actin Baseline'),
+        ('F0_Prot', r'$F_{0,\mathrm{prot}}$ (ADU)', r'Protrusion Actin Baseline'),
+    ]
+
+    for ax, (col, ylabel, title) in zip(axes, panels):
+        if col not in df.columns:
+            ax.set_visible(False)
+            continue
+
+        sub = df[df[col].notna()]
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+
+        sns.boxplot(data=sub, x='Category', y=col, order=sorted_cats,
+                    ax=ax, showfliers=False, color='lightgray')
+        sns.stripplot(data=sub, x='Category', y=col, order=sorted_cats,
+                      color='black', alpha=0.6, ax=ax, size=5)
+
+        ax.set_title(title, fontweight='bold')
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel("")
+        ax.tick_params(axis='x', rotation=45)
+
+        if (sub[col] > 0).all():
+            ax.set_yscale('log')
+
+        pairs = [(sorted_cats[j], sorted_cats[j + 1])
+                 for j in range(len(sorted_cats) - 1)]
+
+        for cat_a, cat_b in pairs:
+            vals_a = sub.loc[sub['Category'] == cat_a, col].dropna().values
+            vals_b = sub.loc[sub['Category'] == cat_b, col].dropna().values
+            stars, label, lw, delta = _build_stat_label(vals_a, vals_b)
+
+            n_a, n_b = len(vals_a), len(vals_b)
+            logger.info(
+                f"  [{title:<30}] {cat_a} vs {cat_b}: "
+                f"n=({n_a},{n_b})  stars={stars}  delta={delta:+.3f}"
+            )
+
+            if label is None:
+                continue
+
+            x1 = sorted_cats.index(cat_a)
+            x2 = sorted_cats.index(cat_b)
+            y_top = float(np.nanmax(np.concatenate([vals_a, vals_b])))
+            _add_bracket(ax, x1, x2, y_top, label, lw=lw)
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_Actin_F0_Boxplots.pdf",
+                        dpi=SAVE_DPI)
+    plt.close()
+
+
+def _prepulse_visco_category_label(row: pd.Series) -> str:
+    """
+    Fate-aware category label for the three-way pre-pulse viscoelastic
+    boxplot. ASP rows are labelled by treatment (e.g. `ASP WT`,
+    `ASP CytD`), so the CytD baseline can be shown as an optional
+    reference alongside the WT baseline. EP-pre rows are labelled by
+    voltage, duration and fate (e.g. `EP-pre 100V 100us (intact)`).
+    """
+    ct = row.get('Condition_Type')
+    if ct == 'ASP':
+        return f"ASP {row.get('Treatment', '?')}"
+    base = f"EP-pre {row.get('Voltage_V')}V {row.get('Duration_label')}"
+    if row.get('Fate_Status') == "ruptured_post":
+        return f"{base} (ruptured)"
+    return f"{base} (intact)"
+
+
+def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
+                                            output_dir: Path,
+                                            include_cytd: bool = False) -> None:
+    r"""
+    Three-way pre-pulse viscoelastic parameter boxplot on the
+    matched-horizon PrePulse_* fits. Compares ASP WT baseline against
+    EP-pre intact and EP-pre ruptured cohorts using the same
+    viscoelastic descriptors ($E$, $E_{1}$, $\eta_{1}$, $\eta_{2}$,
+    $\tau$) that appear in the aspiration-only subsection, but computed
+    on the fit window truncated to `global_pre_dur` so that all
+    cohorts enter the comparison with matched fit horizons.
+
+    Parameters
+    ----------
+    mechanics_df : pd.DataFrame
+        Bulk mechanics dataframe with PrePulse_* columns populated by
+        `run_all_mechanics`.
+    output_dir : Path
+        Directory in which the PDF is saved.
+    include_cytd : bool, default False
+        If True, the ASP CytD baseline is also shown as a reference.
+        Left False by default because the electroporation experiments
+        were carried out on WT cells only, so the fair between-condition
+        contrast is against ASP WT.
+    """
+    logger.info("Generating: Pre-Pulse Viscoelastic Parameter Boxplots...")
+
+    df = mechanics_df[
+        mechanics_df['PrePulse_Best_Model'].notna() &
+        mechanics_df['PrePulse_E_Pa'].notna() &
+        (mechanics_df['PrePulse_Visco_R2_Flag'] == True)
+    ].copy()
+
+    if not include_cytd:
+        df = df[~((df['Condition_Type'] == 'ASP') &
+                  (df['Treatment'] != 'WT'))].copy()
+
+    if df.empty:
+        logger.info("  No cells pass pre-pulse viscoelastic filter — skipping.")
+        return
+
+    df['Category'] = df.apply(_prepulse_visco_category_label, axis=1)
+
+    asp_cats = sorted(c for c in df['Category'].unique() if c.startswith('ASP'))
+    ep_cats  = sorted(c for c in df['Category'].unique() if c.startswith('EP-pre'))
+    sorted_cats = asp_cats + ep_cats
+
+    panels = [
+        ('PrePulse_E_Pa',        r'$E$ (Pa)',
+         'Parallel Spring Modulus'),
+        ('PrePulse_E1_Pa',       r'$E_{1}$ (Pa)',
+         'Burgers Maxwell Spring\n(Burgers only)'),
+        ('PrePulse_eta1_Pa_s',   r'$\eta_{1}$ (Pa$\cdot$s)',
+         'Parallel Dashpot'),
+        ('PrePulse_eta2_Pa_s',   r'$\eta_{2}$ (Pa$\cdot$s)',
+         'Flow Viscosity\n(Jeffreys / Burgers)'),
+        ('PrePulse_Tau_s',       r'$\tau$ (s)',
+         'Characteristic Time'),
+    ]
+
+    ncols = 3
+    nrows = 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 5 * nrows))
+    axes = axes.flatten()
+
+    for panel_idx, (col, ylabel, title) in enumerate(panels):
+        ax = axes[panel_idx]
+
+        if col not in df.columns:
+            ax.set_visible(False)
+            continue
+
+        sub = df[df[col].notna()]
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+
+        cats_here = [c for c in sorted_cats if c in sub['Category'].values]
+
+        sns.boxplot(data=sub, x='Category', y=col, order=cats_here,
+                    ax=ax, showfliers=False, color='lightgray')
+        sns.stripplot(data=sub, x='Category', y=col, order=cats_here,
+                      hue='PrePulse_Best_Model',
+                      palette=VISCO_MODEL_PALETTE,
+                      alpha=0.75, ax=ax, size=5, dodge=False)
+
+        ax.set_title(title, fontweight='bold')
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel("")
+        ax.tick_params(axis='x', rotation=45)
+
+        if (sub[col] > 0).all():
+            ax.set_yscale('log')
+
+        # Remove default seaborn legend on individual axes
+        leg = ax.get_legend()
+        if leg is not None:
+            leg.remove()
+
+        pairs = [(cats_here[j], cats_here[j + 1])
+                 for j in range(len(cats_here) - 1)]
+
+        for cat_a, cat_b in pairs:
+            vals_a = sub.loc[sub['Category'] == cat_a, col].dropna().values
+            vals_b = sub.loc[sub['Category'] == cat_b, col].dropna().values
+            if len(vals_a) < 2 or len(vals_b) < 2:
+                continue
+            stars, label, lw, delta = _build_stat_label(vals_a, vals_b)
+
+            n_a, n_b = len(vals_a), len(vals_b)
+            logger.info(
+                f"  [{title.replace(chr(10), ' '):<30}] {cat_a} vs {cat_b}: "
+                f"n=({n_a},{n_b})  stars={stars}  delta={delta:+.3f}"
+            )
+
+            if label is None:
+                continue
+
+            x1 = cats_here.index(cat_a)
+            x2 = cats_here.index(cat_b)
+            y_top = float(np.nanmax(np.concatenate([vals_a, vals_b])))
+            _add_bracket(ax, x1, x2, y_top, label, lw=lw)
+
+    # Hide any unused axes
+    for j in range(len(panels), len(axes)):
+        axes[j].set_visible(False)
+
+    # Model-colour legend on the last visible axis position
+    handles = [
+        plt.Line2D([0], [0], marker='o', color='w',
+                   markerfacecolor=VISCO_MODEL_PALETTE.get(m, 'gray'),
+                   markersize=8, label=m)
+        for m in ['Kelvin-Voigt', 'Jeffreys', 'Burgers']
+        if m in VISCO_MODEL_PALETTE
+    ]
+    if handles:
+        fig.legend(handles=handles, loc='lower right',
+                   bbox_to_anchor=(0.98, 0.02), title='Winning model',
+                   frameon=True)
+
+    plt.tight_layout(rect=(0, 0.03, 1, 1))
+    utils.save_plot_pdf(output_dir / "Thesis_PrePulse_Visco_Parameter_Boxplots.pdf",
+                        dpi=SAVE_DPI)
+    plt.close()
+
+
 def plot_model_independent_fits_multipanel(
         grouped_data: Dict, output_dir: Path, global_pre_dur: Optional[float] = None) -> None:
     import bulk_mechanics as bm

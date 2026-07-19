@@ -563,19 +563,27 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         'Visco_AICc'        : None,
         'Visco_DW'          : None,
         'Visco_R2_Flag'     : None,
-        'MI_R2_Flag'        : None,
+        # Pre-pulse-matched-window viscoelastic fits. For ASP cells the
+        # window is truncated from aspiration onset to `global_pre_dur`
+        # (matching the horizon available to EP-pre cells). For EP cells
+        # the window is the pre-pulse segment up to `global_pre_dur`
+        # before the pulse. Both cohorts therefore enter the pre-pulse
+        # three-way comparison (ASP vs EP-intact vs EP-ruptured) with
+        # matched fit horizons. The long-window ASP fits above remain
+        # untouched and continue to serve the aspiration-only subsection.
+        'PrePulse_Best_Model'  : None,
+        'PrePulse_E_Pa'        : None,
+        'PrePulse_E1_Pa'       : None,
+        'PrePulse_eta1_Pa_s'   : None,
+        'PrePulse_eta2_Pa_s'   : None,
+        'PrePulse_Tau_s'       : None,
+        'PrePulse_Visco_R2'    : None,
+        'PrePulse_Visco_AICc'  : None,
+        'PrePulse_Visco_DW'    : None,
+        'PrePulse_Visco_R2_Flag': None,
+        'PrePulse_Visco_Window_Duration_s': None,
+        'PrePulse_Visco_N_Points': None,
         'MI_Whole_R2_Flag'  : None,
-        'MI_Best_Model'         : None,
-        'Linear_Slope'          : None,
-        'Linear_Intercept'      : None,
-        'Linear_R2'             : None,
-        'Linear_AICc'           : None,
-        'PL_a'                  : None,
-        'PL_b'                  : None,
-        'PL_R2'                 : None,
-        'PL_AICc'               : None,
-        'MI_Window_Duration_s'  : None,
-        'MI_N_Points'           : None,
         'MI_Whole_Best_Model'         : None,
         'MI_Whole_Linear_Slope'       : None,
         'MI_Whole_Linear_Intercept'   : None,
@@ -744,41 +752,89 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
                         'Tau_s'    : tau_val,
                     })
 
-    mi_fit = {'linear': None, 'power_law': None, 'best_model': None, 'window_duration_s': None, 'n_fit_points': 0}
-    if is_asp:
-        t_mi = time_raw - time_raw[0]
-        if global_pre_dur is not None:
-            win_mask = t_mi <= global_pre_dur
-        else:
-            win_mask = np.ones_like(t_mi, dtype=bool)
-            
-        if win_mask.sum() >= 15:
-            mi_fit = fit_model_independent(t_mi[win_mask], length_raw[win_mask])
-    elif is_ep_standard and pf_valid:
-        t_aligned = time_raw - time_raw[pf]
-        pre_mask  = (t_aligned < 0) & (length_raw > 0)
-        if global_pre_dur is not None:
-            pre_mask = pre_mask & (t_aligned >= -global_pre_dur)
-            
-        if np.sum(pre_mask) >= 15:
-            t_pre  = t_aligned[pre_mask]
-            t_pre  = t_pre - t_pre[0]
-            l_pre  = length_raw[pre_mask]
-            mi_fit = fit_model_independent(t_pre, l_pre)
+    # -------------------------------------------------------------------
+    # Pre-pulse-matched viscoelastic fits.
+    # ASP cells are re-fit on the shorter `global_pre_dur` window so the
+    # ASP viscoelastic parameters can be placed alongside EP-pre fits on
+    # a matched horizon in the paired mechanical-electroporation
+    # subsection. EP-pre cells are fit on the aspiration segment that
+    # precedes the pulse (also capped at `global_pre_dur`). Results are
+    # written to PrePulse_* columns and do not overwrite the long-window
+    # ASP fits above.
+    # -------------------------------------------------------------------
+    t_pp_visco = None
+    l_pp_visco = None
 
-    row['MI_Best_Model'] = mi_fit.get('best_model')
-    if mi_fit['linear']:
-        row['Linear_Slope']     = mi_fit['linear']['params']['slope']
-        row['Linear_Intercept'] = mi_fit['linear']['params']['intercept']
-        row['Linear_R2']        = mi_fit['linear']['r2']
-        row['Linear_AICc']      = mi_fit['linear']['aicc']
-    if mi_fit['power_law']:
-        row['PL_a']  = mi_fit['power_law']['params']['a']
-        row['PL_b']  = mi_fit['power_law']['params']['exponent_b']
-        row['PL_R2'] = mi_fit['power_law']['r2']
-        row['PL_AICc'] = mi_fit['power_law']['aicc']
-    row['MI_Window_Duration_s'] = mi_fit.get('window_duration_s')
-    row['MI_N_Points']          = mi_fit.get('n_fit_points')
+    if is_asp:
+        t_asp_zero = time_raw - time_raw[0]
+        if global_pre_dur is not None:
+            pp_mask = t_asp_zero <= global_pre_dur
+        else:
+            pp_mask = np.ones_like(t_asp_zero, dtype=bool)
+
+        if pp_mask.sum() >= 15:
+            t_pp_visco = time_raw[pp_mask]
+            l_pp_visco = length_raw[pp_mask]
+
+    elif is_ep_standard and pf_valid:
+        t_aligned_pp = time_raw - time_raw[pf]
+        pre_mask_pp  = (t_aligned_pp < 0) & (length_raw > 0)
+        if global_pre_dur is not None:
+            pre_mask_pp = pre_mask_pp & (t_aligned_pp >= -global_pre_dur)
+
+        if np.sum(pre_mask_pp) >= 15:
+            t_pp_visco = time_raw[pre_mask_pp]
+            l_pp_visco = length_raw[pre_mask_pp]
+
+    if t_pp_visco is not None and len(t_pp_visco) >= 15:
+        t_pp_zero = t_pp_visco - t_pp_visco[0]
+        pp_visco = fit_viscoelastic(t_pp_zero, l_pp_visco, r_eff, meta.pressure, C)
+
+        if pp_visco['best_model']:
+            row['PrePulse_Best_Model'] = pp_visco['best_model']
+            row['PrePulse_Visco_R2']   = pp_visco['best_r2']
+            row['PrePulse_Visco_AICc'] = pp_visco['best_aicc']
+            row['PrePulse_Visco_DW']   = pp_visco['best_dw']
+            row['PrePulse_Visco_R2_Flag'] = (
+                pp_visco['best_r2'] >= r2_floor
+                if pp_visco['best_r2'] is not None else False
+            )
+            row['PrePulse_Visco_Window_Duration_s'] = float(t_pp_zero[-1] - t_pp_zero[0])
+            row['PrePulse_Visco_N_Points'] = int(len(t_pp_zero))
+
+            pp_best_p = pp_visco['best_params']
+            if pp_visco['best_model'] == 'Kelvin-Voigt':
+                E_pp   = pp_best_p['E']
+                eta_pp = pp_best_p['eta']
+                row['PrePulse_E_Pa']      = E_pp
+                row['PrePulse_eta1_Pa_s'] = eta_pp
+                row['PrePulse_Tau_s']     = (
+                    (3 * math.pi * eta_pp) / (C * E_pp) if E_pp else None
+                )
+            elif pp_visco['best_model'] == 'Jeffreys':
+                E_pp    = pp_best_p['E']
+                eta1_pp = pp_best_p['eta1']
+                eta2_pp = pp_best_p['eta2']
+                row['PrePulse_E_Pa']      = E_pp
+                row['PrePulse_eta1_Pa_s'] = eta1_pp
+                row['PrePulse_eta2_Pa_s'] = eta2_pp
+                row['PrePulse_Tau_s']     = (
+                    (3 * math.pi * eta1_pp) / (C * E_pp) if E_pp else None
+                )
+            elif pp_visco['best_model'] == 'Burgers':
+                E1_mw_pp   = pp_best_p.get('E1')
+                E2_val_pp  = pp_best_p.get('E2')
+                eta2_kv_pp = pp_best_p.get('eta2')
+                eta1_mw_pp = pp_best_p.get('eta1')
+                tau_val_pp = (
+                    (3 * math.pi * eta2_kv_pp) / (C * E2_val_pp)
+                    if E2_val_pp and eta2_kv_pp else None
+                )
+                row['PrePulse_E_Pa']      = E2_val_pp
+                row['PrePulse_E1_Pa']     = E1_mw_pp
+                row['PrePulse_eta1_Pa_s'] = eta2_kv_pp
+                row['PrePulse_eta2_Pa_s'] = eta1_mw_pp
+                row['PrePulse_Tau_s']     = tau_val_pp
 
     t_whole = time_raw - time_raw[0]
     if global_whole_dur is not None:
@@ -825,21 +881,6 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
             else:
                 row['EP_Post_Pulse_Behavior'] = 'Stable'
                 
-    # Evaluate MI Pre-Pulse / ASP Flag
-    mi_best = row.get('MI_Best_Model')
-    if mi_best == 'Linear':
-        mi_r2 = row.get('Linear_R2')
-    elif mi_best == 'Power-Law':
-        mi_r2 = row.get('PL_R2')
-    else:
-        mi_r2 = None
-
-    if mi_r2 is not None:
-        thresh = mi_r2_floor_ep if meta.condition_type == 'EP' else mi_r2_floor_asp
-        row['MI_R2_Flag'] = bool(mi_r2 >= thresh)
-    else:
-        row['MI_R2_Flag'] = False
-
     # Evaluate MI Whole-Trace Flag
     mi_whole_best = row.get('MI_Whole_Best_Model')
     if mi_whole_best == 'Linear':

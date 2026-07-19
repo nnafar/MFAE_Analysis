@@ -70,8 +70,15 @@ def main():
     mechanics_dir     = results_dir / "mechanics"
     claim1_dir        = results_dir / "claim1_asp"
     claim2_dir        = results_dir / "claim2_ep_vs_asp"
-    supp_dir          = results_dir / "supplementary"
-    for d in (mechanics_dir, claim1_dir, claim2_dir, supp_dir):
+
+    # Set up the three main timelines, without hardcoding the condition subfolders here.
+    # The plotting functions will create ASP, 100V_100us, or combined dynamically.
+    prepulse_dir       = claim2_dir / "pre-pulse"
+    at_pulse_dir       = claim2_dir / "at_pulse"
+    whole_trace_dir    = claim2_dir / "whole-trace"
+
+    for d in (mechanics_dir, claim1_dir, claim2_dir,
+              prepulse_dir, at_pulse_dir, whole_trace_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Results will be saved to: {results_dir}")
@@ -220,22 +227,15 @@ def main():
         _try("Thesis Plot Suite",
              tp.run_thesis_plots, filtered_grouped_data, mechanics_df, claim1_dir, r_eff, global_asp_dur)
 
-    # ------------------------------------------------------------------
-    # Claim 1 completion — actin, trap-dependency, body-volume sanity.
-    # These are ASP-only figures showing that the platform detects the
-    # CytD softening and that the readout doesn't confound with trap
-    # position; body volume vs E is intentionally shown even though it
-    # is not null (see chapter interpretation).
-    # ------------------------------------------------------------------
     if filtered_grouped_data.keys():
         _try("Thesis Claim 1 Plots",
              tp.run_thesis_claim1_plots,
              filtered_grouped_data, mechanics_df, claim1_dir, global_asp_dur)
 
     # ------------------------------------------------------------------
-    # MI cohort filter (both ASP and EP-pre)
+    # Pre-pulse cohort filter
     # ------------------------------------------------------------------
-    mi_pass_mask = mechanics_df['MI_Best_Model'].notna() & (mechanics_df['MI_R2_Flag'] == True)
+    pp_pass_mask = mechanics_df['PrePulse_Best_Model'].notna() & (mechanics_df['PrePulse_Visco_R2_Flag'] == True)
 
     ep_treatments = set(
         mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP', 'Treatment'].dropna().unique()
@@ -247,18 +247,18 @@ def main():
         )
         keep_non_asp = mechanics_df['Condition_Type'] != 'ASP'
         common_conditions_mask = asp_treatment_matches | keep_non_asp
-        mi_pass_mask = mi_pass_mask & common_conditions_mask
+        pp_pass_mask = pp_pass_mask & common_conditions_mask
 
-    mi_accepted_pairs = set(zip(
-        mechanics_df.loc[mi_pass_mask, 'Experiment_Folder'],
-        mechanics_df.loc[mi_pass_mask, 'Trap_ID'],
+    pp_accepted_pairs = set(zip(
+        mechanics_df.loc[pp_pass_mask, 'Experiment_Folder'],
+        mechanics_df.loc[pp_pass_mask, 'Trap_ID'],
     ))
 
-    mi_filtered_grouped_data = DiskBackedDict(results_dir / "cache_mi")
+    mi_filtered_grouped_data = DiskBackedDict(results_dir / "cache_prepulse")
     for gk, traps in all_grouped_data.items():
         kept = [
             t for t in traps
-            if (t.metadata.full_path.name, t.trap_id) in mi_accepted_pairs
+            if (t.metadata.full_path.name, t.trap_id) in pp_accepted_pairs
         ]
         if kept:
             mi_filtered_grouped_data.update({gk: kept})
@@ -301,39 +301,42 @@ def main():
                     f"({len(attrition_df)} experiments)")
 
     if mi_filtered_grouped_data.keys():
-        _try("Thesis MI Pre-Pulse Plot Suite",
+        _try("Thesis Pre-Pulse Plot Suite",
              tp.run_thesis_mi_prepulse_plots,
-             mi_filtered_grouped_data, mechanics_df, claim2_dir, global_pre_dur)
+             mi_filtered_grouped_data, mechanics_df,
+             prepulse_dir, global_pre_dur)
 
     # ------------------------------------------------------------------
     # Claim 2 core — fate-mechanics story (Batch 3a).
-    # Uses the FULL grouped data (not the MI-filtered subset) so ruptured
-    # EP cells are visible.  Filtering by fate + MI R² happens inside the
-    # plot functions.
     # ------------------------------------------------------------------
     _try("Thesis Claim 2 Core Plots",
          tp.run_thesis_claim2_plots,
-         all_grouped_data, mechanics_df, claim2_dir, global_whole_dur)
+         all_grouped_data, mechanics_df,
+         prepulse_dir, global_whole_dur, whole_trace_dir)
 
     # ------------------------------------------------------------------
-    # Fate cohort histogram: intact vs ruptured counts per pulse condition.
-    # Belongs to Claim 2 (irreversible vs reversible electroporation).
+    # Fate cohort figures
     # ------------------------------------------------------------------
-    _try("Fate Histogram", tp.plot_thesis_fate_counts,
-         mechanics_df, attrition_df, claim2_dir)
+    _try("Fate Pies",       tp.plot_thesis_fate_counts,
+         mechanics_df, attrition_df, at_pulse_dir)
+    _try("Fate Per Trap",   tp.plot_thesis_fate_per_trap,
+         mechanics_df, at_pulse_dir)
 
     # ------------------------------------------------------------------
-    # SUPPLEMENTARY: MI whole-trace plots.
-    # With post-pulse-entry cells now excluded upstream, the whole-trace
-    # comparison collapses to a two-bucket (ASP vs EP) view rather than
-    # the three-bucket (ASP / EP-pre / EP-post) view it was designed for.
-    # Kept here behind RUN_SUPPLEMENTARY so it can be produced on demand,
-    # but not part of the default chapter figure set.
-    RUN_SUPPLEMENTARY = False
-    if RUN_SUPPLEMENTARY and mi_whole_filtered_grouped_data.keys():
-        _try("SUPPLEMENTARY: MI Whole-Trace Plot Suite",
+    # Claim 2 EP-uptake / actin figures (Batch 3b):
+    # ------------------------------------------------------------------
+    _try("Thesis Claim 2 Uptake / Actin Plots",
+         tp.run_thesis_claim2_uptake_actin_plots,
+         all_grouped_data, mechanics_df, at_pulse_dir)
+
+    # ------------------------------------------------------------------
+    # Whole-trace MI plots
+    # ------------------------------------------------------------------
+    if mi_whole_filtered_grouped_data.keys():
+        _try("Whole-Trace MI Plot Suite",
              tp.run_thesis_mi_wholetrace_plots,
-             mi_whole_filtered_grouped_data, mechanics_df, supp_dir, global_whole_dur)
+             mi_whole_filtered_grouped_data, mechanics_df,
+             whole_trace_dir, global_whole_dur)
 
     logger.info("\n=== THESIS ANALYSIS COMPLETE ===")
 
