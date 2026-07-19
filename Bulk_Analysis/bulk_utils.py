@@ -122,6 +122,220 @@ MFA_COLORS = {
     'time_gradient_end':   '#B31529'
 }
 
+# =============================================================================
+# THESIS-WIDE STYLE GRAMMAR (cell type x EP protocol x fate)
+# =============================================================================
+# Every categorical plot in Chapter 3 obeys one grammar so a reader can
+# decode any figure without a legend lookup:
+#
+#   - CELL TYPE sets the MARKER.
+#       WT   -> circle
+#       CytD -> square
+#
+#   - (CELL TYPE, PROTOCOL) sets the COLOUR.
+#       WT   ramp: near-black -> mid blue -> sky blue (ASP -> 5 ms -> 100 us)
+#       CytD ramp: dark red   -> mid red  -> light red (ASP -> 5 ms -> 100 us)
+#     Darkness maps to protocol slot the same way across both cell types,
+#     so a dark tone always means ASP and a light tone always means the
+#     shortest pulse, regardless of cell type.
+#
+#   - FATE sets FILL (for markers/wedges) and LINESTYLE (for line traces).
+#       intact         -> filled marker, no edge; solid line; solid wedge/bar
+#       ruptured_post  -> open marker (face='none', coloured edge);
+#                         dashed line; hatched wedge/bar in the same colour
+#
+#   - EXCLUDED (aggregate of attrition buckets) stays neutral grey in
+#     stacked bars and pies. It has no marker/line role.
+#
+# ASP-BASELINE ROLE. When a WT-ASP or CytD-ASP cohort appears alongside EP
+# cohorts as a control baseline (not as a condition being compared),
+# helpers accept `is_baseline=True` and drop the alpha to
+# MFA_STYLE_BASELINE_ALPHA so the reader can see it is background context.
+# The colour and marker stay on-grammar so the cell-type identity is
+# preserved.
+#
+# NOTE ON MFA_COLORS. The grammar defines its own hex values in
+# MFA_STYLE_COLOR rather than aliasing keys from MFA_COLORS, because the
+# canonical WT-ASP colour (#1a243d, near-black blue) is NOT present in
+# MFA_COLORS (whose 'dark_blue' is #1065AB, the saturated blue used for
+# UI overlays and mid-shade WT-5ms in the grammar).
+#
+# Model-fit palettes (Linear vs Power-Law, Kelvin-Voigt/Jeffreys/Burgers)
+# and the region palette (Body/Protrusion/Total) are orthogonal to this
+# grammar and are unaffected.
+
+# ---- Canonical keys -------------------------------------------------------
+STYLE_CELL_TYPES = ('WT', 'CytD')
+STYLE_PROTOCOLS  = ('ASP', '5ms', '100us')
+STYLE_FATES      = ('intact', 'ruptured_post')
+
+# ---- Colour: (cell_type, protocol) -> hex ---------------------------------
+MFA_STYLE_COLOR = {
+    ('WT',   'ASP'):   '#1a243d',  # near-black blue  -- WT aspiration only
+    ('WT',   '5ms'):   '#1065AB',  # medium blue      -- WT 5 ms EP
+    ('WT',   '100us'): '#5DA5D5',  # sky blue         -- WT 100 us EP
+    ('CytD', 'ASP'):   '#B31529',  # dark red         -- CytD aspiration only
+    ('CytD', '5ms'):   '#D75F4C',  # medium red       -- CytD 5 ms EP
+    ('CytD', '100us'): '#F6A482',  # light red        -- CytD 100 us EP
+}
+
+# ---- Marker: cell_type -> matplotlib marker symbol ------------------------
+MFA_STYLE_MARKER = {
+    'WT':   'o',
+    'CytD': 's',
+}
+
+# ---- Excluded-fate neutral grey (bars and pies only) ----------------------
+MFA_STYLE_EXCLUDED_COLOR = '#B0B0B0'
+
+# ---- Hatch patterns for pie/bar wedges by fate ---------------------------
+# The intact cohort is the "positive result" that should draw the eye
+# first, so intact wedges/bars are solid colour with a WHITE forward-slash
+# hatch cutting through them (dense, colourful, visually loud).
+#
+# Ruptured wedges/bars are recessive: no colour fill, just backward-slash
+# diagonal lines in the condition colour so they read as "the outline of
+# what was there" rather than as another loud category.
+#
+# Excluded stays neutral grey with no hatch (see MFA_STYLE_EXCLUDED_COLOR).
+MFA_STYLE_INTACT_HATCH   = '///'    # solid colour + white forward slashes
+MFA_STYLE_RUPTURED_HATCH = '\\\\\\'  # no fill + colour backward slashes
+
+# ---- Alpha for ASP baseline shown alongside EP cohorts -------------------
+# Full grammar for standalone ASP plots, dimmed for baseline role.
+MFA_STYLE_BASELINE_ALPHA = 0.5
+
+# ---- Line width and marker edge width defaults ---------------------------
+MFA_STYLE_MARKER_EDGE_LW = 1.2
+MFA_STYLE_LINE_LW        = 1.8
+
+
+def get_protocol_key(meta: Any) -> str:
+    """
+    Return the canonical protocol slot for one ExperimentMetadata record.
+
+    'ASP'   if the trap is aspiration-only (no EP pulse applied)
+    '5ms'   if the EP pulse duration_label is '5ms'
+    '100us' if the EP pulse duration_label is '100us'
+
+    Falls back to the raw duration_label if it is something else, and
+    logs a warning so a config typo is visible instead of silent.
+    """
+    if getattr(meta, 'condition_type', None) == 'ASP':
+        return 'ASP'
+    dl = getattr(meta, 'duration_label', None)
+    if dl in ('5ms', '100us'):
+        return dl
+    logger.warning("get_protocol_key: unknown duration_label %r; "
+                   "returning it unchanged.", dl)
+    return str(dl)
+
+
+def get_style_color(cell_type: str, protocol: str) -> str:
+    """
+    Canonical colour for a (cell_type, protocol) pair.
+
+    Unknown pairs return a neutral grey and log a warning, so a mistyped
+    key shows up as a visibly wrong plot rather than a crash mid-figure.
+    """
+    key = (cell_type, protocol)
+    if key not in MFA_STYLE_COLOR:
+        logger.warning("get_style_color: unknown (cell_type, protocol) = %s. "
+                       "Falling back to neutral grey.", key)
+        return '#808080'
+    return MFA_STYLE_COLOR[key]
+
+
+def get_style_marker(cell_type: str) -> str:
+    """Canonical marker symbol for a cell type."""
+    if cell_type not in MFA_STYLE_MARKER:
+        logger.warning("get_style_marker: unknown cell_type %r; "
+                       "falling back to 'x'.", cell_type)
+        return 'x'
+    return MFA_STYLE_MARKER[cell_type]
+
+
+def get_scatter_kwargs(cell_type: str, protocol: str,
+                       fate: str = 'intact',
+                       size: float = 36.0,
+                       is_baseline: bool = False) -> Dict[str, Any]:
+    """
+    Kwargs bundle for ax.scatter that encodes (cell_type, protocol, fate).
+
+        intact         -> filled marker, no edge
+        ruptured_post  -> open marker (facecolors='none'), coloured edge
+
+    `size` is passed straight through as matplotlib's `s` (marker area in
+    points^2, NOT diameter). Default 36 = 6 pt visual diameter.
+
+    `is_baseline=True` dims the marker to MFA_STYLE_BASELINE_ALPHA for use
+    when an ASP cohort appears alongside EP cohorts as background context.
+    """
+    color  = get_style_color(cell_type, protocol)
+    marker = get_style_marker(cell_type)
+    alpha  = MFA_STYLE_BASELINE_ALPHA if is_baseline else 1.0
+    if fate == 'ruptured_post':
+        return dict(marker=marker, s=size,
+                    facecolors='none', edgecolors=color,
+                    linewidths=MFA_STYLE_MARKER_EDGE_LW,
+                    alpha=alpha)
+    return dict(marker=marker, s=size,
+                facecolors=color, edgecolors='none',
+                linewidths=0, alpha=alpha)
+
+
+def get_line_kwargs(cell_type: str, protocol: str,
+                    fate: str = 'intact',
+                    size: float = 6.0,
+                    is_baseline: bool = False) -> Dict[str, Any]:
+    """
+    Kwargs bundle for ax.plot that encodes (cell_type, protocol, fate).
+
+        intact         -> solid line, filled marker, no marker edge
+        ruptured_post  -> dashed line, open marker, coloured marker edge
+
+    Colour applies to both the line and the marker so a legend proxy can
+    be built with the same colour argument.
+
+    `is_baseline=True` dims the line to MFA_STYLE_BASELINE_ALPHA.
+    """
+    color  = get_style_color(cell_type, protocol)
+    marker = get_style_marker(cell_type)
+    alpha  = MFA_STYLE_BASELINE_ALPHA if is_baseline else 1.0
+    if fate == 'ruptured_post':
+        return dict(color=color, linestyle='--', lw=MFA_STYLE_LINE_LW,
+                    marker=marker, markerfacecolor='none',
+                    markeredgecolor=color,
+                    markeredgewidth=MFA_STYLE_MARKER_EDGE_LW,
+                    markersize=size, alpha=alpha)
+    return dict(color=color, linestyle='-', lw=MFA_STYLE_LINE_LW,
+                marker=marker, markerfacecolor=color,
+                markeredgecolor='none', markeredgewidth=0,
+                markersize=size, alpha=alpha)
+
+
+def get_bar_kwargs(cell_type: str, protocol: str,
+                   fate: str = 'intact') -> Dict[str, Any]:
+    """
+    Kwargs bundle for ax.bar / plt.pie wedges.
+
+        intact         -> solid fill in the condition colour, no hatch.
+                          Reads as the loud, dense category so intact
+                          wedges catch the eye first.
+        ruptured_post  -> NO colour fill, edge and hatch in the condition
+                          colour (MFA_STYLE_RUPTURED_HATCH). Reads as the
+                          recessive "outline" category.
+
+    For the "excluded" bucket, callers pass MFA_STYLE_EXCLUDED_COLOR as
+    facecolor directly rather than going through this helper.
+    """
+    color = get_style_color(cell_type, protocol)
+    if fate == 'ruptured_post':
+        return dict(facecolor='white', edgecolor=color,
+                    hatch=MFA_STYLE_RUPTURED_HATCH, linewidth=1.0)
+    return dict(facecolor=color, edgecolor=color, linewidth=0.6)
+
+
 def hex_to_bgr(hex_color: str) -> Tuple[int, int, int]:
     """Converts hex string to BGR tuple for OpenCV."""
     hex_color = hex_color.lstrip('#')
@@ -145,30 +359,78 @@ def get_bgr_color(color_name: str) -> Tuple[int, int, int]:
     hex_val = MFA_COLORS.get(color_name, MFA_COLORS['white'])
     return hex_to_bgr(hex_val)
 
-def set_paper_style(base_fontsize: int = 14, dpi: int = 300) -> None:
-    """Applies publication-quality style to Matplotlib plots."""
-    plt.rcdefaults() 
+# --- Marker & linestyle cycles for group-by-condition figures ---------------
+# Used across boxplots/stripplots (markers) and mean-trace overlays
+# (linestyles) so that groups remain distinguishable in greyscale prints
+# and for colour-blind readers. Cycles wrap when the number of groups
+# exceeds the palette length.
+MFA_MARKERS = ('o', 's', '^', 'D', 'v', 'P', '*', 'X')
+MFA_LINESTYLES = ('-', '--', ':', '-.', (0, (3, 1, 1, 1)), (0, (5, 1)))
+
+
+def get_group_marker(i: int) -> str:
+    """Return the i-th marker from MFA_MARKERS (wraps modulo length)."""
+    return MFA_MARKERS[i % len(MFA_MARKERS)]
+
+
+def get_group_linestyle(i: int):
+    """Return the i-th linestyle from MFA_LINESTYLES (wraps modulo length)."""
+    return MFA_LINESTYLES[i % len(MFA_LINESTYLES)]
+
+
+def set_paper_style(base_fontsize: int = 12, dpi: int = 300) -> None:
+    """
+    Publication-quality Matplotlib style, sized to stay legible when a
+    figure is placed on an A5 page.
+
+    A5 is ~148 mm wide. With a typical LaTeX \\includegraphics scale of
+    0.8-0.95, the on-page width is roughly 120-140 mm; at that width a
+    tick label smaller than 8 pt starts to become uncomfortable to read.
+    We therefore set the base font size to 12 pt (axes labels), 14 pt
+    (titles), and 10 pt (legends/ticks), which keeps the text readable
+    after scaling and still leaves room for annotations.
+
+    The default cycler combines the MFA blue-to-red colour palette with
+    the marker and linestyle cycles, so grouped line/scatter plots
+    differ by colour, symbol AND stroke pattern out of the box (colour-
+    blind fallback, greyscale legibility).
+    """
+    plt.rcdefaults()
     mpl.rcParams.update({
-        'font.family': 'sans-serif',
-        'font.sans-serif': ['Arial', 'DejaVu Sans'],
-        'font.size': base_fontsize,
-        'axes.labelsize': base_fontsize,
-        'axes.titlesize': base_fontsize + 2,
+        'font.family':      'sans-serif',
+        'font.sans-serif':  ['Arial', 'DejaVu Sans'],
+        'font.size':        base_fontsize,
+        'axes.labelsize':   base_fontsize,
+        'axes.titlesize':   base_fontsize + 2,
         'axes.titleweight': 'bold',
-        'legend.fontsize': base_fontsize - 2,
-        'legend.frameon': True,
-        'figure.dpi': dpi,
+        'xtick.labelsize':  base_fontsize - 2,
+        'ytick.labelsize':  base_fontsize - 2,
+        'legend.fontsize':  base_fontsize - 2,
+        'legend.frameon':   True,
+        'figure.dpi':       dpi,
+        'savefig.dpi':      dpi,
         'figure.facecolor': 'white',
-        'axes.spines.top': False,
+        'axes.spines.top':   False,
         'axes.spines.right': False,
-        'grid.alpha': 0.4,
-        'grid.color': MFA_COLORS['grid'],
-        'lines.linewidth': 2.5,
-        'axes.prop_cycle': mpl.cycler(color=[
-            MFA_COLORS['primary'],    # Black
-            MFA_COLORS['secondary'],  # Medium Red
-            MFA_COLORS['tertiary']    # Dark Blue
-        ])
+        'grid.alpha':       0.4,
+        'grid.color':       MFA_COLORS['grid'],
+        'lines.linewidth':  2.0,
+        'lines.markersize': 6,
+        # Blue-to-red colour cycle paired with linestyle & marker cycles.
+        # Six entries so grouped plots have distinct symbols out to n=6
+        # before wrapping.
+        'axes.prop_cycle': (
+            mpl.cycler(color=[
+                MFA_COLORS['dark_blue'],
+                MFA_COLORS['medium_blue'],
+                MFA_COLORS['medium_red'],
+                MFA_COLORS['dark_red'],
+                MFA_COLORS['light_blue'],
+                MFA_COLORS['light_red'],
+            ])
+            + mpl.cycler(linestyle=list(MFA_LINESTYLES[:6]))
+            + mpl.cycler(marker=list(MFA_MARKERS[:6]))
+        ),
     })
 
 def get_time_colormap(n_steps: int) -> List[Tuple[float, float, float, float]]:

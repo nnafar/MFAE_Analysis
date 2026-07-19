@@ -977,14 +977,38 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     axes = axes.flatten()
 
+    # Panel titles / y-labels aligned with plot_prepulse_visco_parameter_boxplots
+    # so the ASP-only figure and the pre-pulse figure can be read side-by-side
+    # without translating between different names for the same parameter.
     panels = [
-        ('E_Pa',      r'E / E$_2$ (Pa)',  r'KV Spring Modulus (E/E$_2$)'),
-        ('E1_Pa',     r'E$_1$ (Pa)',      "Maxwell Spring E$_1$\n(Burgers only)"),
-        ('Tau_s',     r'$\tau$ (s)',      r'Creep Time Constant $\tau$'),
-        ('eta1_Pa_s', r'$\eta_1$ (Pa$\cdot$s)', r'Parallel Viscosity $\eta_1$'),
-        ('eta2_Pa_s', r'$\eta_2$ (Pa$\cdot$s)', "Flow Viscosity $\eta_2$\n(Jeffreys / Burgers)"),
+        ('E_Pa',      r'$E$ (Pa)',                'Parallel Spring Modulus'),
+        ('E1_Pa',     r'$E_{1}$ (Pa)',            'Burgers Maxwell Spring\n(Burgers only)'),
+        ('eta1_Pa_s', r'$\eta_{1}$ (Pa$\cdot$s)', 'Parallel Dashpot'),
+        ('eta2_Pa_s', r'$\eta_{2}$ (Pa$\cdot$s)', 'Flow Viscosity\n(Jeffreys / Burgers)'),
+        ('Tau_s',     r'$\tau$ (s)',              'Characteristic Time'),
     ]
     
+    # Grammar-based per-treatment tint and marker. Best_Model info is
+    # preserved separately in Thesis_ASP_Visco_Model_Selection_Frequency
+    # (stacked-bar figure below), so we free the scatter's colour and
+    # marker axis to encode Treatment: colour = (Treatment, 'ASP'),
+    # marker = circle for WT, square for CytD.
+    from matplotlib.colors import to_rgba
+
+    def _tint(hex_color: str, alpha: float = 0.30) -> tuple:
+        r, g, b, _ = to_rgba(hex_color)
+        return (r, g, b, alpha)
+
+    def _cat_to_treatment(cat_label: str) -> str:
+        tok = str(cat_label).split('_')[0].split(' ')[0]
+        return tok if tok in ('WT', 'CytD') else 'WT'
+
+    cat_treatment = {c: _cat_to_treatment(c) for c in sorted_cats}
+    box_palette   = {c: _tint(utils.get_style_color(cat_treatment[c], 'ASP'), 0.25)
+                     for c in sorted_cats}
+    box_edges     = {c: utils.get_style_color(cat_treatment[c], 'ASP')
+                     for c in sorted_cats}
+
     for i, ax in enumerate(axes):
         if i >= len(panels):
             ax.set_visible(False)
@@ -997,11 +1021,26 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
             continue
 
         sns.boxplot(data=sub, x='Category', y=col, order=sorted_cats,
-                    ax=ax, showfliers=False, color='lightgray')
-        sns.stripplot(data=sub, x='Category', y=col, order=sorted_cats,
-                      hue='Best_Model',
-                      palette=VISCO_MODEL_PALETTE,
-                      dodge=False, alpha=0.6, ax=ax, size=5)
+                    ax=ax, showfliers=False,
+                    palette=box_palette, hue='Category', legend=False)
+        # Sharp grammar-colour edges on the tinted boxes
+        for patch, cat in zip(ax.patches, sorted_cats):
+            e = box_edges.get(cat)
+            if e is not None:
+                patch.set_edgecolor(e)
+
+        # One stripplot per category so we can vary marker per Treatment.
+        # Points carry the fully-saturated grammar colour so they read
+        # clearly against the tinted box.
+        for cat in sorted_cats:
+            cat_sub = sub[sub['Category'] == cat]
+            if cat_sub.empty:
+                continue
+            t = cat_treatment[cat]
+            c = utils.get_style_color(t, 'ASP')
+            m = utils.get_style_marker(t)
+            sns.stripplot(data=cat_sub, x='Category', y=col, order=sorted_cats,
+                          color=c, marker=m, alpha=0.75, ax=ax, size=6)
 
         ax.set_title(title, fontweight='bold')
         ax.set_ylabel(ylabel)
@@ -1039,7 +1078,7 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
                 legend.remove()
 
     plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "ASP_Parameter_Boxplots.pdf", dpi=SAVE_DPI)
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_Visco_Parameter_Boxplots.pdf", dpi=SAVE_DPI)
     plt.close()
 
     model_counts = (df.groupby(['Category', 'Best_Model'])
@@ -1056,7 +1095,7 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     plt.xlabel("")
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "ASP_Model_Selection_Frequency.pdf", dpi=SAVE_DPI)
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_Visco_Model_Selection_Frequency.pdf", dpi=SAVE_DPI)
     plt.close()
 
 
@@ -1088,6 +1127,27 @@ def plot_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> 
     df['Category'] = df['Category'].map(label_map)
     sorted_cats = [label_map[c] for c in sorted_cats_full]
 
+    # Grammar-based per-category palette and markers. The category label
+    # comes from _asp_category_label_from_row, e.g. 'WT_None_1100Pa' or
+    # 'CytD_CytD_1100Pa', then may be shortened by _reduce_labels. We
+    # parse the leading token to determine the Treatment and route
+    # through (Treatment, 'ASP') colour + Treatment marker.
+    from matplotlib.colors import to_rgba
+
+    def _tint(hex_color: str, alpha: float = 0.30) -> tuple:
+        r, g, b, _ = to_rgba(hex_color)
+        return (r, g, b, alpha)
+
+    def _cat_to_treatment(cat_label: str) -> str:
+        tok = str(cat_label).split('_')[0].split(' ')[0]
+        return tok if tok in ('WT', 'CytD') else 'WT'
+
+    cat_treatment = {c: _cat_to_treatment(c) for c in sorted_cats}
+    box_palette   = {c: _tint(utils.get_style_color(cat_treatment[c], 'ASP'), 0.25)
+                     for c in sorted_cats}
+    box_edges     = {c: utils.get_style_color(cat_treatment[c], 'ASP')
+                     for c in sorted_cats}
+
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     panels = [
@@ -1106,9 +1166,25 @@ def plot_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> 
             continue
 
         sns.boxplot(data=sub, x='Category', y=col, order=sorted_cats,
-                    ax=ax, showfliers=False, color='lightgray')
-        sns.stripplot(data=sub, x='Category', y=col, order=sorted_cats,
-                      color='black', alpha=0.6, ax=ax, size=5)
+                    ax=ax, showfliers=False,
+                    palette=box_palette, hue='Category', legend=False)
+        # Set box edge colour to the fully-saturated grammar colour so
+        # the boxes read as sharp against the tinted fill.
+        for patch, cat in zip(ax.patches, sorted_cats):
+            e = box_edges.get(cat)
+            if e is not None:
+                patch.set_edgecolor(e)
+
+        # Points: one stripplot per category with its own marker + colour.
+        for cat in sorted_cats:
+            cat_sub = sub[sub['Category'] == cat]
+            if cat_sub.empty:
+                continue
+            t = cat_treatment[cat]
+            c = utils.get_style_color(t, 'ASP')
+            m = utils.get_style_marker(t)
+            sns.stripplot(data=cat_sub, x='Category', y=col, order=sorted_cats,
+                          color=c, marker=m, alpha=0.75, ax=ax, size=5)
 
         ax.set_title(title, fontweight='bold')
         ax.set_ylabel(ylabel)
@@ -1223,6 +1299,46 @@ def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
          'Characteristic Time'),
     ]
 
+    # Grammar-based per-category style. Categories from
+    # _prepulse_visco_category_label are:
+    #   'ASP WT'                          -> (WT,   'ASP')
+    #   'ASP CytD'                        -> (CytD, 'ASP')
+    #   'EP-pre 100V 100us (intact)'      -> (WT,   '100us'), intact fate
+    #   'EP-pre 100V 100us (ruptured)'    -> (WT,   '100us'), ruptured fate
+    #   'EP-pre 100V 5ms (...)' similarly.
+    # ASP and intact draw with a solid fill in the (treatment, protocol)
+    # colour and matching edge; ruptured cohorts draw as white face with
+    # a coloured backslash hatch and coloured edge. EP cohort is WT-only
+    # per include_cytd default; if that ever changes the parser would
+    # need Treatment info in the category label too.
+    def _cat_to_grammar(cat_label: str) -> tuple:
+        """Return (treatment, protocol, fate) for a category label."""
+        s = str(cat_label)
+        if s.startswith('ASP '):
+            tok = s.split(' ', 1)[1].strip()
+            treatment = tok if tok in ('WT', 'CytD') else 'WT'
+            return (treatment, 'ASP', 'intact')
+        # EP-pre 100V {dur} (intact|ruptured)
+        protocol = '100us' if '100us' in s else ('5ms' if '5ms' in s else 'ASP')
+        fate = 'ruptured_post' if '(ruptured)' in s else 'intact'
+        return ('WT', protocol, fate)
+
+    cat_grammar = {c: _cat_to_grammar(c) for c in sorted_cats}
+    box_face   = {}
+    box_edges  = {}
+    box_hatches = {}
+    for c in sorted_cats:
+        t, p, f = cat_grammar[c]
+        col = utils.get_style_color(t, p)
+        if f == 'ruptured_post':
+            box_face[c]    = 'white'
+            box_edges[c]   = col
+            box_hatches[c] = utils.MFA_STYLE_RUPTURED_HATCH
+        else:
+            box_face[c]    = col
+            box_edges[c]   = col
+            box_hatches[c] = ''
+
     ncols = 3
     nrows = 2
     fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 5 * nrows))
@@ -1243,11 +1359,31 @@ def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
         cats_here = [c for c in sorted_cats if c in sub['Category'].values]
 
         sns.boxplot(data=sub, x='Category', y=col, order=cats_here,
-                    ax=ax, showfliers=False, color='lightgray')
-        sns.stripplot(data=sub, x='Category', y=col, order=cats_here,
-                      hue='PrePulse_Best_Model',
-                      palette=VISCO_MODEL_PALETTE,
-                      alpha=0.75, ax=ax, size=5, dodge=False)
+                    ax=ax, showfliers=False,
+                    palette={c: box_face[c] for c in cats_here},
+                    hue='Category', legend=False)
+        # Apply grammar edge colour and (for ruptured) hatch after
+        # seaborn has drawn the boxes.
+        for patch, cat in zip(ax.patches, cats_here):
+            e = box_edges.get(cat)
+            h = box_hatches.get(cat, '')
+            if e is not None:
+                patch.set_edgecolor(e)
+            if h:
+                patch.set_hatch(h)
+                patch.set_facecolor('white')
+
+        # One stripplot per category so marker follows Treatment.
+        for cat in cats_here:
+            cat_sub = sub[sub['Category'] == cat]
+            if cat_sub.empty:
+                continue
+            t, p, _f = cat_grammar[cat]
+            c_hex = utils.get_style_color(t, p)
+            m_sym = utils.get_style_marker(t)
+            sns.stripplot(data=cat_sub, x='Category', y=col, order=cats_here,
+                          color=c_hex, marker=m_sym,
+                          alpha=0.75, ax=ax, size=6)
 
         ax.set_title(title, fontweight='bold')
         ax.set_ylabel(ylabel)

@@ -71,15 +71,65 @@ def main():
     claim1_dir        = results_dir / "claim1_asp"
     claim2_dir        = results_dir / "claim2_ep_vs_asp"
 
-    # Set up the three main timelines, without hardcoding the condition subfolders here.
-    # The plotting functions will create ASP, 100V_100us, or combined dynamically.
+    # claim1_asp/ is split by treatment. WT/ and CytD/ hold single-
+    # condition figures (per-condition trap boxplots, per-condition
+    # best-fit multipanels); combined/ holds every cross-treatment
+    # figure (protrusion overlay, parameter boxplots, actin-vs-mechanics,
+    # trap dependency, body volume vs E, protrusion length vs mechanics).
+    claim1_wt_dir       = claim1_dir / "WT"
+    claim1_cytd_dir     = claim1_dir / "CytD"
+    claim1_combined_dir = claim1_dir / "combined"
+
+    # claim2_ep_vs_asp/ is split three ways along the analysis timeline
+    # (pre-pulse / at-pulse / whole-trace). pre-pulse/ has a per-
+    # condition subfolder (100V_100us, 100V_5ms), an ASP/ subfolder for
+    # the ASP baseline plots that are pulse-independent but shown next
+    # to the pulse cohorts, and a combined/ subfolder for cross-cohort
+    # comparisons. at-pulse/ and whole-trace/ follow the same shape but
+    # without an ASP subfolder (they are pulse-aligned by definition).
     prepulse_dir       = claim2_dir / "pre-pulse"
     at_pulse_dir       = claim2_dir / "at_pulse"
     whole_trace_dir    = claim2_dir / "whole-trace"
 
-    for d in (mechanics_dir, claim1_dir, claim2_dir,
-              prepulse_dir, at_pulse_dir, whole_trace_dir):
+    prepulse_100us_dir   = prepulse_dir / "100V_100us"
+    prepulse_5ms_dir     = prepulse_dir / "100V_5ms"
+    prepulse_asp_dir     = prepulse_dir / "ASP"
+    prepulse_combined_dir= prepulse_dir / "combined"
+
+    at_pulse_100us_dir   = at_pulse_dir / "100V_100us"
+    at_pulse_5ms_dir     = at_pulse_dir / "100V_5ms"
+    at_pulse_combined_dir= at_pulse_dir / "combined"
+
+    whole_trace_100us_dir   = whole_trace_dir / "100V_100us"
+    whole_trace_5ms_dir     = whole_trace_dir / "100V_5ms"
+    whole_trace_combined_dir= whole_trace_dir / "combined"
+
+    for d in (mechanics_dir,
+              claim1_wt_dir, claim1_cytd_dir, claim1_combined_dir,
+              prepulse_100us_dir, prepulse_5ms_dir, prepulse_asp_dir, prepulse_combined_dir,
+              at_pulse_100us_dir, at_pulse_5ms_dir, at_pulse_combined_dir,
+              whole_trace_100us_dir, whole_trace_5ms_dir, whole_trace_combined_dir):
         d.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Routing maps consumed by the plot suites. Each map keys a small
+    # folder-token onto the destination Path. Plot functions fall back
+    # to their `output_dir` argument when the token is missing, so
+    # additions of new keys don't break anything.
+    # ------------------------------------------------------------------
+    claim1_treatment_map = {
+        'WT'  : claim1_wt_dir,
+        'CytD': claim1_cytd_dir,
+    }
+    prepulse_bucket_map = {
+        'ASP'  : prepulse_asp_dir,
+        '100us': prepulse_100us_dir,
+        '5ms'  : prepulse_5ms_dir,
+    }
+    at_pulse_duration_map = {
+        '100us': at_pulse_100us_dir,
+        '5ms'  : at_pulse_5ms_dir,
+    }
 
     logger.info(f"Results will be saved to: {results_dir}")
 
@@ -224,16 +274,34 @@ def main():
             filtered_grouped_data.update({gk: kept})
 
     if filtered_grouped_data.keys():
+        # Cross-treatment ASP figures land in claim1_combined_dir; per-
+        # treatment trap boxplots and best-fit multipanels are routed
+        # via claim1_treatment_map into claim1_wt_dir / claim1_cytd_dir.
         _try("Thesis Plot Suite",
-             tp.run_thesis_plots, filtered_grouped_data, mechanics_df, claim1_dir, r_eff, global_asp_dur)
+             tp.run_thesis_plots,
+             filtered_grouped_data, mechanics_df,
+             claim1_combined_dir, r_eff, global_asp_dur,
+             claim1_treatment_map)
 
+    # ------------------------------------------------------------------
+    # Claim 1 completion — actin, trap-dependency, body-volume sanity.
+    # These are ASP-only figures showing that the platform detects the
+    # CytD softening and that the readout doesn't confound with trap
+    # position; body volume vs E is intentionally shown even though it
+    # is not null (see chapter interpretation). All are cross-treatment
+    # so they go to claim1_combined_dir.
+    # ------------------------------------------------------------------
     if filtered_grouped_data.keys():
         _try("Thesis Claim 1 Plots",
              tp.run_thesis_claim1_plots,
-             filtered_grouped_data, mechanics_df, claim1_dir, global_asp_dur)
+             filtered_grouped_data, mechanics_df,
+             claim1_combined_dir, global_asp_dur,
+             claim1_treatment_map)
 
     # ------------------------------------------------------------------
-    # Pre-pulse cohort filter
+    # Pre-pulse cohort filter (both ASP and EP-pre): now uses the
+    # matched-window viscoelastic fits (PrePulse_Visco_R2_Flag) instead
+    # of the old model-independent pre-pulse fits.
     # ------------------------------------------------------------------
     pp_pass_mask = mechanics_df['PrePulse_Best_Model'].notna() & (mechanics_df['PrePulse_Visco_R2_Flag'] == True)
 
@@ -301,42 +369,69 @@ def main():
                     f"({len(attrition_df)} experiments)")
 
     if mi_filtered_grouped_data.keys():
+        # Cross-cohort pre-pulse figures land in prepulse_combined_dir;
+        # per-bucket Thesis_MI_Boxplot_*.pdf files are routed via
+        # prepulse_bucket_map into ASP/, 100V_100us/, 100V_5ms/.
         _try("Thesis Pre-Pulse Plot Suite",
              tp.run_thesis_mi_prepulse_plots,
              mi_filtered_grouped_data, mechanics_df,
-             prepulse_dir, global_pre_dur)
+             prepulse_combined_dir, global_pre_dur,
+             prepulse_bucket_map)
 
     # ------------------------------------------------------------------
     # Claim 2 core — fate-mechanics story (Batch 3a).
+    # Uses the FULL grouped data (not the pre-pulse-filtered subset) so
+    # ruptured EP cells are visible. Filtering by fate + fit quality
+    # happens inside each plot function. Pre-pulse fate boxplot lands
+    # under pre-pulse/combined/, whole-trace fate boxplot and the
+    # whole-trace-by-fate trace plot land under whole-trace/combined/.
     # ------------------------------------------------------------------
     _try("Thesis Claim 2 Core Plots",
          tp.run_thesis_claim2_plots,
          all_grouped_data, mechanics_df,
-         prepulse_dir, global_whole_dur, whole_trace_dir)
+         prepulse_combined_dir, global_whole_dur, whole_trace_combined_dir,
+         global_pre_dur)
 
     # ------------------------------------------------------------------
-    # Fate cohort figures
+    # Fate cohort figures: pie chart per pulse condition + per-trap
+    # intact/ruptured stacked bar per pulse condition. Both belong to
+    # the at-pulse timeline slice; per-condition PDFs go into
+    # 100V_100us/ and 100V_5ms/ via at_pulse_duration_map, while the
+    # cross-condition CSV (Thesis_Fate_Counts_by_Pulse.csv) stays in
+    # at_pulse_combined_dir.
     # ------------------------------------------------------------------
     _try("Fate Pies",       tp.plot_thesis_fate_counts,
-         mechanics_df, attrition_df, at_pulse_dir)
+         mechanics_df, attrition_df, at_pulse_combined_dir,
+         at_pulse_duration_map)
     _try("Fate Per Trap",   tp.plot_thesis_fate_per_trap,
-         mechanics_df, at_pulse_dir)
+         mechanics_df, at_pulse_combined_dir,
+         at_pulse_duration_map)
 
     # ------------------------------------------------------------------
     # Claim 2 EP-uptake / actin figures (Batch 3b):
+    #   - Mean WT volume-normalised uptake trace I(t) across ASP / 100us / 5ms
+    #   - Paired pre/post actin boxplots per treatment × pulse
+    #   - Time-resolved mean actin trace aligned to the pulse frame
+    # These use the full grouped data because they need the per-trap
+    # actin / uptake CSVs; filtering to the analysis cohort happens
+    # inside each plot function via mechanics_df. Routed to at-pulse
+    # combined since all three are aligned to the pulse.
     # ------------------------------------------------------------------
     _try("Thesis Claim 2 Uptake / Actin Plots",
          tp.run_thesis_claim2_uptake_actin_plots,
-         all_grouped_data, mechanics_df, at_pulse_dir)
+         all_grouped_data, mechanics_df, at_pulse_combined_dir,
+         at_pulse_duration_map)
 
     # ------------------------------------------------------------------
-    # Whole-trace MI plots
+    # Whole-trace MI plots (was: supplementary/, now: whole-trace/combined/).
+    # Includes the 5ms cohort which is too short pre-pulse for a matched
+    # viscoelastic fit but produces usable whole-trace MI fits.
     # ------------------------------------------------------------------
     if mi_whole_filtered_grouped_data.keys():
         _try("Whole-Trace MI Plot Suite",
              tp.run_thesis_mi_wholetrace_plots,
              mi_whole_filtered_grouped_data, mechanics_df,
-             whole_trace_dir, global_whole_dur)
+             whole_trace_combined_dir, global_whole_dur)
 
     logger.info("\n=== THESIS ANALYSIS COMPLETE ===")
 
