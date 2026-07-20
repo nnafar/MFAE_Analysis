@@ -1022,7 +1022,7 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
 
         sns.boxplot(data=sub, x='Category', y=col, order=sorted_cats,
                     ax=ax, showfliers=False,
-                    palette=box_palette, hue='Category', legend=False)
+                    palette=box_palette, hue='Category', legend=False, dodge=False)
         # Sharp grammar-colour edges on the tinted boxes
         for patch, cat in zip(ax.patches, sorted_cats):
             e = box_edges.get(cat)
@@ -1167,7 +1167,7 @@ def plot_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> 
 
         sns.boxplot(data=sub, x='Category', y=col, order=sorted_cats,
                     ax=ax, showfliers=False,
-                    palette=box_palette, hue='Category', legend=False)
+                    palette=box_palette, hue='Category', legend=False, dodge=False)
         # Set box edge colour to the fully-saturated grammar colour so
         # the boxes read as sharp against the tinted fill.
         for patch, cat in zip(ax.patches, sorted_cats):
@@ -1361,7 +1361,7 @@ def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
         sns.boxplot(data=sub, x='Category', y=col, order=cats_here,
                     ax=ax, showfliers=False,
                     palette={c: box_face[c] for c in cats_here},
-                    hue='Category', legend=False)
+                    hue='Category', legend=False, dodge=False)
         # Apply grammar edge colour and (for ruptured) hatch after
         # seaborn has drawn the boxes.
         for patch, cat in zip(ax.patches, cats_here):
@@ -1372,6 +1372,7 @@ def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
             if h:
                 patch.set_hatch(h)
                 patch.set_facecolor('white')
+                
 
         # One stripplot per category so marker follows Treatment.
         for cat in cats_here:

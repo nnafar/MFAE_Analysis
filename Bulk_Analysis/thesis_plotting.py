@@ -17,6 +17,7 @@ import bulk_file_handling as bfh
 import bulk_mechanics as bm
 import bulk_plotting as bp
 import bulk_utils as utils
+from thesis_plotting_actin_by_fate import register_by_fate_actin_plots
 
 logger = logging.getLogger(__name__)
 utils.set_paper_style()
@@ -252,15 +253,9 @@ def plot_asp_protrusion_dynamics(grouped_data: Dict,
             c_sd = data['sd']
 
             # Route colour + marker through the (Treatment, ASP) grammar.
-            # cond_label is like 'WT_None_1100Pa_ASP' or 'CytD_CytD_1100Pa_ASP'.
-            # First token is the Treatment.
-            cell_type = cond_label.split('_')[0]
-            if cell_type not in ('WT', 'CytD'):
-                logger.warning(
-                    "Combined ASP dynamics: cell_type %r not in grammar; "
-                    "falling back to WT-ASP colour/marker.", cell_type
-                )
-                cell_type = 'WT'
+            # Searches the condition label string safely for the treatment token
+            cell_type = 'CytD' if 'CytD' in cond_label else 'WT'
+            
             color  = utils.get_style_color(cell_type, 'ASP')
             marker = utils.get_style_marker(cell_type)
             legend_label = _legend_map.get(_stripped[cond_label], _stripped[cond_label])
@@ -572,19 +567,24 @@ def _parse_bucket_to_style(bucket_label: str) -> Tuple[str, str]:
 def _cell_type_from_grouped_data(grouped_data: Dict) -> str:
     """
     Best-effort inference of cell type from a `grouped_data` payload.
-    Grabs the first available trap's metadata.cell_type / .treatment.
-    Falls back to 'WT' and warns if nothing is identifiable.
     """
-    for key in grouped_data:
+    for key in grouped_data.keys(): # <-- Added .keys() to prevent KeyError: 0
         traps = grouped_data[key]
         if not traps:
             continue
         meta = traps[0].metadata
-        # Try both attribute names since ExperimentMetadata may use either
-        ct = getattr(meta, 'cell_type', None) or getattr(meta, 'treatment', None)
+        
+        # Prioritize 'treatment' which holds 'WT' or 'CytD' in this dataset
+        ct = getattr(meta, 'treatment', None)
         if ct in ('WT', 'CytD'):
             return ct
-    logger.warning("_cell_type_from_grouped_data: could not infer cell_type; "
+            
+        # Fallback to cell_type just in case
+        ct_alt = getattr(meta, 'cell_type', None)
+        if ct_alt in ('WT', 'CytD'):
+            return ct_alt
+            
+    logger.warning("_cell_type_from_grouped_data: could not infer treatment; "
                    "defaulting to 'WT'.")
     return 'WT'
 
@@ -1138,24 +1138,17 @@ def _wholetrace_bucket_order(buckets_present: list) -> list:
     ep_post  = sorted(b for b in buckets_present if b.startswith('EP-post'))
     return (['ASP'] if 'ASP' in buckets_present else []) + ep_whole + ep_post
 
-def plot_thesis_mi_wholetrace_parameter_boxplots(mechanics_df: pd.DataFrame,
-                                                 output_dir: Path) -> None:
-    logger.info("Generating Thesis Plot: MI Whole-Trace Parameter Boxplots (ASP + EP-whole + EP-post)...")
-
+def plot_thesis_mi_wholetrace_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     df = mechanics_df.copy()
     df = df[df['MI_Whole_Best_Model'].notna() & (df['MI_Whole_R2_Flag'] == True)].copy()
     df = _restrict_to_common_ep_treatments(df)
 
-    if df.empty:
-        logger.info("  No traps pass MI_Whole cohort filter — skipping.")
-        return
+    if df.empty: return
 
     df['Bucket'] = df.apply(_row_bucket_wholetrace_fate, axis=1)
     order = _wholetrace_bucket_order(df['Bucket'].unique().tolist())
 
-    if not order:
-        logger.info("  No buckets to plot — skipping.")
-        return
+    if not order: return
 
     bucket_dur_labels = {}
     dur_col = 'MI_Whole_Window_Duration_s'
@@ -1164,74 +1157,77 @@ def plot_thesis_mi_wholetrace_parameter_boxplots(mechanics_df: pd.DataFrame,
         if len(durs) == 0:
             bucket_dur_labels[bucket] = ''
             continue
-        med = float(np.median(durs))
-        q1  = float(np.percentile(durs, 25))
-        q3  = float(np.percentile(durs, 75))
-        lo  = float(np.min(durs))
-        hi  = float(np.max(durs))
+        med, q1, q3, lo, hi = float(np.median(durs)), float(np.percentile(durs, 25)), float(np.percentile(durs, 75)), float(np.min(durs)), float(np.max(durs))
         bucket_dur_labels[bucket] = f"med {med:.0f}s\n[{lo:.0f}–{hi:.0f}]"
 
     df['Winner_Slope_Whole'] = df.apply(_mi_whole_winner_slope, axis=1)
 
-    # Grammar-based tinted boxes so a reader can tell 100us from 5ms and
-    # intact from ruptured at a glance. Bucket labels are of the form
-    # 'ASP', 'EP-whole 100V 100us (intact)', 'EP-post 100V 5ms (ruptured)',
-    # etc. Parsed via _parse_bucket_to_style; ruptured gets a \\\ hatch.
     from matplotlib.colors import to_rgba
-
+    from matplotlib.patches import PathPatch, Rectangle
     def _tint(hex_color: str, alpha: float = 0.30) -> tuple:
         r, g, b, _ = to_rgba(hex_color)
         return (r, g, b, alpha)
 
-    box_palette = {}
-    box_hatches = {}
-    box_edges   = {}
+    box_face, box_edge, box_hatch = {}, {}, {}
     for b in order:
         if b == 'ASP':
             edge = utils.get_style_color('WT', 'ASP')
-            box_palette[b] = _tint(edge, 0.25)
-            box_edges[b]   = edge
-            box_hatches[b] = ''
+            box_face[b]  = edge # Solid Dark Blue defined for WT ASP
+            box_edge[b]  = edge
+            box_hatch[b] = ''
         else:
             protocol, fate = _parse_bucket_to_style(b)
             edge = utils.get_style_color('WT', protocol)
-            box_palette[b] = _tint(edge, 0.30)
-            box_edges[b]   = edge
-            box_hatches[b] = utils.MFA_STYLE_RUPTURED_HATCH if fate == 'ruptured_post' else ''
+            box_edge[b] = edge
+            if fate == 'ruptured_post':
+                box_face[b]  = 'white'
+                box_hatch[b] = utils.MFA_STYLE_RUPTURED_HATCH
+            else:
+                box_face[b]  = _tint(edge, 0.30)
+                box_hatch[b] = ''
 
     fig_w = max(12, 2.4 * len(order) + 4)
     fig, axes = plt.subplots(1, 2, figsize=(fig_w, 6))
 
     panels = [
-        ('Winner_Slope_Whole',
-         r'Rate: $m$ (µm/s) if Linear;  $b$ (–) if Power-Law',
-         'Slope (winner-model)', False, False),
-        ('MI_Whole_PL_a',
-         r'Amplitude $a$ (µm)',
-         'Power-Law amplitude a (PL winners only)', True, True),
+        ('Winner_Slope_Whole', r'Rate: $m$ (µm/s) if Linear;  $b$ (–) if Power-Law', 'Slope (winner-model)', False, False),
+        ('MI_Whole_PL_a', r'Amplitude $a$ (µm)', 'Power-Law amplitude a (PL winners only)', True, True),
     ]
 
     for i, (col, ylabel, title, log_y, pl_only) in enumerate(panels):
         ax = axes[i]
         sub = df[df[col].notna()].copy()
-        if pl_only:
-            sub = sub[sub['MI_Whole_Best_Model'] == 'Power-Law']
+        if pl_only: sub = sub[sub['MI_Whole_Best_Model'] == 'Power-Law']
         if sub.empty:
             ax.set_visible(False)
             continue
 
-        sns.boxplot(data=sub, x='Bucket', y=col, order=order,
+        sns.boxplot(data=sub, x='Bucket', y=col, order=order, hue='Bucket',
                     ax=ax, showfliers=False,
-                    palette=box_palette, hue='Bucket', legend=False)
+                    palette=box_face, legend=False, dodge=False)
 
-        # Apply hatch + edge colour per bucket after seaborn draws.
-        for patch, bucket in zip(ax.patches, order):
-            h = box_hatches.get(bucket, '')
-            e = box_edges.get(bucket)
-            if e is not None:
-                patch.set_edgecolor(e)
-            if h:
-                patch.set_hatch(h)
+        box_patches = [p for p in ax.patches if isinstance(p, (PathPatch, Rectangle))]
+        for patch in box_patches:
+            if isinstance(patch, Rectangle):
+                box_x = patch.get_x() + patch.get_width() / 2.0
+            else:
+                box_x = patch.get_path().vertices[:, 0].mean()
+                
+            tick_idx = int(round(box_x))
+            if 0 <= tick_idx < len(order):
+                bucket = order[tick_idx]
+                h = box_hatch.get(bucket, '')
+                e = box_edge.get(bucket)
+                f = box_face.get(bucket)
+                
+                if e is not None: patch.set_edgecolor(e)
+                if f is not None:
+                    patch.set_facecolor(f)
+                    patch.set_alpha(1.0)
+                if h:
+                    patch.set_hatch(h)
+                else:
+                    patch.set_hatch(None)
 
         if pl_only:
             sns.stripplot(data=sub, x='Bucket', y=col, order=order,
@@ -1239,8 +1235,7 @@ def plot_thesis_mi_wholetrace_parameter_boxplots(mechanics_df: pd.DataFrame,
                           dodge=False, alpha=0.7, ax=ax, size=5)
         else:
             sns.stripplot(data=sub, x='Bucket', y=col, order=order,
-                          hue='MI_Whole_Best_Model',
-                          palette=_MI_MODEL_UTILS_COLOR,
+                          hue='MI_Whole_Best_Model', palette=_MI_MODEL_UTILS_COLOR,
                           dodge=False, alpha=0.7, ax=ax, size=5)
 
         ax.set_title(title, fontweight='bold')
@@ -1249,37 +1244,11 @@ def plot_thesis_mi_wholetrace_parameter_boxplots(mechanics_df: pd.DataFrame,
         ax.tick_params(axis='x', rotation=45)
 
         if i == 1:
-            xticks = ax.get_xticks()
-            for xt, bucket in zip(xticks, order):
-                caption = bucket_dur_labels.get(bucket, '')
-                if not caption:
-                    continue
-                ax.annotate(
-                    caption, xy=(xt, 0), xycoords=('data', 'axes fraction'),
-                    xytext=(0, -55), textcoords='offset points',
-                    ha='center', va='top', fontsize=7, color='gray',
-                )
+            for xt, bucket in zip(ax.get_xticks(), order):
+                if caption := bucket_dur_labels.get(bucket, ''):
+                    ax.annotate(caption, xy=(xt, 0), xycoords=('data', 'axes fraction'), xytext=(0, -55), textcoords='offset points', ha='center', va='top', fontsize=7, color='gray')
 
-        if log_y and (sub[col] > 0).all():
-            ax.set_yscale('log')
-
-        pairs = [(order[j], order[j + 1]) for j in range(len(order) - 1)]
-        for cat_a, cat_b in pairs:
-            vals_a = sub.loc[sub['Bucket'] == cat_a, col].dropna().values
-            vals_b = sub.loc[sub['Bucket'] == cat_b, col].dropna().values
-            stars, label, lw, delta = bp._build_stat_label(vals_a, vals_b)
-
-            if label is None:
-                continue
-            x1 = order.index(cat_a)
-            x2 = order.index(cat_b)
-            y_top = float(np.nanmax(np.concatenate([vals_a, vals_b])))
-            bp._add_bracket(ax, x1, x2, y_top, label, lw=lw)
-
-        if i != 0:
-            legend = ax.get_legend()
-            if legend:
-                legend.remove()
+        if log_y and (sub[col] > 0).all(): ax.set_yscale('log')
 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_MI_WholeTrace_Parameter_Boxplots.pdf")
@@ -2787,17 +2756,7 @@ def _ep_fate_bucket(duration_label: str, fate_status: str) -> str:
 def plot_thesis_ep_fate_mi_boxplots(mechanics_df: pd.DataFrame,
                                       output_dir: Path,
                                       r2_floor: float = 0.80) -> None:
-    """
-    Boxplot of pre-pulse model-independent parameters, EP cells only,
-    split by pulse condition × fate.  Answers "were cells that go on to
-    rupture already mechanically distinguishable pre-pulse?"
-
-    Three panels: Linear_Slope, PL_a, PL_b (matching the existing MI
-    parameter boxplot).  Within each pulse condition, intact vs ruptured
-    is tested with Mann-Whitney U + Cliff's delta.
-    """
     if mechanics_df is None or mechanics_df.empty:
-        logger.warning("Fate-mechanics boxplot skipped: empty mechanics_df.")
         return
 
     df = mechanics_df.copy()
@@ -2811,20 +2770,14 @@ def plot_thesis_ep_fate_mi_boxplots(mechanics_df: pd.DataFrame,
     ].copy()
 
     if ep_df.empty:
-        logger.warning("Fate-mechanics boxplot skipped: no EP cells pass MI R² floor.")
         return
 
     ep_df['Bucket']       = ep_df.apply(
-        lambda r: _ep_fate_bucket(r.get('Duration_label'), r.get('Fate_Status')),
-        axis=1,
+        lambda r: _ep_fate_bucket(r.get('Duration_label'), r.get('Fate_Status')), axis=1
     )
     ep_df['Winner_Slope'] = ep_df.apply(_mi_winner_slope, axis=1)
 
-    # Sorted bucket order: by duration first (100us < 5ms), then intact before ruptured
-    durations = sorted(
-        ep_df['Duration_label'].dropna().unique(),
-        key=_duration_sort_key,
-    )
+    durations = sorted(ep_df['Duration_label'].dropna().unique(), key=_duration_sort_key)
     order = []
     for d in durations:
         for fate_short in ('intact', 'ruptured'):
@@ -2832,28 +2785,13 @@ def plot_thesis_ep_fate_mi_boxplots(mechanics_df: pd.DataFrame,
             if b in ep_df['Bucket'].values:
                 order.append(b)
 
-    # Two-panel layout, matching plot_thesis_mi_parameter_boxplots:
-    #   Panel 1 — winner-model slope (Linear m or PL b), all cells.
-    #   Panel 2 — PL_a for Power-Law winners only.
-    # x-axis buckets are duration × fate; box tints echo the fate palette
-    # (dark_blue for intact, pale_red for ruptured) so the fate contrast is
-    # readable at a glance without extra colour keys.
     panels = [
-        ('Winner_Slope',
-         r'Rate: $m$ (µm/s) if Linear;  $b$ (–) if Power-Law',
-         'Slope (winner-model)', False, False),
-        ('PL_a',
-         r'Amplitude $a$ (µm)',
-         'Power-Law amplitude a (PL winners only)', True, True),
+        ('Winner_Slope', r'Rate: $m$ (µm/s) if Linear;  $b$ (–) if Power-Law', 'Slope (winner-model)', False, False),
+        ('PL_a', r'Amplitude $a$ (µm)', 'Power-Law amplitude a (PL winners only)', True, True),
     ]
 
-    # Grammar-based tint per bucket (same scheme as the other fate
-    # boxplot functions). Bucket labels here are '{dur}_intact' or
-    # '{dur}_ruptured'; parse the duration prefix and apply:
-    #   intact    -> (WT, dur) colour at 30% alpha, no hatch
-    #   ruptured  -> (WT, dur) colour at 30% alpha, \\\ hatch (recessive)
     from matplotlib.colors import to_rgba
-
+    from matplotlib.patches import PathPatch, Rectangle
     def _tint(hex_color: str, alpha: float = 0.30) -> tuple:
         r, g, b, _ = to_rgba(hex_color)
         return (r, g, b, alpha)
@@ -2862,57 +2800,67 @@ def plot_thesis_ep_fate_mi_boxplots(mechanics_df: pd.DataFrame,
 
     for i, (col, ylabel, title, log_y, pl_only) in enumerate(panels):
         ax = axes[i]
-        sub = ep_df.loc[ep_df[col].notna(),
-                        ['Bucket', col, 'Fate_Status', 'MI_Best_Model', 'Duration_label']].copy()
+        sub = ep_df.loc[ep_df[col].notna(), ['Bucket', col, 'Fate_Status', 'MI_Best_Model', 'Duration_label']].copy()
         if pl_only:
             sub = sub[sub['MI_Best_Model'] == 'Power-Law']
         if sub.empty:
             ax.set_visible(False)
             continue
 
-        # Per-bucket grammar tint + hatch pattern for ruptured
-        box_palette = {}
-        box_hatches = {}
-        box_edges   = {}
+        box_face, box_edge, box_hatch = {}, {}, {}
         for b in order:
             rows = sub[sub['Bucket'] == b]
-            if rows.empty:
-                continue
+            if rows.empty: continue
             dur_label = rows['Duration_label'].iloc[0]
             protocol  = dur_label if dur_label in ('100us', '5ms') else 'ASP'
             fate      = rows['Fate_Status'].iloc[0]
             edge      = utils.get_style_color('WT', protocol)
-            box_palette[b] = _tint(edge, 0.30)
-            box_edges[b]   = edge
-            box_hatches[b] = utils.MFA_STYLE_RUPTURED_HATCH if fate == 'ruptured_post' else ''
+            
+            box_edge[b] = edge
+            if fate == 'ruptured_post':
+                box_face[b]  = 'white'
+                box_hatch[b] = utils.MFA_STYLE_RUPTURED_HATCH
+            else:
+                box_face[b]  = _tint(edge, 0.30)
+                box_hatch[b] = ''
 
-        sns.boxplot(data=sub, x='Bucket', y=col, order=order,
+        sns.boxplot(data=sub, x='Bucket', y=col, order=order, hue='Bucket',
                     ax=ax, showfliers=False,
-                    palette=box_palette, hue='Bucket', legend=False)
+                    palette=box_face, legend=False, dodge=False)
 
-        # Apply hatch + edge colour per bucket after seaborn draws them.
-        for patch, bucket in zip(ax.patches, order):
-            h = box_hatches.get(bucket, '')
-            e = box_edges.get(bucket)
-            if e is not None:
-                patch.set_edgecolor(e)
-            if h:
-                patch.set_hatch(h)
+        box_patches = [p for p in ax.patches if isinstance(p, (PathPatch, Rectangle))]
+        for patch in box_patches:
+            if isinstance(patch, Rectangle):
+                box_x = patch.get_x() + patch.get_width() / 2.0
+            else:
+                box_x = patch.get_path().vertices[:, 0].mean()
+                
+            tick_idx = int(round(box_x))
+            if 0 <= tick_idx < len(order):
+                bucket = order[tick_idx]
+                h = box_hatch.get(bucket, '')
+                e = box_edge.get(bucket)
+                f = box_face.get(bucket)
+                
+                if e is not None: patch.set_edgecolor(e)
+                if f is not None:
+                    patch.set_facecolor(f)
+                    patch.set_alpha(1.0)
+                if h:
+                    patch.set_hatch(h)
+                else:
+                    patch.set_hatch(None)
 
-        # Points coloured by winning MI model (orthogonal to condition palette)
         for j, bucket in enumerate(order):
             rows = sub[sub['Bucket'] == bucket]
-            if rows.empty:
-                continue
+            if rows.empty: continue
             rng = np.random.default_rng(42 + j)
             jitter = rng.uniform(-0.15, 0.15, size=len(rows))
             colours = rows['MI_Best_Model'].map(_MI_MODEL_UTILS_COLOR).fillna('gray')
             ax.scatter(np.full(len(rows), j) + jitter, rows[col],
-                       s=22, c=colours,
-                       edgecolor=colours, linewidths=0.4, alpha=0.85, zorder=3)
+                       s=22, c=colours, edgecolor=colours, linewidths=0.4, alpha=0.85, zorder=3)
 
-        if log_y and (sub[col].dropna() > 0).all():
-            ax.set_yscale('log')
+        if log_y and (sub[col].dropna() > 0).all(): ax.set_yscale('log')
 
         ax.set_title(title, fontsize=10)
         ax.set_ylabel(ylabel)
@@ -2921,59 +2869,18 @@ def plot_thesis_ep_fate_mi_boxplots(mechanics_df: pd.DataFrame,
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
-        # Intact vs ruptured brackets within each pulse condition
-        for d in durations:
-            b_intact = f"{d}_intact"
-            b_rupt   = f"{d}_ruptured"
-            if b_intact not in order or b_rupt not in order:
-                continue
-            v_int = sub.loc[sub['Bucket'] == b_intact, col].dropna().to_numpy()
-            v_rup = sub.loc[sub['Bucket'] == b_rupt,   col].dropna().to_numpy()
-            if len(v_int) == 0 or len(v_rup) == 0:
-                continue
-            stars, label, lw, delta = bp._build_stat_label(v_int, v_rup)
-            logger.info(
-                f"  [{title:<28} {d}] intact vs ruptured: n=({len(v_int)},{len(v_rup)})  "
-                f"stars={stars}  delta={delta:+.3f}"
-            )
-            if label is None:
-                continue
-            x1 = order.index(b_intact)
-            x2 = order.index(b_rupt)
-            y_top = float(np.nanmax(np.concatenate([v_int, v_rup])))
-            bp._add_bracket(ax, x1, x2, y_top, label, lw=lw)
-
-    # Legend uses grammar swatches: one intact + one ruptured patch per
-    # duration present, plus model-winner point markers.
     import matplotlib.patches as mpatches
     import matplotlib.lines as mlines
     handles = []
     for d in durations:
         col_wt_dur = utils.get_style_color('WT', d) if d in ('100us', '5ms') else utils.get_style_color('WT', 'ASP')
-        handles.append(mpatches.Patch(
-            facecolor=_tint(col_wt_dur, 0.30),
-            edgecolor=col_wt_dur,
-            label=f'Intact ({d})',
-        ))
-        handles.append(mpatches.Patch(
-            facecolor=_tint(col_wt_dur, 0.30),
-            edgecolor=col_wt_dur,
-            hatch=utils.MFA_STYLE_RUPTURED_HATCH,
-            label=f'Ruptured ({d})',
-        ))
+        handles.append(mpatches.Patch(facecolor=_tint(col_wt_dur, 0.30), edgecolor=col_wt_dur, label=f'Intact ({d})'))
+        handles.append(mpatches.Patch(facecolor='white', edgecolor=col_wt_dur, hatch=utils.MFA_STYLE_RUPTURED_HATCH, label=f'Ruptured ({d})'))
     handles += [
-        mlines.Line2D([], [], marker='o', linestyle='',
-                      markerfacecolor=_MI_MODEL_UTILS_COLOR['Linear'],
-                      markeredgecolor=_MI_MODEL_UTILS_COLOR['Linear'],
-                      label='Linear winner (point)'),
-        mlines.Line2D([], [], marker='o', linestyle='',
-                      markerfacecolor=_MI_MODEL_UTILS_COLOR['Power-Law'],
-                      markeredgecolor=_MI_MODEL_UTILS_COLOR['Power-Law'],
-                      label='Power-Law winner (point)'),
+        mlines.Line2D([], [], marker='o', linestyle='', markerfacecolor=_MI_MODEL_UTILS_COLOR['Linear'], markeredgecolor=_MI_MODEL_UTILS_COLOR['Linear'], label='Linear winner'),
+        mlines.Line2D([], [], marker='o', linestyle='', markerfacecolor=_MI_MODEL_UTILS_COLOR['Power-Law'], markeredgecolor=_MI_MODEL_UTILS_COLOR['Power-Law'], label='Power-Law winner'),
     ]
-    fig.legend(handles=handles, loc='lower center',
-               bbox_to_anchor=(0.5, -0.12), ncol=4,
-               frameon=False, fontsize=8)
+    fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.12), ncol=4, frameon=False, fontsize=8)
 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_EP_Fate_MI_Boxplots.pdf")
@@ -3007,65 +2914,34 @@ def _fate_box_order(buckets_present: list, durations: list) -> list:
     return order
 
 
-def plot_thesis_fate_prepulse_visco_boxplots(mechanics_df: pd.DataFrame,
-                                              output_dir: Path) -> None:
-    """
-    Fate-split viscoelastic pre-pulse boxplots on the matched-window
-    PrePulse_* fits. Style grammar (Utils_MFA.MFA_STYLE_*):
-        ASP WT       -> (WT, ASP)   colour, solid fill, no hatch
-        {dur}_intact -> (WT, dur)   colour, solid fill, no hatch
-        {dur}_rupt   -> white face, (WT, dur) coloured \\\\\\ hatch and edge
-    Points overlaid in the winning-model palette (Burgers / Jeffreys /
-    Kelvin-Voigt). Within each pulse condition, intact vs ruptured is
-    tested with Mann-Whitney U + Cliff's delta.
-    """
-    if mechanics_df is None or mechanics_df.empty:
-        logger.warning("Fate pre-pulse viscoelastic boxplot skipped: empty mechanics_df.")
-        return
+def plot_thesis_fate_prepulse_visco_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
+    if mechanics_df is None or mechanics_df.empty: return
 
     df = mechanics_df.copy()
-    df = df.loc[
-        df['PrePulse_Best_Model'].notna()
-        & df['PrePulse_E_Pa'].notna()
-        & (df['PrePulse_Visco_R2_Flag'] == True)
-    ].copy()
+    df = df.loc[df['PrePulse_Best_Model'].notna() & df['PrePulse_E_Pa'].notna() & (df['PrePulse_Visco_R2_Flag'] == True)].copy()
 
-    # Include ASP WT (as reference) and EP intact/ruptured cells only.
     keep_asp = (df['Condition_Type'] == 'ASP') & (df['Treatment'] == 'WT')
     keep_ep  = (df['Condition_Type'] == 'EP') & df['Fate_Status'].isin(['intact', 'ruptured_post'])
     df = df[keep_asp | keep_ep].copy()
 
-    if df.empty:
-        logger.warning("Fate pre-pulse viscoelastic boxplot skipped: no cells pass filter.")
-        return
+    if df.empty: return
 
     df['Bucket'] = df.apply(_fate_box_bucket, axis=1)
-
-    durations = sorted(
-        df.loc[df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(),
-        key=_duration_sort_key,
-    )
+    durations = sorted(df.loc[df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(), key=_duration_sort_key)
     order = _fate_box_order(df['Bucket'].unique().tolist(), durations)
 
     panels = [
-        ('PrePulse_E_Pa',      r'$E$ (Pa)',
-         'Parallel Spring Modulus'),
-        ('PrePulse_E1_Pa',     r'$E_{1}$ (Pa)',
-         'Burgers Maxwell Spring\n(Burgers only)'),
-        ('PrePulse_eta1_Pa_s', r'$\eta_{1}$ (Pa$\cdot$s)',
-         'Parallel Dashpot'),
-        ('PrePulse_eta2_Pa_s', r'$\eta_{2}$ (Pa$\cdot$s)',
-         'Flow Viscosity\n(Jeffreys / Burgers)'),
-        ('PrePulse_Tau_s',     r'$\tau$ (s)',
-         'Characteristic Time'),
+        ('PrePulse_E_Pa',      r'$E$ (Pa)', 'Parallel Spring Modulus'),
+        ('PrePulse_E1_Pa',     r'$E_{1}$ (Pa)', 'Burgers Maxwell Spring\n(Burgers only)'),
+        ('PrePulse_eta1_Pa_s', r'$\eta_{1}$ (Pa$\cdot$s)', 'Parallel Dashpot'),
+        ('PrePulse_eta2_Pa_s', r'$\eta_{2}$ (Pa$\cdot$s)', 'Flow Viscosity\n(Jeffreys / Burgers)'),
+        ('PrePulse_Tau_s',     r'$\tau$ (s)', 'Characteristic Time'),
     ]
 
     def _style_for_bucket(rows: pd.DataFrame):
-        """Return (facecolor, edgecolor, hatch) using the fate grammar."""
         if rows['Condition_Type'].iloc[0] == 'ASP':
             treatment = rows['Treatment'].iloc[0] if 'Treatment' in rows.columns else 'WT'
-            if treatment not in ('WT', 'CytD'):
-                treatment = 'WT'
+            if treatment not in ('WT', 'CytD'): treatment = 'WT'
             col = utils.get_style_color(treatment, 'ASP')
             return col, col, ''
         dur_label = rows['Duration_label'].iloc[0] if 'Duration_label' in rows.columns else None
@@ -3076,67 +2952,62 @@ def plot_thesis_fate_prepulse_visco_boxplots(mechanics_df: pd.DataFrame,
             return 'white', col, utils.MFA_STYLE_RUPTURED_HATCH
         return col, col, ''
 
-    ncols = 3
-    nrows = 2
-    fig, axes_2d = plt.subplots(nrows, ncols,
-                                 figsize=(max(4.5 * ncols, 1.2 * len(order) + 6),
-                                          5.0 * nrows))
+    from matplotlib.patches import PathPatch, Rectangle
+    ncols, nrows = 3, 2
+    fig, axes_2d = plt.subplots(nrows, ncols, figsize=(max(4.5 * ncols, 1.2 * len(order) + 6), 5.0 * nrows))
     axes = axes_2d.flatten()
 
     for i, (col, ylabel, title) in enumerate(panels):
         ax = axes[i]
-        sub = df.loc[df[col].notna(),
-                     ['Bucket', col, 'Fate_Status', 'Condition_Type',
-                      'Treatment', 'Duration_label', 'PrePulse_Best_Model']].copy()
+        sub = df.loc[df[col].notna()].copy()
         if sub.empty:
             ax.set_visible(False)
             continue
 
-        box_face = {}
-        box_edge = {}
-        box_hatch = {}
+        box_face, box_edge, box_hatch = {}, {}, {}
         for b in order:
             rows = sub[sub['Bucket'] == b]
-            if rows.empty:
-                continue
+            if rows.empty: continue
             face, edge, hatch = _style_for_bucket(rows)
-            box_face[b]  = face
-            box_edge[b]  = edge
-            box_hatch[b] = hatch
+            box_face[b], box_edge[b], box_hatch[b] = face, edge, hatch
 
-        sns.boxplot(data=sub, x='Bucket', y=col, order=order,
+        sns.boxplot(data=sub, x='Bucket', y=col, order=order, hue='Bucket',
                     ax=ax, showfliers=False,
-                    palette=box_face, hue='Bucket', legend=False)
+                    palette=box_face, legend=False, dodge=False)
 
-        # Enforce edge colour and hatch pattern after seaborn draws.
-        # Ruptured boxes get white face + coloured hatch; ASP + intact
-        # boxes stay solid.
-        for patch, bucket in zip(ax.patches, order):
-            e = box_edge.get(bucket)
-            h = box_hatch.get(bucket, '')
-            if e is not None:
-                patch.set_edgecolor(e)
-            if h:
-                patch.set_hatch(h)
-                patch.set_facecolor('white')
+        box_patches = [p for p in ax.patches if isinstance(p, (PathPatch, Rectangle))]
+        for patch in box_patches:
+            if isinstance(patch, Rectangle):
+                box_x = patch.get_x() + patch.get_width() / 2.0
+            else:
+                box_x = patch.get_path().vertices[:, 0].mean()
+                
+            tick_idx = int(round(box_x))
+            if 0 <= tick_idx < len(order):
+                bucket = order[tick_idx]
+                h = box_hatch.get(bucket, '')
+                e = box_edge.get(bucket)
+                f = box_face.get(bucket)
+                
+                if e is not None: patch.set_edgecolor(e)
+                if f is not None:
+                    patch.set_facecolor(f)
+                    patch.set_alpha(1.0)
+                if h:
+                    patch.set_hatch(h)
+                else:
+                    patch.set_hatch(None)
 
-        # Points coloured by winning viscoelastic model
         for j, bucket in enumerate(order):
             rows = sub[sub['Bucket'] == bucket]
-            if rows.empty:
-                continue
+            if rows.empty: continue
             rng = np.random.default_rng(42 + j)
             jitter = rng.uniform(-0.15, 0.15, size=len(rows))
-            colours = rows['PrePulse_Best_Model'].map(
-                lambda m: bp.VISCO_MODEL_PALETTE.get(m, 'gray')
-            )
+            colours = rows['PrePulse_Best_Model'].map(lambda m: bp.VISCO_MODEL_PALETTE.get(m, 'gray'))
             ax.scatter(np.full(len(rows), j) + jitter, rows[col],
-                       s=22, c=colours,
-                       edgecolor=colours, linewidths=0.4, alpha=0.85, zorder=3)
+                       s=22, c=colours, edgecolor=colours, linewidths=0.4, alpha=0.85, zorder=3)
 
-        if (sub[col].dropna() > 0).all():
-            ax.set_yscale('log')
-
+        if (sub[col].dropna() > 0).all(): ax.set_yscale('log')
         ax.set_title(title, fontsize=10)
         ax.set_ylabel(ylabel)
         ax.set_xlabel("")
@@ -3144,64 +3015,21 @@ def plot_thesis_fate_prepulse_visco_boxplots(mechanics_df: pd.DataFrame,
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
-        # Bracket: intact vs ruptured within each pulse condition
-        for d in durations:
-            b_intact = f"{d}_intact"
-            b_rupt   = f"{d}_ruptured"
-            if b_intact not in order or b_rupt not in order:
-                continue
-            v_int = sub.loc[sub['Bucket'] == b_intact, col].dropna().to_numpy()
-            v_rup = sub.loc[sub['Bucket'] == b_rupt,   col].dropna().to_numpy()
-            if len(v_int) < 2 or len(v_rup) < 2:
-                continue
-            stars, label, lw, delta = bp._build_stat_label(v_int, v_rup)
-            logger.info(
-                f"  [PP-Visco {title[:22]:<22} {d}] intact vs ruptured: "
-                f"n=({len(v_int)},{len(v_rup)})  stars={stars}  delta={delta:+.3f}"
-            )
-            if label is None:
-                continue
-            x1 = order.index(b_intact)
-            x2 = order.index(b_rupt)
-            y_top = float(np.nanmax(np.concatenate([v_int, v_rup])))
-            bp._add_bracket(ax, x1, x2, y_top, label, lw=lw)
+    for j in range(len(panels), len(axes)): axes[j].set_visible(False)
 
-    # Hide the trailing blank axis in the 2x3 grid.
-    for j in range(len(panels), len(axes)):
-        axes[j].set_visible(False)
-
-    # Legend: solid ASP-WT swatch, one solid intact + one hatched ruptured
-    # per duration present, then winning-model markers.
     import matplotlib.patches as mpatches
     import matplotlib.lines as mlines
     asp_col = utils.get_style_color('WT', 'ASP')
-    handles = [
-        mpatches.Patch(facecolor=asp_col, edgecolor=asp_col,
-                       label='ASP-WT reference'),
-    ]
+    handles = [mpatches.Patch(facecolor=asp_col, edgecolor=asp_col, label='ASP-WT reference')]
     for d in durations:
         col_wt_dur = utils.get_style_color('WT', d) if d in ('100us', '5ms') else asp_col
-        handles.append(mpatches.Patch(
-            facecolor=col_wt_dur, edgecolor=col_wt_dur,
-            label=f'EP intact ({d})',
-        ))
-        handles.append(mpatches.Patch(
-            facecolor='white', edgecolor=col_wt_dur,
-            hatch=utils.MFA_STYLE_RUPTURED_HATCH,
-            label=f'EP ruptured ({d})',
-        ))
+        handles.append(mpatches.Patch(facecolor=col_wt_dur, edgecolor=col_wt_dur, label=f'EP intact ({d})'))
+        handles.append(mpatches.Patch(facecolor='white', edgecolor=col_wt_dur, hatch=utils.MFA_STYLE_RUPTURED_HATCH, label=f'EP ruptured ({d})'))
     for model_name in ('Kelvin-Voigt', 'Jeffreys', 'Burgers'):
         c = bp.VISCO_MODEL_PALETTE.get(model_name)
-        if c is None:
-            continue
-        handles.append(mlines.Line2D([], [], marker='o', linestyle='',
-                                     markerfacecolor=c,
-                                     markeredgecolor=c,
-                                     label=f'{model_name} winner'))
-    # Anchor on the blank sixth cell of the 2x3 grid.
-    fig.legend(handles=handles, loc='center',
-               bbox_to_anchor=(0.83, 0.25), ncol=1,
-               frameon=False, fontsize=8)
+        if c: handles.append(mlines.Line2D([], [], marker='o', linestyle='', markerfacecolor=c, markeredgecolor=c, label=f'{model_name} winner'))
+        
+    fig.legend(handles=handles, loc='center', bbox_to_anchor=(0.83, 0.25), ncol=1, frameon=False, fontsize=8)
 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_Fate_PrePulse_Visco_Boxplots.pdf")
@@ -3209,23 +3037,10 @@ def plot_thesis_fate_prepulse_visco_boxplots(mechanics_df: pd.DataFrame,
     logger.info("Fate pre-pulse viscoelastic boxplot written.")
 
 
-def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame,
-                                              output_dir: Path,
-                                              r2_floor: float = 0.80) -> None:
-    """
-    Fate-split whole-trace MI boxplots on the MI_Whole_* cohort.
-    Includes ASP-WT (fit on the whole trace with `global_whole_dur`) as
-    a reference alongside per-condition intact / ruptured EP cohorts.
-    Two panels: winner-model slope (Linear m or PL b) and PL_a for
-    Power-Law winners only, matching the visual template used for the
-    old MI pre-pulse fate plot.
-    """
-    if mechanics_df is None or mechanics_df.empty:
-        logger.warning("Fate whole-trace MI boxplot skipped: empty mechanics_df.")
-        return
+def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame, output_dir: Path, r2_floor: float = 0.80) -> None:
+    if mechanics_df is None or mechanics_df.empty: return
 
     df = mechanics_df.copy()
-
     def _wt_winner_r2(row):
         m = row.get('MI_Whole_Best_Model')
         if m == 'Linear':    return row.get('MI_Whole_Linear_R2', np.nan)
@@ -3239,45 +3054,29 @@ def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame,
         return np.nan
 
     df['MI_Whole_Winner_R2'] = df.apply(_wt_winner_r2, axis=1)
-    df = df.loc[
-        df['MI_Whole_Best_Model'].notna()
-        & (df['MI_Whole_Winner_R2'] >= r2_floor)
-    ].copy()
+    df = df.loc[df['MI_Whole_Best_Model'].notna() & (df['MI_Whole_Winner_R2'] >= r2_floor)].copy()
 
     keep_asp = (df['Condition_Type'] == 'ASP') & (df['Treatment'] == 'WT')
     keep_ep  = (df['Condition_Type'] == 'EP') & df['Fate_Status'].isin(['intact', 'ruptured_post'])
     df = df[keep_asp | keep_ep].copy()
 
-    if df.empty:
-        logger.warning("Fate whole-trace MI boxplot skipped: no cells pass filter.")
-        return
+    if df.empty: return
 
     df['Bucket']       = df.apply(_fate_box_bucket, axis=1)
     df['Winner_Slope'] = df.apply(_wt_winner_slope, axis=1)
 
-    durations = sorted(
-        df.loc[df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(),
-        key=_duration_sort_key,
-    )
+    durations = sorted(df.loc[df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(), key=_duration_sort_key)
     order = _fate_box_order(df['Bucket'].unique().tolist(), durations)
 
     panels = [
-        ('Winner_Slope',
-         r'Rate: $m$ (µm/s) if Linear;  $b$ (–) if Power-Law',
-         'Whole-trace slope (winner)', False, False),
-        ('MI_Whole_PL_a',
-         r'Amplitude $a$ (µm)',
-         'Whole-trace power-law $a$ (PL winners only)', True, True),
+        ('Winner_Slope', r'Rate: $m$ (µm/s) if Linear;  $b$ (–) if Power-Law', 'Whole-trace slope (winner)', False, False),
+        ('MI_Whole_PL_a', r'Amplitude $a$ (µm)', 'Whole-trace power-law $a$ (PL winners only)', True, True),
     ]
 
     def _style_for_bucket(rows: pd.DataFrame):
-        """Return (facecolor, edgecolor, hatch) using the fate grammar.
-        Matches plot_thesis_fate_prepulse_visco_boxplots so both fate
-        figures share one legend key."""
         if rows['Condition_Type'].iloc[0] == 'ASP':
             treatment = rows['Treatment'].iloc[0] if 'Treatment' in rows.columns else 'WT'
-            if treatment not in ('WT', 'CytD'):
-                treatment = 'WT'
+            if treatment not in ('WT', 'CytD'): treatment = 'WT'
             col = utils.get_style_color(treatment, 'ASP')
             return col, col, ''
         dur_label = rows['Duration_label'].iloc[0] if 'Duration_label' in rows.columns else None
@@ -3288,59 +3087,61 @@ def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame,
             return 'white', col, utils.MFA_STYLE_RUPTURED_HATCH
         return col, col, ''
 
+    from matplotlib.patches import PathPatch, Rectangle
     fig, axes = plt.subplots(1, 2, figsize=(max(9, 1.6 * len(order) + 6), 3.8))
 
     for i, (col, ylabel, title, log_y, pl_only) in enumerate(panels):
         ax = axes[i]
-        sub = df.loc[df[col].notna(),
-                     ['Bucket', col, 'Fate_Status', 'Condition_Type',
-                      'Treatment', 'Duration_label', 'MI_Whole_Best_Model']].copy()
-        if pl_only:
-            sub = sub[sub['MI_Whole_Best_Model'] == 'Power-Law']
+        sub = df.loc[df[col].notna()].copy()
+        if pl_only: sub = sub[sub['MI_Whole_Best_Model'] == 'Power-Law']
         if sub.empty:
             ax.set_visible(False)
             continue
 
-        box_face = {}
-        box_edge = {}
-        box_hatch = {}
+        box_face, box_edge, box_hatch = {}, {}, {}
         for b in order:
             rows = sub[sub['Bucket'] == b]
-            if rows.empty:
-                continue
+            if rows.empty: continue
             face, edge, hatch = _style_for_bucket(rows)
-            box_face[b]  = face
-            box_edge[b]  = edge
-            box_hatch[b] = hatch
+            box_face[b], box_edge[b], box_hatch[b] = face, edge, hatch
 
-        sns.boxplot(data=sub, x='Bucket', y=col, order=order,
+        sns.boxplot(data=sub, x='Bucket', y=col, order=order, hue='Bucket',
                     ax=ax, showfliers=False,
-                    palette=box_face, hue='Bucket', legend=False)
+                    palette=box_face, legend=False, dodge=False)
 
-        # Enforce edge colour and hatch pattern after seaborn draws.
-        for patch, bucket in zip(ax.patches, order):
-            e = box_edge.get(bucket)
-            h = box_hatch.get(bucket, '')
-            if e is not None:
-                patch.set_edgecolor(e)
-            if h:
-                patch.set_hatch(h)
-                patch.set_facecolor('white')
+        box_patches = [p for p in ax.patches if isinstance(p, (PathPatch, Rectangle))]
+        for patch in box_patches:
+            if isinstance(patch, Rectangle):
+                box_x = patch.get_x() + patch.get_width() / 2.0
+            else:
+                box_x = patch.get_path().vertices[:, 0].mean()
+                
+            tick_idx = int(round(box_x))
+            if 0 <= tick_idx < len(order):
+                bucket = order[tick_idx]
+                h = box_hatch.get(bucket, '')
+                e = box_edge.get(bucket)
+                f = box_face.get(bucket)
+                
+                if e is not None: patch.set_edgecolor(e)
+                if f is not None:
+                    patch.set_facecolor(f)
+                    patch.set_alpha(1.0)
+                if h:
+                    patch.set_hatch(h)
+                else:
+                    patch.set_hatch(None)
 
         for j, bucket in enumerate(order):
             rows = sub[sub['Bucket'] == bucket]
-            if rows.empty:
-                continue
+            if rows.empty: continue
             rng = np.random.default_rng(42 + j)
             jitter = rng.uniform(-0.15, 0.15, size=len(rows))
             colours = rows['MI_Whole_Best_Model'].map(_MI_MODEL_UTILS_COLOR).fillna('gray')
             ax.scatter(np.full(len(rows), j) + jitter, rows[col],
-                       s=22, c=colours,
-                       edgecolor=colours, linewidths=0.4, alpha=0.85, zorder=3)
+                       s=22, c=colours, edgecolor=colours, linewidths=0.4, alpha=0.85, zorder=3)
 
-        if log_y and (sub[col].dropna() > 0).all():
-            ax.set_yscale('log')
-
+        if log_y and (sub[col].dropna() > 0).all(): ax.set_yscale('log')
         ax.set_title(title, fontsize=10)
         ax.set_ylabel(ylabel)
         ax.set_xlabel("")
@@ -3348,58 +3149,19 @@ def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame,
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
-        for d in durations:
-            b_intact = f"{d}_intact"
-            b_rupt   = f"{d}_ruptured"
-            if b_intact not in order or b_rupt not in order:
-                continue
-            v_int = sub.loc[sub['Bucket'] == b_intact, col].dropna().to_numpy()
-            v_rup = sub.loc[sub['Bucket'] == b_rupt,   col].dropna().to_numpy()
-            if len(v_int) < 2 or len(v_rup) < 2:
-                continue
-            stars, label, lw, delta = bp._build_stat_label(v_int, v_rup)
-            logger.info(
-                f"  [WT-MI {title[:22]:<22} {d}] intact vs ruptured: "
-                f"n=({len(v_int)},{len(v_rup)})  stars={stars}  delta={delta:+.3f}"
-            )
-            if label is None:
-                continue
-            x1 = order.index(b_intact)
-            x2 = order.index(b_rupt)
-            y_top = float(np.nanmax(np.concatenate([v_int, v_rup])))
-            bp._add_bracket(ax, x1, x2, y_top, label, lw=lw)
-
     import matplotlib.patches as mpatches
     import matplotlib.lines as mlines
     asp_col = utils.get_style_color('WT', 'ASP')
-    handles = [
-        mpatches.Patch(facecolor=asp_col, edgecolor=asp_col,
-                       label='ASP-WT reference'),
-    ]
+    handles = [mpatches.Patch(facecolor=asp_col, edgecolor=asp_col, label='ASP-WT reference')]
     for d in durations:
         col_wt_dur = utils.get_style_color('WT', d) if d in ('100us', '5ms') else asp_col
-        handles.append(mpatches.Patch(
-            facecolor=col_wt_dur, edgecolor=col_wt_dur,
-            label=f'EP intact ({d})',
-        ))
-        handles.append(mpatches.Patch(
-            facecolor='white', edgecolor=col_wt_dur,
-            hatch=utils.MFA_STYLE_RUPTURED_HATCH,
-            label=f'EP ruptured ({d})',
-        ))
+        handles.append(mpatches.Patch(facecolor=col_wt_dur, edgecolor=col_wt_dur, label=f'EP intact ({d})'))
+        handles.append(mpatches.Patch(facecolor='white', edgecolor=col_wt_dur, hatch=utils.MFA_STYLE_RUPTURED_HATCH, label=f'EP ruptured ({d})'))
     handles += [
-        mlines.Line2D([], [], marker='o', linestyle='',
-                      markerfacecolor=_MI_MODEL_UTILS_COLOR.get('Linear', 'gray'),
-                      markeredgecolor=_MI_MODEL_UTILS_COLOR.get('Linear', 'gray'),
-                      label='Linear winner'),
-        mlines.Line2D([], [], marker='o', linestyle='',
-                      markerfacecolor=_MI_MODEL_UTILS_COLOR.get('Power-Law', 'gray'),
-                      markeredgecolor=_MI_MODEL_UTILS_COLOR.get('Power-Law', 'gray'),
-                      label='Power-Law winner'),
+        mlines.Line2D([], [], marker='o', linestyle='', markerfacecolor=_MI_MODEL_UTILS_COLOR.get('Linear', 'gray'), markeredgecolor=_MI_MODEL_UTILS_COLOR.get('Linear', 'gray'), label='Linear winner'),
+        mlines.Line2D([], [], marker='o', linestyle='', markerfacecolor=_MI_MODEL_UTILS_COLOR.get('Power-Law', 'gray'), markeredgecolor=_MI_MODEL_UTILS_COLOR.get('Power-Law', 'gray'), label='Power-Law winner')
     ]
-    fig.legend(handles=handles, loc='lower center',
-               bbox_to_anchor=(0.5, -0.14), ncol=4,
-               frameon=False, fontsize=8)
+    fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.14), ncol=4, frameon=False, fontsize=8)
 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_Fate_WholeTrace_MI_Boxplots.pdf")
@@ -3593,19 +3355,6 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                                                   mechanics_df: pd.DataFrame,
                                                   output_dir: Path,
                                                   global_pre_dur: Optional[float] = None) -> None:
-    """
-    Single-panel mean L(t) over the matched pre-pulse window Δt_pre.
-    Overlays three cohorts using the fate-grammar line styles:
-        - ASP WT baseline       -> (WT, ASP) colour, solid line
-        - EP-pre 100us intact   -> (WT, 100us) colour, solid line
-        - EP-pre 100us ruptured -> (WT, 100us) colour, dashed line
-    Cohort membership follows the matched-window PrePulse_Visco_R2_Flag
-    filter used in plot_thesis_fate_prepulse_visco_boxplots for ASP and
-    intact. The ruptured cohort typically fails the R^2 gate at n=2, so
-    it is included on the trace with any pre-pulse segment >= 15 points;
-    n in the legend is the number of curves entering the mean.
-    Shaded band marks 0 <= t <= global_pre_dur.
-    """
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("Combined pre-pulse trace skipped: empty mechanics_df.")
         return
@@ -3615,22 +3364,32 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
         & (mechanics_df['PrePulse_Visco_R2_Flag'] == True)
     ]
 
-    asp_mask = (pp_pass['Condition_Type'] == 'ASP') & (pp_pass['Treatment'] == 'WT')
+    treatments = mechanics_df['Treatment'].dropna().unique().tolist()
+    base_treatment = 'WT' if 'WT' in treatments else (treatments[0] if treatments else 'WT')
+
+    asp_mask = (pp_pass['Condition_Type'] == 'ASP') & (pp_pass['Treatment'] == base_treatment)
     asp_pairs = set(zip(pp_pass.loc[asp_mask, 'Experiment_Folder'],
                         pp_pass.loc[asp_mask, 'Trap_ID']))
 
+    durations = sorted(
+        mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(),
+        key=_duration_sort_key
+    )
+    if not durations:
+        logger.warning("Combined pre-pulse trace skipped: no EP durations.")
+        return
+    
+    target_dur = durations[0]
+
     intact_mask = ((pp_pass['Condition_Type'] == 'EP')
-                   & (pp_pass['Duration_label'] == '100us')
+                   & (pp_pass['Duration_label'] == target_dur)
                    & (pp_pass['Fate_Status'] == 'intact'))
     ep_intact_pairs = set(zip(pp_pass.loc[intact_mask, 'Experiment_Folder'],
                               pp_pass.loc[intact_mask, 'Trap_ID']))
 
-    # Ruptured typically has n=2 and rarely passes PrePulse_Visco_R2_Flag,
-    # so keep any 100us ruptured cell for the trace and flag n in the
-    # legend rather than dropping the cohort.
     ep_rupt_all = mechanics_df.loc[
         (mechanics_df['Condition_Type'] == 'EP')
-        & (mechanics_df['Duration_label'] == '100us')
+        & (mechanics_df['Duration_label'] == target_dur)
         & (mechanics_df['Fate_Status'] == 'ruptured_post')
     ]
     ep_rupt_pairs = set(zip(ep_rupt_all['Experiment_Folder'], ep_rupt_all['Trap_ID']))
@@ -3652,7 +3411,7 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                 if len(t) >= 15:
                     traces['asp'].append((t, L))
             elif (meta.condition_type == 'EP'
-                  and meta.duration_label == '100us'
+                  and meta.duration_label == target_dur
                   and (key in ep_intact_pairs or key in ep_rupt_pairs)):
                 pf = meta.pulse_frame
                 times = np.asarray(trap.protrusion_data.get('Time_s', []), dtype=float)
@@ -3660,7 +3419,7 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                                     dtype=float)
                 if not (0 < pf < len(times)):
                     continue
-                # pre-pulse segment, zeroed to aspiration onset
+                
                 t_all = times - times[0]
                 pre_mask = (np.arange(len(times)) < pf) & (lens > 0)
                 if global_pre_dur is not None:
@@ -3674,13 +3433,12 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                 elif key in ep_rupt_pairs:
                     traces['ruptured'].append((t, L))
 
-    # Aggregate to a common grid capped at Δt_pre
     max_t = global_pre_dur if global_pre_dur is not None else max(
         (float(t[-1]) for group in traces.values() for t, _L in group),
         default=0.0,
     )
     if max_t <= 0:
-        logger.warning("Combined pre-pulse trace skipped: no traces.")
+        logger.warning("Combined pre-pulse trace skipped: no traces matched length/mask criteria.")
         return
     common_t = np.linspace(0.0, float(max_t), 120)
 
@@ -3700,14 +3458,13 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
 
     fig, ax = plt.subplots(figsize=(5.5, 3.6))
 
-    # Shade the Δt_pre window so it reads as the fit horizon
     if global_pre_dur is not None:
         ax.axvspan(0, float(global_pre_dur), color='0.92', alpha=0.5, zorder=0)
 
     plot_order = [
-        ('asp',      utils.get_line_kwargs('WT', 'ASP',   fate='intact',        size=5), 'ASP baseline'),
-        ('intact',   utils.get_line_kwargs('WT', '100us', fate='intact',        size=5), 'EP intact (100µs)'),
-        ('ruptured', utils.get_line_kwargs('WT', '100us', fate='ruptured_post', size=5), 'EP ruptured (100µs)'),
+        ('asp',      utils.get_line_kwargs(base_treatment, 'ASP',   fate='intact',        size=5), f'ASP baseline ({base_treatment})'),
+        ('intact',   utils.get_line_kwargs(base_treatment, target_dur, fate='intact',        size=5), f'EP intact ({target_dur})'),
+        ('ruptured', utils.get_line_kwargs(base_treatment, target_dur, fate='ruptured_post', size=5), f'EP ruptured ({target_dur})'),
     ]
     for key, lkw, base_label in plot_order:
         m, sd, n = _aggregate(traces[key])
@@ -3859,38 +3616,28 @@ def run_thesis_claim2_plots(grouped_data: Dict,
                              global_pre_dur: Optional[float] = None) -> None:
     """
     Convenience runner: Batch 3a Claim 2 core plots.
-
-    Parameters
-    ----------
-    output_dir : Path
-        Directory for pre-pulse fate boxplot output.
-    whole_trace_dir : Path, optional
-        Separate directory for whole-trace outputs (whole-trace-by-fate,
-        whole-trace MI fate boxplot, combined whole-trace mean L(t)).
-        Defaults to ``output_dir`` if not provided, so the routing
-        collapses to a flat layout when the caller has not created the
-        whole-trace subfolder.
-    global_pre_dur : float, optional
-        Δt_pre cap in seconds, used to shade the fit window on the
-        combined pre-pulse mean L(t) figure.
     """
+    def _try(label, func, *args, **kwargs):
+        try:
+            func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Claim 2 plot '{label}' failed: {e}", exc_info=False)
+
     output_dir.mkdir(parents=True, exist_ok=True)
     wt_dir = whole_trace_dir if whole_trace_dir is not None else output_dir
     wt_dir.mkdir(parents=True, exist_ok=True)
 
-    plot_thesis_ep_wholetrace_by_fate(
-        grouped_data, mechanics_df, wt_dir, global_whole_dur)
-    plot_thesis_fate_prepulse_visco_boxplots(mechanics_df, output_dir)
-    plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df, wt_dir)
+    _try("EP wholetrace by fate", plot_thesis_ep_wholetrace_by_fate,
+         grouped_data, mechanics_df, wt_dir, global_whole_dur)
+    _try("Fate prepulse visco boxplots", plot_thesis_fate_prepulse_visco_boxplots,
+         mechanics_df, output_dir)
+    _try("Fate wholetrace mi boxplots", plot_thesis_fate_wholetrace_mi_boxplots,
+         mechanics_df, wt_dir)
 
-    # Combined single-panel mean L(t) figures added to complement the
-    # per-condition traces. Pre-pulse trace is scoped to 100us (5ms has
-    # no matched pre-pulse fits); whole-trace covers all five cohorts.
-    plot_thesis_combined_prepulse_trace_by_fate(
-        grouped_data, mechanics_df, output_dir, global_pre_dur)
-    plot_thesis_combined_wholetrace_trace_by_fate(
-        grouped_data, mechanics_df, wt_dir, global_whole_dur)
-
+    _try("Combined prepulse trace by fate", plot_thesis_combined_prepulse_trace_by_fate,
+         grouped_data, mechanics_df, output_dir, global_pre_dur)
+    _try("Combined wholetrace trace by fate", plot_thesis_combined_wholetrace_trace_by_fate,
+         grouped_data, mechanics_df, wt_dir, global_whole_dur)
 
 # ==========================================================================
 # BATCH 3b — Actin around the pulse, and the WT uptake trace
@@ -4674,4 +4421,7 @@ def run_thesis_claim2_uptake_actin_plots(grouped_data: Dict,
          grouped_data, mechanics_df, output_dir, output_dir_map)
     _try("Protrusion around pulse trace",
          plot_thesis_protrusion_around_pulse,
+         grouped_data, mechanics_df, output_dir, output_dir_map)
+    _try("Actin by fate (paired + around-pulse)",
+         register_by_fate_actin_plots,
          grouped_data, mechanics_df, output_dir, output_dir_map)
