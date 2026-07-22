@@ -74,6 +74,19 @@ def _power_law(t, a, b, c):
 def _exp_uptake(t, A, tau):
     return A * (1 - np.exp(-t / tau))
 
+def _biexp_uptake(t, A1, tau1, A2, tau2):
+    """
+    Sum of two saturating exponentials, each rising toward its own
+    asymptote.  Total plateau = A1 + A2.
+
+    We do NOT enforce tau1 < tau2 through the bounds — curve_fit does
+    not support ordered-parameter constraints cleanly.  Instead the
+    caller sorts (A, tau) pairs so that tau1 refers to the fast phase
+    and tau2 to the slow phase.  Downstream identifiability guard
+    lives in the caller as well.
+    """
+    return A1 * (1 - np.exp(-t / tau1)) + A2 * (1 - np.exp(-t / tau2))
+
 def _r_squared(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
@@ -407,14 +420,66 @@ def fit_model_independent(time: np.ndarray, length: np.ndarray,
 
     return result
 
+# Identifiability threshold for the bi-exponential uptake fit.  The two
+# time constants must differ by at least this factor (tau2 / tau1 >= 3)
+# for the split into fast + slow components to be treated as real.
+# Fits that pass numerically but collapse below this ratio are excluded
+# from AICc model selection and mono-exp wins by default.  Mirrors the
+# philosophy of IDENTIFIABILITY_FLOW_SNR in the viscoelastic fit.
+UPTAKE_TAU_RATIO_MIN: float = 3.0
+
+# R2 floor for the uptake_R2_Flag column.  Mirrors the visco/MI R2
+# convention (0.85) used elsewhere in Chapter 3.
+UPTAKE_R2_FLAG_FLOOR: float = 0.85
+
+
 def fit_exponential_uptake(time: np.ndarray, uptake: np.ndarray,
                             pulse_time_s: float = 0.0,
                             min_points: int = 15) -> Dict:
-    FAIL = {'A': None, 'tau': None, 'r2': None, 'baseline': None}
+    """
+    Fit dye-uptake time series with AICc model selection between a
+    mono-exponential and a bi-exponential saturating rise.
+
+    Returns a dictionary with a 'best_model' key ('Mono' or 'Bi') and
+    parameters for BOTH models when they fit successfully, so a
+    downstream sensitivity check (e.g. BIC comparison, agreement rate)
+    can be run without re-fitting.
+
+    Model selection rules
+    ---------------------
+    1. Both models are fitted; each contributes an AICc.
+    2. Bi-exp is EXCLUDED from AICc selection when tau2 / tau1 <
+       UPTAKE_TAU_RATIO_MIN (degenerate fast/slow split) or when either
+       amplitude is <5% of the total, which indicates a collapsed
+       component that is effectively mono.
+    3. The R2 field on the return dict is the R2 of the SELECTED model.
+    4. The `flag` field on the return dict is best_R2 >= 0.85, mirroring
+       the visco R2 flag convention.
+
+    Returned tau
+    ------------
+    For a mono winner:  tau = tau_mono.
+    For a bi winner:    tau = amplitude-weighted mean of tau1 and tau2
+                        (i.e. (A1*tau1 + A2*tau2) / (A1 + A2)).  This
+                        keeps the existing `Uptake_*_VolNorm_tau` column
+                        interpretable as a characteristic timescale and
+                        lets legacy plots (e.g. `plot_uptake_tau_boxplot`)
+                        keep working unchanged.
+    """
+    FAIL = {
+        'best_model': None,
+        'A': None, 'tau': None, 'r2': None, 'flag': False,
+        'A1': None, 'tau1': None, 'A2': None, 'tau2': None,
+        'mono_A': None, 'mono_tau': None, 'mono_r2': None, 'mono_aicc': None,
+        'bi_A1': None, 'bi_tau1': None, 'bi_A2': None, 'bi_tau2': None,
+        'bi_r2': None, 'bi_aicc': None,
+        'baseline': None,
+    }
 
     if len(time) < min_points:
         return FAIL
 
+    # ---- Baseline: median of frames at or before the pulse time -----
     t_zero = time - pulse_time_s
     pre_mask = (t_zero <= 0) & np.isfinite(uptake)
     if np.sum(pre_mask) >= 2:
@@ -429,25 +494,122 @@ def fit_exponential_uptake(time: np.ndarray, uptake: np.ndarray,
             baseline = 0.0
 
     uptake_corrected = uptake - baseline
-
-    mask   = (t_zero > 0) & np.isfinite(uptake_corrected) & (uptake_corrected >= 0)
+    mask = (t_zero > 0) & np.isfinite(uptake_corrected) & (uptake_corrected >= 0)
     t_fit, y_fit = t_zero[mask], uptake_corrected[mask]
 
     if len(t_fit) < min_points:
         return FAIL
 
     A0   = float(np.nanmax(y_fit))
-    tau0 = float((t_fit[-1] - t_fit[0]) / 2.0)
+    T    = float(t_fit[-1] - t_fit[0])
+    tau0 = T / 2.0 if T > 0 else 1.0
+
+    # ---- Mono-exponential fit ---------------------------------------
+    mono = {'A': None, 'tau': None, 'r2': None, 'aicc': np.inf}
     try:
         popt, _ = curve_fit(_exp_uptake, t_fit, y_fit,
                             p0=[A0, tau0],
                             bounds=([0, 0], [np.inf, np.inf]),
                             maxfev=5000)
-        A, tau = float(popt[0]), float(popt[1])
-        r2     = _r_squared(y_fit, _exp_uptake(t_fit, *popt))
-        return {'A': A, 'tau': tau, 'r2': r2, 'baseline': baseline}
+        y_pred = _exp_uptake(t_fit, *popt)
+        mono['A']    = float(popt[0])
+        mono['tau']  = float(popt[1])
+        mono['r2']   = _r_squared(y_fit, y_pred)
+        mono['aicc'] = _aicc(y_fit, y_pred, n_params=2)
     except Exception:
+        pass
+
+    # ---- Bi-exponential fit -----------------------------------------
+    # p0 uses a fast/slow split around T/10 and T/2, with amplitudes
+    # each half of the observed max — a generic starting point that
+    # avoids seeding the two components identically (which would
+    # trigger a degenerate optimisation).
+    bi = {'A1': None, 'tau1': None, 'A2': None, 'tau2': None,
+          'r2': None, 'aicc': np.inf}
+    try:
+        p0_bi = [A0 / 2.0, max(tau0 / 5.0, 1e-3),
+                 A0 / 2.0, max(tau0,       1e-3)]
+        popt, _ = curve_fit(_biexp_uptake, t_fit, y_fit,
+                            p0=p0_bi,
+                            bounds=([0, 0, 0, 0],
+                                    [np.inf, np.inf, np.inf, np.inf]),
+                            maxfev=10000)
+        A1, tau1_raw, A2, tau2_raw = (float(v) for v in popt)
+
+        # Enforce tau1 < tau2 by sorting (tau, A) pairs so that
+        # tau1 always refers to the FAST component.
+        if tau1_raw > tau2_raw:
+            A1, A2 = A2, A1
+            tau1_raw, tau2_raw = tau2_raw, tau1_raw
+
+        y_pred = _biexp_uptake(t_fit, A1, tau1_raw, A2, tau2_raw)
+        bi['A1']   = A1
+        bi['tau1'] = tau1_raw
+        bi['A2']   = A2
+        bi['tau2'] = tau2_raw
+        bi['r2']   = _r_squared(y_fit, y_pred)
+        bi['aicc'] = _aicc(y_fit, y_pred, n_params=4)
+    except Exception:
+        pass
+
+    # ---- Identifiability guard on bi-exp -----------------------------
+    # Exclude bi from selection when the split is degenerate.  The
+    # numerical fit can still succeed on a near-mono trace, so we check
+    # the tau ratio and the relative amplitudes explicitly.
+    bi_identifiable = False
+    if bi['tau1'] is not None and bi['tau2'] is not None:
+        total_A = (bi['A1'] or 0.0) + (bi['A2'] or 0.0)
+        if bi['tau1'] > 1e-9 and total_A > 1e-9:
+            tau_ratio    = bi['tau2'] / bi['tau1']
+            amp_min_frac = min(bi['A1'], bi['A2']) / total_A
+            if tau_ratio >= UPTAKE_TAU_RATIO_MIN and amp_min_frac >= 0.05:
+                bi_identifiable = True
+
+    # ---- AICc selection ---------------------------------------------
+    mono_aicc_eff = mono['aicc'] if mono['A'] is not None else np.inf
+    bi_aicc_eff   = bi['aicc']   if bi_identifiable         else np.inf
+
+    if mono_aicc_eff == np.inf and bi_aicc_eff == np.inf:
         return FAIL
+
+    if bi_aicc_eff < mono_aicc_eff:
+        best_model = 'Bi'
+        best_A     = (bi['A1'] or 0.0) + (bi['A2'] or 0.0)
+        best_tau   = (bi['A1'] * bi['tau1'] + bi['A2'] * bi['tau2']) / best_A \
+                     if best_A > 1e-9 else np.nan
+        best_r2    = bi['r2']
+    else:
+        best_model = 'Mono'
+        best_A     = mono['A']
+        best_tau   = mono['tau']
+        best_r2    = mono['r2']
+
+    return {
+        'best_model': best_model,
+        'A'   : best_A,
+        'tau' : best_tau,
+        'r2'  : best_r2,
+        'flag': bool(best_r2 is not None and best_r2 >= UPTAKE_R2_FLAG_FLOOR),
+        # Selected-model expanded fields (NaN when the other model won).
+        'A1'  : bi['A1']   if best_model == 'Bi' else None,
+        'tau1': bi['tau1'] if best_model == 'Bi' else None,
+        'A2'  : bi['A2']   if best_model == 'Bi' else None,
+        'tau2': bi['tau2'] if best_model == 'Bi' else None,
+        # Full per-model records (populated whenever the fit converged),
+        # kept so a supplementary BIC-agreement check can be run
+        # post hoc without re-fitting.
+        'mono_A'   : mono['A'],
+        'mono_tau' : mono['tau'],
+        'mono_r2'  : mono['r2'],
+        'mono_aicc': mono['aicc'] if mono['aicc'] != np.inf else None,
+        'bi_A1'   : bi['A1'],
+        'bi_tau1' : bi['tau1'],
+        'bi_A2'   : bi['A2'],
+        'bi_tau2' : bi['tau2'],
+        'bi_r2'   : bi['r2'],
+        'bi_aicc' : bi['aicc'] if bi['aicc'] != np.inf else None,
+        'baseline': baseline,
+    }
 
 def compute_common_duration(traps: List[bfh.TrapData],
                             min_duration_fraction: float = 0.50) -> Optional[float]:
@@ -598,9 +760,51 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
         'Pre_Pulse_Slope'       : None,
         'Post_Pulse_Slope'      : None,
         'EP_Post_Pulse_Behavior': None,
-        'Uptake_Body_VolNorm_tau'  : None, 'Uptake_Body_VolNorm_R2'  : None, 'Uptake_Body_VolNorm_A'  : None,
-        'Uptake_Prot_VolNorm_tau'  : None, 'Uptake_Prot_VolNorm_R2'  : None, 'Uptake_Prot_VolNorm_A'  : None,
-        'Uptake_Total_VolNorm_tau' : None, 'Uptake_Total_VolNorm_R2' : None, 'Uptake_Total_VolNorm_A' : None,
+        # Uptake fit columns.  Naming convention (per region):
+        #   *_A         plateau of the selected model
+        #                (mono: A; bi-exp: A1 + A2)
+        #   *_tau       characteristic timescale of the selected model
+        #                (mono: tau; bi-exp: amplitude-weighted mean)
+        #   *_R2        R2 of the selected model
+        #   *_R2_Flag   True iff R2 >= UPTAKE_R2_FLAG_FLOOR (0.85)
+        #   *_Best_Model 'Mono' or 'Bi'
+        #   *_A1, *_tau1, *_A2, *_tau2   populated when bi wins
+        #   *_Mono_AICc, *_Bi_AICc       both AICcs (whenever fit converged)
+        'Uptake_Body_VolNorm_Best_Model' : None,
+        'Uptake_Body_VolNorm_A'          : None,
+        'Uptake_Body_VolNorm_tau'        : None,
+        'Uptake_Body_VolNorm_R2'         : None,
+        'Uptake_Body_VolNorm_R2_Flag'    : False,
+        'Uptake_Body_VolNorm_A1'         : None,
+        'Uptake_Body_VolNorm_tau1'       : None,
+        'Uptake_Body_VolNorm_A2'         : None,
+        'Uptake_Body_VolNorm_tau2'       : None,
+        'Uptake_Body_VolNorm_Mono_AICc'  : None,
+        'Uptake_Body_VolNorm_Bi_AICc'    : None,
+
+        'Uptake_Prot_VolNorm_Best_Model' : None,
+        'Uptake_Prot_VolNorm_A'          : None,
+        'Uptake_Prot_VolNorm_tau'        : None,
+        'Uptake_Prot_VolNorm_R2'         : None,
+        'Uptake_Prot_VolNorm_R2_Flag'    : False,
+        'Uptake_Prot_VolNorm_A1'         : None,
+        'Uptake_Prot_VolNorm_tau1'       : None,
+        'Uptake_Prot_VolNorm_A2'         : None,
+        'Uptake_Prot_VolNorm_tau2'       : None,
+        'Uptake_Prot_VolNorm_Mono_AICc'  : None,
+        'Uptake_Prot_VolNorm_Bi_AICc'    : None,
+
+        'Uptake_Total_VolNorm_Best_Model': None,
+        'Uptake_Total_VolNorm_A'         : None,
+        'Uptake_Total_VolNorm_tau'       : None,
+        'Uptake_Total_VolNorm_R2'        : None,
+        'Uptake_Total_VolNorm_R2_Flag'   : False,
+        'Uptake_Total_VolNorm_A1'        : None,
+        'Uptake_Total_VolNorm_tau1'      : None,
+        'Uptake_Total_VolNorm_A2'        : None,
+        'Uptake_Total_VolNorm_tau2'      : None,
+        'Uptake_Total_VolNorm_Mono_AICc' : None,
+        'Uptake_Total_VolNorm_Bi_AICc'   : None,
         # Actin summary columns.  Values are per-region means over the
         # pre/post-pulse window, F0-normalised (each cell uses its own
         # F0_Body / F0_Prot as the reference).  For ASP cells the pre-pulse
@@ -907,9 +1111,20 @@ def _run_trap_mechanics(trap: bfh.TrapData, r_eff: float, C: float,
             if region in ud_data:
                 fit = fit_exponential_uptake(t_up, ud_data[region],
                                              pulse_time_s=pulse_time_s)
-                row[f'{col_base}_tau'] = fit['tau']
-                row[f'{col_base}_R2']  = fit['r2']
-                row[f'{col_base}_A']   = fit['A']
+                # Selected-model summary (drives all downstream plots).
+                row[f'{col_base}_Best_Model'] = fit['best_model']
+                row[f'{col_base}_A']          = fit['A']
+                row[f'{col_base}_tau']        = fit['tau']
+                row[f'{col_base}_R2']         = fit['r2']
+                row[f'{col_base}_R2_Flag']    = fit['flag']
+                # Bi-exp expanded fields (NaN when mono wins).
+                row[f'{col_base}_A1']         = fit['A1']
+                row[f'{col_base}_tau1']       = fit['tau1']
+                row[f'{col_base}_A2']         = fit['A2']
+                row[f'{col_base}_tau2']       = fit['tau2']
+                # Both AICcs, for the supplementary sensitivity check.
+                row[f'{col_base}_Mono_AICc']  = fit['mono_aicc']
+                row[f'{col_base}_Bi_AICc']    = fit['bi_aicc']
 
     # ---------- Actin pre/post-pulse means ----------------------------
     # For ASP cells: pre = whole-trace mean, post = NaN.

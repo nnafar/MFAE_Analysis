@@ -3388,9 +3388,17 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
         return
     common_t = np.linspace(0.0, float(max_t), 120)
 
+    # Fraction of the cohort that must still be contributing at a grid
+    # point for that point to be plotted. Matches the guard used by
+    # plot_asp_protrusion_dynamics / plot_mi_protrusion_dynamics — see
+    # them for rationale. Without this, the tail of the mean trace is a
+    # mean over a shrinking sub-cohort and shows step artifacts when
+    # individual cells drop out.
+    MIN_FRAC_CONTRIBUTING = 0.25
+
     def _aggregate(trace_list):
         if not trace_list:
-            return None, None, 0
+            return None, None, None, 0
         M = np.full((len(trace_list), len(common_t)), np.nan)
         for i, (t_arr, L_arr) in enumerate(trace_list):
             if len(t_arr) < 2:
@@ -3400,7 +3408,13 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
             M[i, :] = f(common_t)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            return np.nanmean(M, axis=0), np.nanstd(M, axis=0), len(trace_list)
+            m_arr  = np.nanmean(M, axis=0)
+            sd_arr = np.nanstd(M, axis=0)
+            n_arr  = np.sum(np.isfinite(M), axis=0)
+        n_start = len(trace_list)
+        min_n_required = max(1, int(np.ceil(MIN_FRAC_CONTRIBUTING * n_start)))
+        mask = np.isfinite(m_arr) & np.isfinite(sd_arr) & (n_arr >= min_n_required)
+        return m_arr, sd_arr, mask, n_start
 
     bp.apply_thesis_rcparams()
     fig, ax = plt.subplots(figsize=(7.2, 4.6))
@@ -3426,18 +3440,26 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
         ('ruptured', ep_colour,          'ruptured_post', False, ep_rupt_label),
     ]
     for key, colour, fate, is_baseline, base_label in plot_order:
-        m, sd, n = _aggregate(traces[key])
-        if m is None:
+        m, sd, mask, n = _aggregate(traces[key])
+        if m is None or not np.any(mask):
             continue
+        t_masked  = common_t[mask]
+        m_masked  = m[mask]
+        sd_masked = sd[mask]
         lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
                                           fate=fate,
                                           treatment=base_treatment,
                                           is_baseline=is_baseline)
-        ax.plot(common_t, m,
-                markevery=bp.markevery_from(common_t),
+        ax.plot(t_masked, m_masked,
+                markevery=bp.markevery_from(t_masked),
                 label=f"{base_label} (n={n})", **lkw)
-        ax.fill_between(common_t, m - sd, m + sd,
+        ax.fill_between(t_masked, m_masked - sd_masked, m_masked + sd_masked,
                         color=colour, alpha=bp.TRACE_BAND_ALPHA, linewidth=0)
+        logger.info(
+            f"  [PrePulse trace] {key}: n_start={n} "
+            f"plotted_to={float(t_masked[-1]):.1f}s "
+            f"(min_n={max(1, int(np.ceil(MIN_FRAC_CONTRIBUTING * n)))})"
+        )
 
     ax.set_xlabel("Time from aspiration onset (s)")
     ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
@@ -3562,9 +3584,15 @@ def plot_thesis_combined_wholetrace_trace_by_fate(grouped_data: Dict,
         return
     common_t = np.linspace(0.0, float(max_t), 160)
 
+    # Min-fraction contributing guard: matches
+    # plot_asp_protrusion_dynamics and the pre-pulse variant above. Keeps
+    # the tail of the mean trace from being a mean over a shrinking
+    # sub-cohort.
+    MIN_FRAC_CONTRIBUTING = 0.25
+
     def _aggregate(trace_list):
         if not trace_list:
-            return None, None, 0
+            return None, None, None, 0
         M = np.full((len(trace_list), len(common_t)), np.nan)
         for i, (t_arr, L_arr) in enumerate(trace_list):
             if len(t_arr) < 2:
@@ -3574,26 +3602,40 @@ def plot_thesis_combined_wholetrace_trace_by_fate(grouped_data: Dict,
             M[i, :] = f(common_t)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            return np.nanmean(M, axis=0), np.nanstd(M, axis=0), len(trace_list)
+            m_arr  = np.nanmean(M, axis=0)
+            sd_arr = np.nanstd(M, axis=0)
+            n_arr  = np.sum(np.isfinite(M), axis=0)
+        n_start = len(trace_list)
+        min_n_required = max(1, int(np.ceil(MIN_FRAC_CONTRIBUTING * n_start)))
+        mask = np.isfinite(m_arr) & np.isfinite(sd_arr) & (n_arr >= min_n_required)
+        return m_arr, sd_arr, mask, n_start
 
     bp.apply_thesis_rcparams()
     fig, ax = plt.subplots(figsize=(7.2, 4.6))
 
     for cohort_key, _pairs, colour, fate, base_label in cohort_defs:
-        m, sd, n = _aggregate(traces[cohort_key])
-        if m is None or n == 0:
+        m, sd, mask, n = _aggregate(traces[cohort_key])
+        if m is None or n == 0 or not np.any(mask):
             continue
+        t_masked  = common_t[mask]
+        m_masked  = m[mask]
+        sd_masked = sd[mask]
         # No-pulse cohort reads as baseline (dimmed) so the EP cohorts
         # visually dominate the comparison.
         is_baseline = (cohort_key == 'asp')
         lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
                                           fate=fate, treatment='WT',
                                           is_baseline=is_baseline)
-        ax.plot(common_t, m,
-                markevery=bp.markevery_from(common_t),
+        ax.plot(t_masked, m_masked,
+                markevery=bp.markevery_from(t_masked),
                 label=f"{base_label} (n={n})", **lkw)
-        ax.fill_between(common_t, m - sd, m + sd,
+        ax.fill_between(t_masked, m_masked - sd_masked, m_masked + sd_masked,
                         color=colour, alpha=bp.TRACE_BAND_ALPHA, linewidth=0)
+        logger.info(
+            f"  [WholeTrace] {cohort_key}: n_start={n} "
+            f"plotted_to={float(t_masked[-1]):.1f}s "
+            f"(min_n={max(1, int(np.ceil(MIN_FRAC_CONTRIBUTING * n)))})"
+        )
 
     ax.set_xlabel("Time from aspiration onset (s)")
     ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")

@@ -15,6 +15,7 @@ import pandas as pd
 import bulk_file_handling as bfh
 import bulk_mechanics     as bm
 import thesis_plotting    as tp  
+from thesis_plotting_uptake import register_uptake_plots
 import bulk_utils as utils
 
 logging.basicConfig(
@@ -421,6 +422,10 @@ def main():
          tp.run_thesis_claim2_uptake_actin_plots,
          all_grouped_data, mechanics_df, at_pulse_combined_dir,
          at_pulse_duration_map)
+
+    _try("Uptake plots (mean trace, per-trap A, correlations)",
+         register_uptake_plots,
+         all_grouped_data, mechanics_df, whole_trace_combined_dir)
 
     # ------------------------------------------------------------------
     # Whole-trace MI plots (was: supplementary/, now: whole-trace/combined/).
