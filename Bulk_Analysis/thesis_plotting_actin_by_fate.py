@@ -101,30 +101,38 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
     """
     Paired pre/post actin boxplot with within-cell lines, split by fate.
 
-    Layout: 2 rows (Body, Prot) x N cols (one per pulse duration present).
-    Within each subplot, one (pre, post) column pair per (treatment, fate)
-    group. For a WT-only EP cohort with both fates present, that is four
-    columns per subplot (WT intact pre / post, WT ruptured pre / post),
-    separated by a gap between fate blocks. Each cell contributes two
-    dots (pre, post) connected by a thin grey line so the reader can see
-    the within-cell direction.
+    Layout: 2 panels (rows) — top = Body region, bottom = Protrusion —
+    each holding every (treatment, fate, duration) combination side by
+    side. For a WT-only EP cohort with both fates present, each panel
+    reads left-to-right as:
+
+        [WT intact  100 µs pre / post]
+        [WT intact   5 ms   pre / post]
+        [WT ruptured 100 µs pre / post]
+        [WT ruptured  5 ms  pre / post]
+
+    with narrow gaps between (duration) blocks and a wider gap between
+    fate blocks. If both WT and CytD are present, the whole sequence is
+    repeated for CytD after a bigger gap. Each cell contributes two dots
+    (pre, post) joined by a thin grey line so the within-cell direction
+    is visible.
 
     Statistics annotated:
-        * Wilcoxon signed-rank p-value on the within-cell (pre, post) pair,
-          printed above each fate block.
-        * Mann-Whitney U p-value on the post-pulse values between fate
-          cohorts of the same treatment, printed above the post-pulse
-          columns.
+      * Wilcoxon signed-rank p-value on the within-cell (pre, post) pair,
+        printed above each duration block.
+      * Mann-Whitney U p-value on the post-pulse values between fate
+        cohorts of the same (treatment, duration), printed as a bracket
+        between the two post columns of a matched duration.
 
     Only cells with `Condition_Type == 'EP'` and `Fate_Status` in
     (`intact`, `ruptured_post`) are used, matching the filter of the
     pooled variant in `thesis_plotting.py`.
 
-    The output file is named `Thesis_EP_Actin_PrePost_Paired_ByFate.pdf`
-    so that it does not overwrite the pooled variant.
+    Output filename: `Thesis_EP_Actin_PrePost_Paired_ByFate.pdf`.
     """
     if mechanics_df is None or mechanics_df.empty:
-        logger.warning("Paired actin (by fate) plot skipped: empty mechanics_df.")
+        logger.warning(
+            "Paired actin (by fate) plot skipped: empty mechanics_df.")
         return
 
     df = mechanics_df.copy()
@@ -134,8 +142,7 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
     ]
     if df.empty:
         logger.warning(
-            "Paired actin (by fate) plot skipped: no EP cells pass filter."
-        )
+            "Paired actin (by fate) plot skipped: no EP cells pass filter.")
         return
 
     durations_present = [
@@ -145,8 +152,7 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
     if not durations_present:
         logger.warning(
             "Paired actin (by fate) plot skipped: no expected pulse "
-            "durations (100us / 5ms) in EP cohort."
-        )
+            "durations (100us / 5ms) in EP cohort.")
         return
 
     treatments_present = [
@@ -155,76 +161,70 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
     if not treatments_present:
         logger.warning(
             "Paired actin (by fate) plot skipped: no known treatments "
-            "in EP cohort."
-        )
+            "in EP cohort.")
         return
 
-    # Column geometry per subplot.
-    # Layout is one (pre, post) pair per (treatment, fate) group, with a
-    # gap of one unit between adjacent groups. The full sequence is
-    # WT intact pre, WT intact post, [gap], WT ruptured pre, WT ruptured post,
-    # [larger gap], CytD intact pre, ..., built here in a single pass.
-    positions: Dict[Tuple[str, str], Tuple[float, float]] = {}
+    # -------------------------------------------------------------------
+    # Column geometry: single row per region. Loop order is
+    #   treatment -> fate -> duration
+    # so all durations of the same (treatment, fate) sit next to each
+    # other. Gaps: 0.6 between durations within a fate block, 1.6 between
+    # fates within a treatment, 2.4 between treatments.
+    # -------------------------------------------------------------------
+    positions: Dict[Tuple[str, str, str], Tuple[float, float]] = {}
     xticks: list = []
     xticklabels: list = []
     cursor = 0.0
     for treatment in treatments_present:
         for fate in _FATE_ORDER:
-            p_pre, p_post = cursor, cursor + 1.0
-            positions[(treatment, fate)] = (p_pre, p_post)
-            xticks.extend([p_pre, p_post])
-            xticklabels.extend([
-                f"{treatment}\n{_FATE_TICK_LABEL[fate]}\npre",
-                f"{treatment}\n{_FATE_TICK_LABEL[fate]}\npost",
-            ])
-            cursor += 2.5  # 0.5-unit gap between fates within a treatment
-        cursor += 1.5  # extra gap between treatments
+            for dur in durations_present:
+                p_pre, p_post = cursor, cursor + 1.0
+                positions[(treatment, fate, dur)] = (p_pre, p_post)
+                xticks.extend([p_pre, p_post])
+                # Compact two-line label so ticks don't collide.
+                block = f"{_FATE_TICK_LABEL[fate]}\n{dur}"
+                xticklabels.extend([f"{block}\npre", f"{block}\npost"])
+                cursor += 2.6  # duration-block width
+            cursor += 1.6  # extra gap between fates within a treatment
+        cursor += 2.4  # extra gap between treatments
 
-    per_col_width = 1.6 * len(treatments_present) * len(_FATE_ORDER)
+    # Figure size scales with the number of columns.
+    n_cols = len(xticks)
+    fig_w = max(9.0, 0.55 * n_cols + 2.0)
     fig, axes = plt.subplots(
-        2, len(durations_present),
-        figsize=(per_col_width * len(durations_present), 6.8),
-        squeeze=False,
+        2, 1, figsize=(fig_w, 7.6), squeeze=False, sharex=True,
     )
 
     for row_idx, region in enumerate(('Body', 'Prot')):
+        ax = axes[row_idx, 0]
+
         pre_col  = f'Actin_{region}_PrePulse_F0Norm'
         post_col = f'Actin_{region}_PostPulse_F0Norm'
         if pre_col not in df.columns or post_col not in df.columns:
-            for c in range(len(durations_present)):
-                axes[row_idx, c].set_visible(False)
+            ax.set_visible(False)
             continue
 
-        for col_idx, dur in enumerate(durations_present):
-            ax = axes[row_idx, col_idx]
-            sub_d = df.loc[
-                df['Duration_label'] == dur,
-                ['Treatment', 'Fate_Status', pre_col, post_col],
-            ].dropna(subset=[pre_col, post_col])
-            if sub_d.empty:
-                ax.set_visible(False)
-                continue
+        # Cache post-pulse values per (treatment, dur, fate) for the
+        # between-fate Mann-Whitney annotation after all boxes are drawn.
+        post_by_group: Dict[Tuple[str, str, str], np.ndarray] = {}
 
-            # Cache post-pulse values per (treatment, fate) for the
-            # between-fate Mann-Whitney annotation after all boxes drawn.
-            post_by_group: Dict[Tuple[str, str], np.ndarray] = {}
-
-            for treatment in treatments_present:
-                for fate in _FATE_ORDER:
-                    pts = sub_d.loc[
-                        (sub_d['Treatment'] == treatment)
-                        & (sub_d['Fate_Status'] == fate)
-                    ]
+        for treatment in treatments_present:
+            for fate in _FATE_ORDER:
+                for dur in durations_present:
+                    pts = df.loc[
+                        (df['Duration_label'] == dur)
+                        & (df['Treatment'] == treatment)
+                        & (df['Fate_Status'] == fate),
+                        [pre_col, post_col],
+                    ].dropna(subset=[pre_col, post_col])
                     if pts.empty:
                         continue
-                    x_pre, x_post = positions[(treatment, fate)]
+                    x_pre, x_post = positions[(treatment, fate, dur)]
 
-                    # Grammar colour follows (treatment, dur); fate is
-                    # encoded through linestyle / marker fill by the
-                    # grammar helper.
-                    protocol = dur  # '100us' or '5ms'
+                    # Grammar routing: colour follows (treatment, dur);
+                    # fate encoded via linestyle / marker fill.
                     lkw = utils.get_line_kwargs(
-                        treatment, protocol, fate=fate, size=5,
+                        treatment, dur, fate=fate, size=5,
                     )
                     colour = lkw['color']
                     linestyle = lkw['linestyle']
@@ -232,7 +232,7 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
 
                     pre_vals  = pts[pre_col].to_numpy()
                     post_vals = pts[post_col].to_numpy()
-                    post_by_group[(treatment, fate)] = post_vals
+                    post_by_group[(treatment, dur, fate)] = post_vals
 
                     # Within-cell connectors.
                     for pv, qv in zip(pre_vals, post_vals):
@@ -241,9 +241,7 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
                             color='0.75', lw=0.5, alpha=0.7, zorder=1,
                         )
 
-                    # Fate-aware median: dashed for ruptured, solid for
-                    # intact, so a reader can distinguish fate at a
-                    # glance without reading the tick labels.
+                    # Fate-aware boxplot styling.
                     ax.boxplot(
                         [pre_vals, post_vals],
                         positions=[x_pre, x_post], widths=0.55,
@@ -260,16 +258,16 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
                         showfliers=False,
                     )
 
-                    # Individual points. Ruptured cells use open markers
-                    # to match the grammar helper's convention.
+                    # Individual points, ruptured -> open markers.
                     face = 'none' if fate == 'ruptured_post' else colour
                     edge = colour
                     lw_pt = 0.6 if fate == 'ruptured_post' else 0.4
                     rng = np.random.default_rng(
-                        42 + col_idx * 10 + row_idx
-                        + hash((treatment, fate)) % 1000
+                        42 + row_idx * 100
+                        + hash((treatment, fate, dur)) % 1000
                     )
-                    for x_, vals in ((x_pre, pre_vals), (x_post, post_vals)):
+                    for x_, vals in ((x_pre, pre_vals),
+                                      (x_post, post_vals)):
                         jitter = rng.uniform(-0.12, 0.12, size=len(vals))
                         ax.scatter(
                             np.full(len(vals), x_) + jitter, vals,
@@ -282,89 +280,89 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
                     if len(pre_vals) >= 5:
                         try:
                             _, p_val = stats.wilcoxon(pre_vals, post_vals)
-                            med_delta = float(np.median(post_vals - pre_vals))
+                            med_delta = float(
+                                np.median(post_vals - pre_vals))
                             logger.info(
                                 f"  [PairedActin Wilcoxon] region={region} "
-                                f"dur={dur} treatment={treatment} fate={fate}: "
-                                f"n={len(pre_vals)} med_delta={med_delta:+.4g} "
-                                f"p={p_val:.4g}"
+                                f"treatment={treatment} fate={fate} "
+                                f"dur={dur}: n={len(pre_vals)} "
+                                f"med_delta={med_delta:+.4g} p={p_val:.4g}"
                             )
                             p_str = (
                                 f"W p={p_val:.3f}" if p_val >= 0.001
                                 else "W p<0.001"
                             )
                             y_top = float(np.nanmax(np.concatenate(
-                                [pre_vals, post_vals]
-                            )))
+                                [pre_vals, post_vals])))
                             ax.text(
                                 (x_pre + x_post) / 2, y_top * 1.02,
                                 p_str, ha='center', va='bottom',
-                                fontsize=7.0, color=colour,
+                                fontsize=6.5, color=colour,
                             )
                         except ValueError:
                             pass
 
-            # Between-fate Mann-Whitney on post-pulse values, per
-            # treatment. Annotated as a bracket spanning the two post
-            # columns of the treatment.
-            for treatment in treatments_present:
+        # Between-fate Mann-Whitney on post-pulse values, one per
+        # (treatment, duration). Bracket spans the two post columns of
+        # the matched duration.
+        for treatment in treatments_present:
+            for dur in durations_present:
                 intact_post = post_by_group.get(
-                    (treatment, 'intact'), np.array([])
-                )
+                    (treatment, dur, 'intact'), np.array([]))
                 rup_post = post_by_group.get(
-                    (treatment, 'ruptured_post'), np.array([])
-                )
-                if len(intact_post) >= 3 and len(rup_post) >= 3:
-                    try:
-                        _, p_mw = stats.mannwhitneyu(
-                            intact_post, rup_post, alternative='two-sided',
-                        )
-                        # Cliff's delta on the post-pulse values.
-                        A = intact_post[:, None]
-                        B = rup_post[None, :]
-                        delta = (
-                            (A > B).sum() - (A < B).sum()
-                        ) / (len(intact_post) * len(rup_post))
-                        logger.info(
-                            f"  [PairedActin MW post] region={region} "
-                            f"dur={dur} treatment={treatment}: "
-                            f"n=({len(intact_post)},{len(rup_post)}) "
-                            f"delta={delta:+.3f} p={p_mw:.4g}"
-                        )
-                        p_str = (
-                            f"MW p={p_mw:.3g}" if p_mw >= 0.001
-                            else "MW p<0.001"
-                        )
-                        # Bracket between the intact-post and
-                        # ruptured-post columns of this treatment.
-                        _, x_intact_post = positions[(treatment, 'intact')]
-                        _, x_rup_post = positions[(treatment, 'ruptured_post')]
-                        y_all = np.concatenate([intact_post, rup_post])
-                        y_top = float(np.nanmax(y_all)) * 1.14
-                        ax.plot(
-                            [x_intact_post, x_rup_post],
-                            [y_top, y_top],
-                            color='0.35', lw=0.7,
-                        )
-                        ax.text(
-                            (x_intact_post + x_rup_post) / 2,
-                            y_top * 1.01,
-                            p_str, ha='center', va='bottom',
-                            fontsize=7.5, color='0.15',
-                        )
-                    except ValueError:
-                        pass
+                    (treatment, dur, 'ruptured_post'), np.array([]))
+                if len(intact_post) < 3 or len(rup_post) < 3:
+                    continue
+                try:
+                    _, p_mw = stats.mannwhitneyu(
+                        intact_post, rup_post, alternative='two-sided')
+                    A = intact_post[:, None]
+                    B = rup_post[None, :]
+                    delta = (
+                        (A > B).sum() - (A < B).sum()
+                    ) / (len(intact_post) * len(rup_post))
+                    logger.info(
+                        f"  [PairedActin MW post] region={region} "
+                        f"treatment={treatment} dur={dur}: "
+                        f"n=({len(intact_post)},{len(rup_post)}) "
+                        f"delta={delta:+.3f} p={p_mw:.4g}"
+                    )
+                    p_str = (
+                        f"MW p={p_mw:.3g}" if p_mw >= 0.001
+                        else "MW p<0.001"
+                    )
+                    _, x_intact_post = positions[
+                        (treatment, 'intact', dur)]
+                    _, x_rup_post = positions[
+                        (treatment, 'ruptured_post', dur)]
+                    y_all = np.concatenate([intact_post, rup_post])
+                    y_top = float(np.nanmax(y_all)) * 1.14
+                    ax.plot(
+                        [x_intact_post, x_rup_post],
+                        [y_top, y_top],
+                        color='0.35', lw=0.7,
+                    )
+                    ax.text(
+                        (x_intact_post + x_rup_post) / 2,
+                        y_top * 1.01,
+                        p_str, ha='center', va='bottom',
+                        fontsize=7.0, color='0.15',
+                    )
+                except ValueError:
+                    pass
 
-            ax.set_xticks(xticks)
-            ax.set_xticklabels(xticklabels, fontsize=7.5)
-            if xticks:
-                ax.set_xlim(min(xticks) - 0.7, max(xticks) + 0.7)
-            ax.axhline(1.0, color='0.6', lw=0.6, ls='--', zorder=0)
-            if col_idx == 0:
-                ax.set_ylabel(f"{region}\n" r"Actin $I/F_0$")
-            ax.set_title(f"{dur} pulse -- {region}", fontsize=10)
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
+        ax.axhline(1.0, color='0.6', lw=0.6, ls='--', zorder=0)
+        ax.set_ylabel(f"{region}\n" r"Actin $I/F_0$")
+        ax.set_title(f"{region} region", fontsize=10)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    # Shared x-axis: apply ticks / labels once to the bottom panel.
+    bottom_ax = axes[1, 0]
+    bottom_ax.set_xticks(xticks)
+    bottom_ax.set_xticklabels(xticklabels, fontsize=7.0)
+    if xticks:
+        bottom_ax.set_xlim(min(xticks) - 0.7, max(xticks) + 0.7)
 
     plt.tight_layout()
     utils.save_plot_pdf(
@@ -415,33 +413,99 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
     """
     if mechanics_df is None or mechanics_df.empty:
         logger.warning(
-            "Actin-around-pulse (by fate) plot skipped: empty mechanics_df."
-        )
+            "Actin-around-pulse (by fate) plot skipped: empty mechanics_df.")
         return
 
     df = mechanics_df.copy()
-    df = df.loc[
+    df_ep = df.loc[
         (df['Condition_Type'] == 'EP')
         & df['Fate_Status'].isin(list(_FATE_ORDER))
     ]
-    # Map (folder, trap_id) -> fate so we can route each accepted trap
+    # Map (folder, trap_id) -> fate so we can route each accepted EP trap
     # into its fate cohort at aggregation time.
     fate_map: Dict[Tuple[str, int], str] = {
         (row.Experiment_Folder, int(row.Trap_ID)): row.Fate_Status
-        for row in df.itertuples(index=False)
+        for row in df_ep.itertuples(index=False)
     }
     if not fate_map:
         logger.warning(
-            "Actin-around-pulse (by fate) plot skipped: no EP cells accepted."
-        )
+            "Actin-around-pulse (by fate) plot skipped: no EP cells accepted.")
         return
+
+    # ASP cohort filter (intact only). Used to build a per-treatment
+    # baseline reference. Whole-cell time-averaged I/F0 gives one scalar
+    # per ASP cell; the cohort mean and SD are drawn on each region axis
+    # as a horizontal band spanning the full time window.
+    df_asp = df.loc[
+        (df['Condition_Type'] == 'ASP')
+        & (df['Fate_Status'] == 'intact')
+    ]
+    asp_pairs: set = set(
+        zip(df_asp['Experiment_Folder'], df_asp['Trap_ID'])
+    )
 
     # (treatment, fate, duration, region) -> list of (t_aligned, I/F0)
     traces: Dict[Tuple[str, str, str, str], list] = {}
     durations_seen: set = set()
 
+    # (treatment, region) -> list of per-cell mean I/F0 scalars for ASP.
+    asp_scalars: Dict[Tuple[str, str], list] = {}
+
     for gk, traps in grouped_data.items():
-        if not traps or traps[0].metadata.condition_type != 'EP':
+        if not traps:
+            continue
+        cond_type = traps[0].metadata.condition_type
+
+        # -----------------------------------------------------------------
+        # ASP baseline aggregation. Each cell contributes one scalar per
+        # region (mean I/F0 over its usable trace). The scalar goes into
+        # the treatment bucket; SD across cells becomes the band width.
+        # -----------------------------------------------------------------
+        if cond_type == 'ASP':
+            for trap in traps:
+                meta = trap.metadata
+                if (meta.full_path.name, trap.trap_id) not in asp_pairs:
+                    continue
+                treatment = meta.treatment
+                if treatment not in _TREATMENT_ORDER:
+                    continue
+                ad = getattr(trap, 'actin_data', {}) or {}
+                if 'Time_s' not in ad:
+                    continue
+                t_raw = np.asarray(ad['Time_s'], dtype=float)
+                if len(t_raw) == 0:
+                    continue
+                for region in ('Body', 'Prot'):
+                    mean_key = f'Actin_{region}_Mean'
+                    f0_key   = f'F0_{region}'
+                    if mean_key not in ad or f0_key not in ad:
+                        continue
+                    intensity = np.asarray(ad[mean_key], dtype=float)
+                    f0_arr = np.asarray(ad[f0_key], dtype=float)
+                    f0_scalar = next(
+                        (float(v) for v in f0_arr
+                         if np.isfinite(v) and v > 0),
+                        None,
+                    )
+                    if f0_scalar is None:
+                        continue
+                    valid = (
+                        np.isfinite(intensity) & (intensity > 0)
+                    )
+                    if valid.sum() < 5:
+                        continue
+                    cell_mean = float(
+                        np.nanmean(intensity[valid] / f0_scalar))
+                    if not np.isfinite(cell_mean):
+                        continue
+                    asp_scalars.setdefault(
+                        (treatment, region), []).append(cell_mean)
+            continue
+
+        # -----------------------------------------------------------------
+        # EP trace aggregation (unchanged).
+        # -----------------------------------------------------------------
+        if cond_type != 'EP':
             continue
         for trap in traps:
             meta = trap.metadata
@@ -498,8 +562,7 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
     durations = sorted(durations_seen, key=_duration_sort_key)
     if not durations:
         logger.warning(
-            "Actin-around-pulse (by fate) plot skipped: no valid EP durations."
-        )
+            "Actin-around-pulse (by fate) plot skipped: no valid EP durations.")
         return
 
     common_t = np.linspace(-window_pre_s, window_post_s, 90)
@@ -527,6 +590,21 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
                 len(trs),
             )
 
+    # Pre-compute the ASP baseline scalars per (treatment, region).
+    # Kept as a dict of (mean, sd, n) tuples so the drawing loop below
+    # can add the reference band to every figure without recomputing.
+    asp_baseline: Dict[Tuple[str, str], Tuple[float, float, int]] = {}
+    for (treatment, region), vals in asp_scalars.items():
+        arr = np.asarray(vals, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if len(arr) < 2:
+            continue
+        asp_baseline[(treatment, region)] = (
+            float(np.mean(arr)),
+            float(np.std(arr, ddof=1)),
+            int(len(arr)),
+        )
+
     # One figure per duration. 2 rows (Body / Prot); (treatment, fate)
     # overlaid within a subplot.
     for dur in durations:
@@ -543,6 +621,33 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
             )
             ax.axhline(1.0, color='0.7', lw=0.6, ls=':', zorder=0)
 
+            # -------------------------------------------------------------
+            # ASP baseline: horizontal band per treatment. Drawn first so
+            # EP traces sit on top and remain visually dominant. Uses the
+            # ASP-treatment palette to distinguish from the pulse-colour
+            # EP traces (WT-ASP navy, CytD-ASP red).
+            # -------------------------------------------------------------
+            for treatment in _TREATMENT_ORDER:
+                base = asp_baseline.get((treatment, region))
+                if base is None:
+                    continue
+                mu_asp, sd_asp, n_asp = base
+                asp_colour = bp.ASP_TREATMENT_COLOUR.get(
+                    treatment, utils.get_style_color(treatment, 'ASP'))
+                ax.axhspan(
+                    mu_asp - sd_asp, mu_asp + sd_asp,
+                    color=asp_colour, alpha=0.10, zorder=0,
+                )
+                ax.axhline(
+                    mu_asp, color=asp_colour, lw=1.2, ls=':',
+                    alpha=0.75, zorder=0,
+                    label=f"{treatment} ASP baseline (n={n_asp})",
+                )
+                any_data_this_dur = True
+
+            # -------------------------------------------------------------
+            # EP mean traces by (treatment, fate).
+            # -------------------------------------------------------------
             for treatment in _TREATMENT_ORDER:
                 for fate in _FATE_ORDER:
                     mu, sd, n = _agg(
@@ -581,7 +686,7 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
             logger.info(f"  Skipping {dur} (by fate): no valid actin traces.")
             continue
 
-        axes[0, 0].legend(frameon=False, fontsize=8, loc='best')
+        axes[0, 0].legend(frameon=False, fontsize=7.5, loc='best')
         plt.tight_layout()
 
         target_dir = output_dir
@@ -594,7 +699,9 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
         plt.close()
         logger.info(
             f"Actin-around-pulse trace ({dur}, by fate) written "
-            f"(pulse-frame indexing caveat applies)."
+            f"(ASP baseline: "
+            f"{ {k: v[:2] for k, v in asp_baseline.items()} }; "
+            f"pulse-frame indexing caveat applies)."
         )
 
 

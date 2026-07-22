@@ -241,44 +241,54 @@ def plot_asp_protrusion_dynamics(grouped_data: Dict,
             }
 
     if combined_lt_data:
-        fig, ax = plt.subplots(figsize=(9, 6))
+        # Reference styling: matches plot_thesis_combined_prepulse_trace_by_fate.
+        bp.apply_thesis_rcparams()
+        fig, ax = plt.subplots(figsize=(7.2, 4.6))
 
         _stripped = {k: k.replace("_ASP", "") for k in combined_lt_data.keys()}
         _legend_map = bp._reduce_labels(sorted(_stripped.values()))
 
-        global_max_t = 0
-        for idx, (cond_label, data) in enumerate(combined_lt_data.items()):
+        for cond_label, data in combined_lt_data.items():
             c_t = data['t']
             c_mean = data['mean']
             c_sd = data['sd']
 
-            # Route colour + marker through the (Treatment, ASP) grammar.
-            # Searches the condition label string safely for the treatment token
+            # Determine treatment from the condition label. ASP-only figure
+            # compares WT vs CytD, so we use the ASP-treatment palette
+            # rather than the pulse-condition palette.
             cell_type = 'CytD' if 'CytD' in cond_label else 'WT'
-            
-            color  = utils.get_style_color(cell_type, 'ASP')
-            marker = utils.get_style_marker(cell_type)
-            legend_label = _legend_map.get(_stripped[cond_label], _stripped[cond_label])
+            colour = bp.ASP_TREATMENT_COLOUR.get(
+                cell_type, utils.get_style_color(cell_type, 'ASP'))
 
-            ax.plot(c_t, c_mean, color=color, lw=utils.MFA_STYLE_LINE_LW,
-                    ls='-', marker=marker,
-                    markevery=max(1, len(c_t)//10), markersize=6,
-                    label=f'{legend_label} Mean')
+            legend_label = _legend_map.get(_stripped[cond_label],
+                                            _stripped[cond_label])
+
+            # Both cohorts are "baseline" ASP data (no pulse), so fate is
+            # 'baseline' — solid line, filled marker keyed to treatment.
+            lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
+                                              fate='baseline',
+                                              treatment=cell_type,
+                                              is_baseline=False)
+            ax.plot(c_t, c_mean,
+                    markevery=bp.markevery_from(c_t),
+                    label=legend_label, **lkw)
             ax.fill_between(c_t, c_mean - c_sd, c_mean + c_sd,
-                            color=color, alpha=0.15, edgecolor=None)
+                            color=colour, alpha=bp.TRACE_BAND_ALPHA,
+                            linewidth=0)
 
-            if data['dur'] is not None and data['dur'] > global_max_t:
-                global_max_t = data['dur']
+        ax.set_xlabel("Time from aspiration onset (s)")
+        ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
+        ax.set_title("ASP protrusion mechanics (WT vs CytD)")
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.legend(frameon=False, loc='lower right')
 
-        ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Protrusion Length (µm)')
-        ax.legend()
-        
         if global_asp_dur is not None:
-            ax.set_xlim(-10, global_asp_dur)
-            
+            ax.set_xlim(0, global_asp_dur)
+
         plt.tight_layout()
-        utils.save_plot_pdf(output_dir / "Thesis_Combined_Protrusion_Dynamics_ASP.pdf")
+        utils.save_plot_pdf(
+            output_dir / "Thesis_Combined_Protrusion_Dynamics_ASP.pdf")
         plt.close()
 
 def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
@@ -654,14 +664,28 @@ def _resolve_treatment_dir(cond_or_treatment: str,
 def plot_mi_protrusion_dynamics(grouped_data: Dict,
                                 output_dir: Path,
                                 global_pre_dur: Optional[float] = None,
-                                output_dir_map: Optional[Dict[str, Path]] = None) -> None:
+                                output_dir_map: Optional[Dict[str, Path]] = None,
+                                mechanics_df: Optional[pd.DataFrame] = None) -> None:
     """
     Per-bucket ``Thesis_MI_Boxplot_<bucket>.pdf`` files are routed via
     ``output_dir_map`` when supplied ('ASP', '100us', '5ms'). The
     cross-bucket overlay ``Thesis_Combined_Protrusion_Dynamics_MI.pdf``
     always lands in ``output_dir`` (the ``combined/`` subfolder).
+
+    When ``mechanics_df`` is supplied, only cells that pass the MI
+    whole-trace R^2 gate (``MI_Whole_R2_Flag == True``) contribute to the
+    aggregated overlay, so the figure shares its cohort with the MI
+    parameter and MI trace figures. When it is not supplied (legacy
+    callers), no such filter is applied.
     """
     logger.info("Generating Thesis Plot: MI Protrusion Dynamics (ASP vs EP-pre)...")
+
+    # MI cohort membership set (folder, trap_id). Empty means no filter.
+    mi_pairs: set = set()
+    if mechanics_df is not None and not mechanics_df.empty and \
+            'MI_Whole_R2_Flag' in mechanics_df.columns:
+        mi_pass = mechanics_df.loc[mechanics_df['MI_Whole_R2_Flag'] == True]
+        mi_pairs = set(zip(mi_pass['Experiment_Folder'], mi_pass['Trap_ID']))
 
     bucketed_traces: Dict[str, list] = {}
     bucketed_max_records: Dict[str, list] = {}
@@ -674,9 +698,52 @@ def plot_mi_protrusion_dynamics(grouped_data: Dict,
         meta = traps[0].metadata
 
         for trap in sorted(traps, key=lambda t: t.trap_id):
+            # MI cohort gate — skip cells that didn't pass MI R^2 when a
+            # mechanics_df was passed in.
+            if mi_pairs:
+                cell_key = (meta.full_path.name, trap.trap_id)
+                if cell_key not in mi_pairs:
+                    continue
+
             bucket = _condition_bucket_fate(meta, trap.fate_status)
-            t_zeroed, l = _extract_asp_phase_trace(trap)
-            if t_zeroed is None:
+
+            # Frame-index extraction (mirrors
+            # plot_thesis_combined_prepulse_trace_by_fate). Using
+            # _extract_asp_phase_trace here rejects 100 µs cells because
+            # their pre-pulse window rarely reaches 15 frames when the
+            # sum(pre_mask)<15 guard is applied *after* the >0 mask; the
+            # frame-index approach keeps them.
+            p_data = trap.protrusion_data
+            if ('Time_s' not in p_data
+                    or 'Protrusion_Length_um' not in p_data):
+                continue
+            times = np.asarray(p_data['Time_s'], dtype=float)
+            lens  = np.asarray(p_data['Protrusion_Length_um'], dtype=float)
+            valid = np.isfinite(times) & np.isfinite(lens)
+            times = times[valid]
+            lens  = lens[valid]
+            if len(times) < 5:
+                continue
+
+            ctype = meta.condition_type
+            is_post = bool(getattr(trap, 'post_pulse_entry', False))
+            if ctype == 'ASP' or is_post:
+                t_zeroed = times - times[0]
+                l = lens
+            elif ctype == 'EP':
+                pf = meta.pulse_frame
+                if not (0 < pf < len(times)):
+                    continue
+                t_all = times - times[0]
+                pre_mask = (np.arange(len(times)) < pf) & (lens > 0)
+                t_zeroed = t_all[pre_mask]
+                l = lens[pre_mask]
+                if len(t_zeroed) == 0:
+                    continue
+                # Re-zero to the first accepted pre-pulse frame so all
+                # cohorts share the same time origin.
+                t_zeroed = t_zeroed - t_zeroed[0]
+            else:
                 continue
 
             if global_pre_dur is not None:
@@ -684,12 +751,14 @@ def plot_mi_protrusion_dynamics(grouped_data: Dict,
                 t_zeroed = t_zeroed[win_mask]
                 l = l[win_mask]
 
-            if len(t_zeroed) < 15:
+            # Lowered from 15 to 5 to keep short 100 µs pre-pulse windows.
+            # Cohort cell counts still surface via the legend n= labels.
+            if len(t_zeroed) < 5:
                 continue
 
             bucketed_traces.setdefault(bucket, []).append((t_zeroed, l))
 
-            max_val = np.max(l)
+            max_val = np.max(l) if len(l) else np.nan
             if np.isfinite(max_val):
                 bucketed_max_records.setdefault(bucket, []).append({
                     'Trap':          f"T{trap.trap_id}",
@@ -731,12 +800,13 @@ def plot_mi_protrusion_dynamics(grouped_data: Dict,
     ordered_buckets = (["ASP"] if "ASP" in bucketed_traces else []) + ep_buckets
 
     # Infer cell_type from the grouped_data cohort so the marker follows
-    # the (Treatment) axis. Colour follows (cell_type, protocol) via the
-    # bucket parser; fate drives linestyle (solid for intact, dashed for
-    # ruptured_post).
+    # the (Treatment) axis. Colour follows (protocol) via the bucket parser
+    # routed through bp.PULSE_TRACE_PALETTE; fate drives linestyle.
     cell_type_for_plot = _cell_type_from_grouped_data(grouped_data)
 
-    fig, ax = plt.subplots(figsize=(9, 6))
+    # Reference styling: matches plot_thesis_combined_prepulse_trace_by_fate.
+    bp.apply_thesis_rcparams()
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
     global_max_t = 0.0
 
     for bucket in ordered_buckets:
@@ -758,7 +828,8 @@ def plot_mi_protrusion_dynamics(grouped_data: Dict,
         matrix = np.full((len(traces), len(t_grid)), np.nan)
         for i, (t_arr, l_arr) in enumerate(traces):
             if len(t_arr) > 1:
-                f = interp1d(t_arr, l_arr, bounds_error=False, fill_value=np.nan)
+                f = interp1d(t_arr, l_arr, bounds_error=False,
+                              fill_value=np.nan)
                 matrix[i, :] = f(t_grid)
 
         with warnings.catch_warnings():
@@ -770,7 +841,8 @@ def plot_mi_protrusion_dynamics(grouped_data: Dict,
         MIN_FRAC_CONTRIBUTING = 0.25
         n_start = len(traces)
         min_n_required = max(1, int(np.ceil(MIN_FRAC_CONTRIBUTING * n_start)))
-        plot_mask = np.isfinite(mean_L) & np.isfinite(sd_L) & (n_t >= min_n_required)
+        plot_mask = (np.isfinite(mean_L) & np.isfinite(sd_L)
+                      & (n_t >= min_n_required))
 
         if not np.any(plot_mask):
             continue
@@ -779,33 +851,46 @@ def plot_mi_protrusion_dynamics(grouped_data: Dict,
         c_mean = mean_L[plot_mask]
         c_sd   = sd_L[plot_mask]
 
-        # Grammar routing: parse bucket -> (protocol, fate); combine with
-        # the cohort's cell_type to get colour + marker + linestyle.
+        # Colour routing follows the reference: NO_PULSE for ASP,
+        # PULSE_TRACE_PALETTE for EP, fate drives linestyle.
         protocol, fate = _parse_bucket_to_style(bucket)
-        # ASP is a baseline overlay when shown alongside EP; dim slightly.
+        if bucket == 'ASP':
+            colour = bp.NO_PULSE_COLOUR
+            fate_key = 'baseline'
+        else:
+            colour = bp.PULSE_TRACE_PALETTE.get(('EP', protocol),
+                                                 bp.PULSE_100US_COLOUR)
+            fate_key = fate
         is_baseline = (bucket == 'ASP') and (len(ep_buckets) > 0)
-        lkw = utils.get_line_kwargs(cell_type_for_plot, protocol,
-                                    fate=fate, size=6,
-                                    is_baseline=is_baseline)
-        color = lkw['color']
-        ax.plot(c_t, c_mean, markevery=max(1, len(c_t)//10),
+
+        lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
+                                          fate=fate_key,
+                                          treatment=cell_type_for_plot,
+                                          is_baseline=is_baseline)
+        ax.plot(c_t, c_mean, markevery=bp.markevery_from(c_t),
                 label=f'{bucket} (n={n_start})', **lkw)
         ax.fill_between(c_t, c_mean - c_sd, c_mean + c_sd,
-                        color=color, alpha=0.15, edgecolor=None)
+                        color=colour, alpha=bp.TRACE_BAND_ALPHA,
+                        linewidth=0)
 
         if c_t[-1] > global_max_t:
             global_max_t = float(c_t[-1])
 
-    ax.set_xlabel('Time from aspiration start (s)')
-    ax.set_ylabel('Protrusion Length (µm)')
-    ax.legend()
+    ax.set_xlabel("Time from aspiration onset (s)")
+    ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
+    ax.set_title("MI protrusion mechanics (pre-pulse window)")
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend(frameon=False, loc='lower right')
+
     if global_pre_dur is not None:
-        ax.set_xlim(-1, global_pre_dur)
+        ax.set_xlim(0, global_pre_dur)
     elif global_max_t > 0:
-        ax.set_xlim(-1, global_max_t)
+        ax.set_xlim(0, global_max_t)
 
     plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_Combined_Protrusion_Dynamics_MI.pdf")
+    utils.save_plot_pdf(
+        output_dir / "Thesis_Combined_Protrusion_Dynamics_MI.pdf")
     plt.close()
 
 def plot_thesis_mi_best_fit_multipanel(grouped_data: Dict, output_dir: Path, global_pre_dur: Optional[float] = None) -> None:
@@ -1024,7 +1109,7 @@ def run_thesis_mi_prepulse_plots(mi_grouped_data: Dict,
 
     _try("Pre-Pulse Protrusion Dynamics",
          plot_mi_protrusion_dynamics, mi_grouped_data, output_dir,
-         global_pre_dur, output_dir_map)
+         global_pre_dur, output_dir_map, mechanics_df)
     _try("Pre-Pulse Viscoelastic Parameter Boxplots",
          plot_thesis_prepulse_visco_parameter_boxplots, mechanics_df, output_dir)
     _try("Fate Pre-Pulse Viscoelastic Boxplots",
@@ -1138,121 +1223,75 @@ def _wholetrace_bucket_order(buckets_present: list) -> list:
     ep_post  = sorted(b for b in buckets_present if b.startswith('EP-post'))
     return (['ASP'] if 'ASP' in buckets_present else []) + ep_whole + ep_post
 
-def plot_thesis_mi_wholetrace_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
-    df = mechanics_df.copy()
-    df = df[df['MI_Whole_Best_Model'].notna() & (df['MI_Whole_R2_Flag'] == True)].copy()
-    df = _restrict_to_common_ep_treatments(df)
+def plot_thesis_mi_wholetrace_parameter_boxplots(mechanics_df: pd.DataFrame,
+                                                   output_dir: Path) -> None:
+    """
+    Whole-trace MI parameter SuperPlot.
 
-    if df.empty: return
+    Cohort: MI whole-trace fits with R^2 flag pass, restricted to EP
+    treatments common with the ASP baseline (see
+    `_restrict_to_common_ep_treatments`). Categories are the whole-trace
+    buckets returned by `_row_bucket_wholetrace_fate` and ordered by
+    `_wholetrace_bucket_order` (ASP first, then EP-whole, then EP-post).
+
+    Panels:
+      1. Winner-model slope (`_mi_whole_winner_slope`): µm/s for Linear
+         winners, dimensionless exponent b for Power-Law winners. Plotted
+         on the same axis; the reader distinguishes model via the strip
+         (SuperPlot dots are coloured per replicate).
+      2. Power-Law amplitude a (PL winners only), log-scaled.
+
+    Statistics: within-duration Intact-vs-Ruptured brackets on EP-whole
+    (matches the fate-contrast plotter). No brackets on ASP.
+    """
+    if mechanics_df is None or mechanics_df.empty:
+        return
+
+    df = mechanics_df.copy()
+    df = df[df['MI_Whole_Best_Model'].notna()
+            & (df['MI_Whole_R2_Flag'] == True)].copy()
+    df = _restrict_to_common_ep_treatments(df)
+    if df.empty:
+        return
 
     df['Bucket'] = df.apply(_row_bucket_wholetrace_fate, axis=1)
     order = _wholetrace_bucket_order(df['Bucket'].unique().tolist())
-
-    if not order: return
-
-    bucket_dur_labels = {}
-    dur_col = 'MI_Whole_Window_Duration_s'
-    for bucket in order:
-        durs = df.loc[df['Bucket'] == bucket, dur_col].dropna().values
-        if len(durs) == 0:
-            bucket_dur_labels[bucket] = ''
-            continue
-        med, q1, q3, lo, hi = float(np.median(durs)), float(np.percentile(durs, 25)), float(np.percentile(durs, 75)), float(np.min(durs)), float(np.max(durs))
-        bucket_dur_labels[bucket] = f"med {med:.0f}s\n[{lo:.0f}–{hi:.0f}]"
+    if not order:
+        return
 
     df['Winner_Slope_Whole'] = df.apply(_mi_whole_winner_slope, axis=1)
 
-    from matplotlib.colors import to_rgba
-    from matplotlib.patches import PathPatch, Rectangle
-    def _tint(hex_color: str, alpha: float = 0.30) -> tuple:
-        r, g, b, _ = to_rgba(hex_color)
-        return (r, g, b, alpha)
+    # SuperPlot expects a 'Category' column identifying x-axis position.
+    df['Category'] = df['Bucket']
 
-    box_face, box_edge, box_hatch = {}, {}, {}
-    for b in order:
-        if b == 'ASP':
-            edge = utils.get_style_color('WT', 'ASP')
-            box_face[b]  = edge # Solid Dark Blue defined for WT ASP
-            box_edge[b]  = edge
-            box_hatch[b] = ''
-        else:
-            protocol, fate = _parse_bucket_to_style(b)
-            edge = utils.get_style_color('WT', protocol)
-            box_edge[b] = edge
-            if fate == 'ruptured_post':
-                box_face[b]  = 'white'
-                box_hatch[b] = utils.MFA_STYLE_RUPTURED_HATCH
-            else:
-                box_face[b]  = _tint(edge, 0.30)
-                box_hatch[b] = ''
-
-    fig_w = max(12, 2.4 * len(order) + 4)
-    fig, axes = plt.subplots(1, 2, figsize=(fig_w, 6))
+    # Intact-vs-Ruptured bracket pairs within each EP-whole duration.
+    bracket_pairs: List[Tuple[int, int]] = []
+    for i, cat in enumerate(order):
+        if '(intact)' in cat.lower():
+            twin = cat.replace('(intact)', '(ruptured)')
+            if twin in order:
+                bracket_pairs.append((i, order.index(twin)))
 
     panels = [
-        ('Winner_Slope_Whole', r'Rate: $m$ (µm/s) if Linear;  $b$ (–) if Power-Law', 'Slope (winner-model)', False, False),
-        ('MI_Whole_PL_a', r'Amplitude $a$ (µm)', 'Power-Law amplitude a (PL winners only)', True, True),
+        ('Winner_Slope_Whole',
+         r'Rate: $m$ (µm/s) if Linear; $b$ (–) if Power-Law',
+         'Slope (winner-model)'),
+        ('MI_Whole_PL_a',
+         r'Amplitude $a$ (µm)',
+         'Power-Law amplitude $a$\n(PL winners only)'),
     ]
 
-    for i, (col, ylabel, title, log_y, pl_only) in enumerate(panels):
-        ax = axes[i]
-        sub = df[df[col].notna()].copy()
-        if pl_only: sub = sub[sub['MI_Whole_Best_Model'] == 'Power-Law']
-        if sub.empty:
-            ax.set_visible(False)
-            continue
-
-        sns.boxplot(data=sub, x='Bucket', y=col, order=order, hue='Bucket',
-                    ax=ax, showfliers=False,
-                    palette=box_face, legend=False, dodge=False)
-
-        box_patches = [p for p in ax.patches if isinstance(p, (PathPatch, Rectangle))]
-        for patch in box_patches:
-            if isinstance(patch, Rectangle):
-                box_x = patch.get_x() + patch.get_width() / 2.0
-            else:
-                box_x = patch.get_path().vertices[:, 0].mean()
-                
-            tick_idx = int(round(box_x))
-            if 0 <= tick_idx < len(order):
-                bucket = order[tick_idx]
-                h = box_hatch.get(bucket, '')
-                e = box_edge.get(bucket)
-                f = box_face.get(bucket)
-                
-                if e is not None: patch.set_edgecolor(e)
-                if f is not None:
-                    patch.set_facecolor(f)
-                    patch.set_alpha(1.0)
-                if h:
-                    patch.set_hatch(h)
-                else:
-                    patch.set_hatch(None)
-
-        if pl_only:
-            sns.stripplot(data=sub, x='Bucket', y=col, order=order,
-                          color=_MI_MODEL_UTILS_COLOR['Power-Law'],
-                          dodge=False, alpha=0.7, ax=ax, size=5)
-        else:
-            sns.stripplot(data=sub, x='Bucket', y=col, order=order,
-                          hue='MI_Whole_Best_Model', palette=_MI_MODEL_UTILS_COLOR,
-                          dodge=False, alpha=0.7, ax=ax, size=5)
-
-        ax.set_title(title, fontweight='bold')
-        ax.set_ylabel(ylabel)
-        ax.set_xlabel("")
-        ax.tick_params(axis='x', rotation=45)
-
-        if i == 1:
-            for xt, bucket in zip(ax.get_xticks(), order):
-                if caption := bucket_dur_labels.get(bucket, ''):
-                    ax.annotate(caption, xy=(xt, 0), xycoords=('data', 'axes fraction'), xytext=(0, -55), textcoords='offset points', ha='center', va='top', fontsize=7, color='gray')
-
-        if log_y and (sub[col] > 0).all(): ax.set_yscale('log')
-
-    plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_MI_WholeTrace_Parameter_Boxplots.pdf")
-    plt.close()
+    bp.render_visco_parameter_superplot(
+        df=df,
+        panels=panels,
+        output_pdf=output_dir / "Thesis_MI_WholeTrace_Parameter_Boxplots.pdf",
+        category_col='Category',
+        categories=order,
+        figsize=(max(12.0, 2.4 * len(order) + 4.0), 6.0),
+        grid_shape=(1, 3),  # panel-1, panel-2, legend
+        bracket_pairs=bracket_pairs,
+    )
+    logger.info("MI whole-trace parameter SuperPlot written.")
 
 def plot_thesis_mi_wholetrace_per_trap_parameters(mechanics_df: pd.DataFrame,
                                                     output_dir: Path,
@@ -1369,10 +1408,10 @@ def plot_mi_wholetrace_protrusion_dynamics(mi_whole_grouped_data: Dict,
 
     order = _wholetrace_bucket_order(list(bucketed_traces.keys()))
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # Reference styling: matches plot_thesis_combined_prepulse_trace_by_fate.
+    bp.apply_thesis_rcparams()
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
     global_max_t = 0.0
-    ep_whole_idx = 0
-    ep_post_idx  = 0
 
     # Infer cell_type; whole-trace overlay is typically WT-only cohort.
     cell_type_for_plot = _cell_type_from_grouped_data(mi_whole_grouped_data)
@@ -1401,7 +1440,8 @@ def plot_mi_wholetrace_protrusion_dynamics(mi_whole_grouped_data: Dict,
         matrix = np.full((len(traces), len(t_grid)), np.nan)
         for i, (t_arr, l_arr) in enumerate(traces):
             if len(t_arr) > 1:
-                f = interp1d(t_arr, l_arr, bounds_error=False, fill_value=np.nan)
+                f = interp1d(t_arr, l_arr, bounds_error=False,
+                              fill_value=np.nan)
                 matrix[i, :] = f(t_grid)
 
         with warnings.catch_warnings():
@@ -1413,7 +1453,8 @@ def plot_mi_wholetrace_protrusion_dynamics(mi_whole_grouped_data: Dict,
         MIN_FRAC_CONTRIBUTING = 0.25
         n_start = len(traces)
         min_n_required = max(1, int(np.ceil(MIN_FRAC_CONTRIBUTING * n_start)))
-        plot_mask = np.isfinite(mean_L) & np.isfinite(sd_L) & (n_t >= min_n_required)
+        plot_mask = (np.isfinite(mean_L) & np.isfinite(sd_L)
+                      & (n_t >= min_n_required))
 
         if not np.any(plot_mask):
             continue
@@ -1422,18 +1463,27 @@ def plot_mi_wholetrace_protrusion_dynamics(mi_whole_grouped_data: Dict,
         c_mean = mean_L[plot_mask]
         c_sd   = sd_L[plot_mask]
 
-        # Route through the grammar. Buckets without fate info parse to
-        # fate='intact' by default. ASP is dimmed when EP is also shown.
+        # Colour routing matches the reference: NO_PULSE for ASP,
+        # PULSE_TRACE_PALETTE for EP-whole/EP-post, fate drives linestyle.
         protocol, fate = _parse_bucket_to_style(bucket)
+        if bucket == 'ASP':
+            colour = bp.NO_PULSE_COLOUR
+            fate_key = 'baseline'
+        else:
+            colour = bp.PULSE_TRACE_PALETTE.get(('EP', protocol),
+                                                 bp.PULSE_100US_COLOUR)
+            fate_key = fate
         is_baseline = (bucket == 'ASP') and has_ep
-        lkw = utils.get_line_kwargs(cell_type_for_plot, protocol,
-                                    fate=fate, size=5,
-                                    is_baseline=is_baseline)
-        color = lkw['color']
-        ax.plot(c_t, c_mean, markevery=max(1, len(c_t)//10),
+
+        lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
+                                          fate=fate_key,
+                                          treatment=cell_type_for_plot,
+                                          is_baseline=is_baseline)
+        ax.plot(c_t, c_mean, markevery=bp.markevery_from(c_t),
                 label=f'{bucket} (n={n_start})', **lkw)
         ax.fill_between(c_t, c_mean - c_sd, c_mean + c_sd,
-                        color=color, alpha=0.2, edgecolor=None)
+                        color=colour, alpha=bp.TRACE_BAND_ALPHA,
+                        linewidth=0)
 
         if bucket.startswith('EP-whole'):
             pulses = bucketed_pulses.get(bucket, [])
@@ -1442,22 +1492,28 @@ def plot_mi_wholetrace_protrusion_dynamics(mi_whole_grouped_data: Dict,
                 q1_pulse  = float(np.percentile(pulses, 25))
                 q3_pulse  = float(np.percentile(pulses, 75))
                 if 0 < med_pulse < c_t[-1]:
-                    ax.axvline(med_pulse, color=color, ls='--', lw=1.2, alpha=0.7)
-                    ax.axvspan(q1_pulse, q3_pulse, color=color, alpha=0.08)
+                    ax.axvline(med_pulse, color=colour, ls='--', lw=1.2,
+                                alpha=0.7)
+                    ax.axvspan(q1_pulse, q3_pulse, color=colour, alpha=0.08)
 
         if c_t[-1] > global_max_t:
             global_max_t = float(c_t[-1])
 
-    ax.set_xlabel('Time from entry (s)')
-    ax.set_ylabel('Protrusion Length (µm)')
-    ax.legend(loc='best', fontsize=8)
+    ax.set_xlabel("Time from aspiration onset (s)")
+    ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
+    ax.set_title("MI whole-trace protrusion mechanics")
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend(frameon=False, loc='lower right')
+
     if global_whole_dur is not None:
-        ax.set_xlim(-1, global_whole_dur)
+        ax.set_xlim(0, global_whole_dur)
     elif global_max_t > 0:
-        ax.set_xlim(-1, global_max_t)
+        ax.set_xlim(0, global_max_t)
 
     plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_MI_WholeTrace_Protrusion_Dynamics.pdf")
+    utils.save_plot_pdf(
+        output_dir / "Thesis_MI_WholeTrace_Protrusion_Dynamics.pdf")
     plt.close()
 
 def plot_thesis_mi_wholetrace_best_fit_multipanel(mi_whole_grouped_data: Dict,
@@ -2139,14 +2195,12 @@ def plot_thesis_fate_per_trap(mechanics_df: pd.DataFrame,
 # ==========================================================================
 # BATCH 2 — Claim 2 (sensitivity to biological perturbation)
 # ==========================================================================
-# Colours: treatment-only plots (no EP protocol axis) use each cell type's
-# ASP grammar colour, so WT-only plots print as the WT-ASP near-black blue
-# and CytD-only plots print as the CytD-ASP dark red. This keeps ASP-only
-# treatment comparisons on-grammar with the rest of Chapter 3.
-_TREATMENT_COLOR = {
-    'WT'  : utils.get_style_color('WT',   'ASP'),   # #1a243d
-    'CytD': utils.get_style_color('CytD', 'ASP'),   # #B31529
-}
+# Colours: ASP-only WT-vs-CytD treatment comparisons use the canonical
+# ASP_TREATMENT_COLOUR palette defined in bulk_plotting (WT = #1065ab,
+# CytD = #b31529). Distinct from the pulse-comparison palette (dark navy
+# for No pulse etc.), which is only used when EP conditions appear
+# alongside ASP on the same axes.
+_TREATMENT_COLOR = dict(bp.ASP_TREATMENT_COLOUR)
 _TREATMENT_ORDER = ['WT', 'CytD']
 
 
@@ -2915,132 +2969,80 @@ def _fate_box_order(buckets_present: list, durations: list) -> list:
 
 
 def plot_thesis_fate_prepulse_visco_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
-    if mechanics_df is None or mechanics_df.empty: return
+    """
+    Fate-contrast SuperPlot on the pre-pulse viscoelastic parameters.
+
+    Shares the same cohort and category structure as
+    `bp.plot_prepulse_visco_parameter_boxplots` (No pulse + EP by
+    fate), but restricts the statistical brackets to the within-duration
+    Intact-vs-Ruptured contrasts that Claim 2 depends on.
+    """
+    if mechanics_df is None or mechanics_df.empty:
+        return
 
     df = mechanics_df.copy()
-    df = df.loc[df['PrePulse_Best_Model'].notna() & df['PrePulse_E_Pa'].notna() & (df['PrePulse_Visco_R2_Flag'] == True)].copy()
+    df = df.loc[df['PrePulse_Best_Model'].notna()
+                & df['PrePulse_E_Pa'].notna()
+                & (df['PrePulse_Visco_R2_Flag'] == True)].copy()
 
     keep_asp = (df['Condition_Type'] == 'ASP') & (df['Treatment'] == 'WT')
     keep_ep  = (df['Condition_Type'] == 'EP') & df['Fate_Status'].isin(['intact', 'ruptured_post'])
     df = df[keep_asp | keep_ep].copy()
 
-    if df.empty: return
+    if df.empty:
+        return
 
-    df['Bucket'] = df.apply(_fate_box_bucket, axis=1)
-    durations = sorted(df.loc[df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(), key=_duration_sort_key)
-    order = _fate_box_order(df['Bucket'].unique().tolist(), durations)
+    df['Category'] = df.apply(bp._prepulse_new_category_label, axis=1)
+    categories = bp._prepulse_category_order(df)
+
+    # Fate-contrast brackets: pair each 'Intact' category with the matching
+    # 'Ruptured' category at the same duration. The 'No pulse' baseline is
+    # not bracketed here (it appears as an unbracketed reference).
+    bracket_pairs: List[Tuple[int, int]] = []
+    for i, cat in enumerate(categories):
+        if '(Intact)' in cat:
+            ruptured_twin = cat.replace('(Intact)', '(Ruptured)')
+            if ruptured_twin in categories:
+                bracket_pairs.append((i, categories.index(ruptured_twin)))
 
     panels = [
-        ('PrePulse_E_Pa',      r'$E$ (Pa)', 'Parallel Spring Modulus'),
-        ('PrePulse_E1_Pa',     r'$E_{1}$ (Pa)', 'Burgers Maxwell Spring\n(Burgers only)'),
+        ('PrePulse_E_Pa',      r'$E$ (Pa)',                'Parallel Spring Modulus'),
+        ('PrePulse_E1_Pa',     r'$E_{1}$ (Pa)',            'Burgers Maxwell Spring\n(Burgers only)'),
         ('PrePulse_eta1_Pa_s', r'$\eta_{1}$ (Pa$\cdot$s)', 'Parallel Dashpot'),
         ('PrePulse_eta2_Pa_s', r'$\eta_{2}$ (Pa$\cdot$s)', 'Flow Viscosity\n(Jeffreys / Burgers)'),
-        ('PrePulse_Tau_s',     r'$\tau$ (s)', 'Characteristic Time'),
+        ('PrePulse_Tau_s',     r'$\tau$ (s)',              'Characteristic Time'),
     ]
 
-    def _style_for_bucket(rows: pd.DataFrame):
-        if rows['Condition_Type'].iloc[0] == 'ASP':
-            treatment = rows['Treatment'].iloc[0] if 'Treatment' in rows.columns else 'WT'
-            if treatment not in ('WT', 'CytD'): treatment = 'WT'
-            col = utils.get_style_color(treatment, 'ASP')
-            return col, col, ''
-        dur_label = rows['Duration_label'].iloc[0] if 'Duration_label' in rows.columns else None
-        protocol = dur_label if dur_label in ('100us', '5ms') else 'ASP'
-        fate = rows['Fate_Status'].iloc[0]
-        col = utils.get_style_color('WT', protocol)
-        if fate == 'ruptured_post':
-            return 'white', col, utils.MFA_STYLE_RUPTURED_HATCH
-        return col, col, ''
-
-    from matplotlib.patches import PathPatch, Rectangle
-    ncols, nrows = 3, 2
-    fig, axes_2d = plt.subplots(nrows, ncols, figsize=(max(4.5 * ncols, 1.2 * len(order) + 6), 5.0 * nrows))
-    axes = axes_2d.flatten()
-
-    for i, (col, ylabel, title) in enumerate(panels):
-        ax = axes[i]
-        sub = df.loc[df[col].notna()].copy()
-        if sub.empty:
-            ax.set_visible(False)
-            continue
-
-        box_face, box_edge, box_hatch = {}, {}, {}
-        for b in order:
-            rows = sub[sub['Bucket'] == b]
-            if rows.empty: continue
-            face, edge, hatch = _style_for_bucket(rows)
-            box_face[b], box_edge[b], box_hatch[b] = face, edge, hatch
-
-        sns.boxplot(data=sub, x='Bucket', y=col, order=order, hue='Bucket',
-                    ax=ax, showfliers=False,
-                    palette=box_face, legend=False, dodge=False)
-
-        box_patches = [p for p in ax.patches if isinstance(p, (PathPatch, Rectangle))]
-        for patch in box_patches:
-            if isinstance(patch, Rectangle):
-                box_x = patch.get_x() + patch.get_width() / 2.0
-            else:
-                box_x = patch.get_path().vertices[:, 0].mean()
-                
-            tick_idx = int(round(box_x))
-            if 0 <= tick_idx < len(order):
-                bucket = order[tick_idx]
-                h = box_hatch.get(bucket, '')
-                e = box_edge.get(bucket)
-                f = box_face.get(bucket)
-                
-                if e is not None: patch.set_edgecolor(e)
-                if f is not None:
-                    patch.set_facecolor(f)
-                    patch.set_alpha(1.0)
-                if h:
-                    patch.set_hatch(h)
-                else:
-                    patch.set_hatch(None)
-
-        for j, bucket in enumerate(order):
-            rows = sub[sub['Bucket'] == bucket]
-            if rows.empty: continue
-            rng = np.random.default_rng(42 + j)
-            jitter = rng.uniform(-0.15, 0.15, size=len(rows))
-            colours = rows['PrePulse_Best_Model'].map(lambda m: bp.VISCO_MODEL_PALETTE.get(m, 'gray'))
-            ax.scatter(np.full(len(rows), j) + jitter, rows[col],
-                       s=22, c=colours, edgecolor=colours, linewidths=0.4, alpha=0.85, zorder=3)
-
-        if (sub[col].dropna() > 0).all(): ax.set_yscale('log')
-        ax.set_title(title, fontsize=10)
-        ax.set_ylabel(ylabel)
-        ax.set_xlabel("")
-        ax.tick_params(axis='x', rotation=45)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-
-    for j in range(len(panels), len(axes)): axes[j].set_visible(False)
-
-    import matplotlib.patches as mpatches
-    import matplotlib.lines as mlines
-    asp_col = utils.get_style_color('WT', 'ASP')
-    handles = [mpatches.Patch(facecolor=asp_col, edgecolor=asp_col, label='ASP-WT reference')]
-    for d in durations:
-        col_wt_dur = utils.get_style_color('WT', d) if d in ('100us', '5ms') else asp_col
-        handles.append(mpatches.Patch(facecolor=col_wt_dur, edgecolor=col_wt_dur, label=f'EP intact ({d})'))
-        handles.append(mpatches.Patch(facecolor='white', edgecolor=col_wt_dur, hatch=utils.MFA_STYLE_RUPTURED_HATCH, label=f'EP ruptured ({d})'))
-    for model_name in ('Kelvin-Voigt', 'Jeffreys', 'Burgers'):
-        c = bp.VISCO_MODEL_PALETTE.get(model_name)
-        if c: handles.append(mlines.Line2D([], [], marker='o', linestyle='', markerfacecolor=c, markeredgecolor=c, label=f'{model_name} winner'))
-        
-    fig.legend(handles=handles, loc='center', bbox_to_anchor=(0.83, 0.25), ncol=1, frameon=False, fontsize=8)
-
-    plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_Fate_PrePulse_Visco_Boxplots.pdf")
-    plt.close()
-    logger.info("Fate pre-pulse viscoelastic boxplot written.")
+    bp.render_visco_parameter_superplot(
+        df=df,
+        panels=panels,
+        output_pdf=output_dir / "Thesis_Fate_PrePulse_Visco_Boxplots.pdf",
+        category_col='Category',
+        categories=categories,
+        bracket_pairs=bracket_pairs,
+    )
+    logger.info("Fate pre-pulse viscoelastic SuperPlot written.")
 
 
-def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame, output_dir: Path, r2_floor: float = 0.80) -> None:
-    if mechanics_df is None or mechanics_df.empty: return
+def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame,
+                                             output_dir: Path,
+                                             r2_floor: float = 0.80) -> None:
+    """
+    Fate-contrast SuperPlot on the whole-trace MI parameters.
+
+    Uses the same category scheme as `plot_thesis_fate_prepulse_visco_boxplots`
+    (No pulse baseline + EP by fate) so the two figures read as a matched
+    pair. Statistical brackets are restricted to within-duration
+    Intact-vs-Ruptured contrasts.
+
+    Cohort gate: `MI_Whole_Best_Model` present *and* winner-model R^2
+    at least `r2_floor` (0.80 by default).
+    """
+    if mechanics_df is None or mechanics_df.empty:
+        return
 
     df = mechanics_df.copy()
+
     def _wt_winner_r2(row):
         m = row.get('MI_Whole_Best_Model')
         if m == 'Linear':    return row.get('MI_Whole_Linear_R2', np.nan)
@@ -3054,119 +3056,51 @@ def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame, output_d
         return np.nan
 
     df['MI_Whole_Winner_R2'] = df.apply(_wt_winner_r2, axis=1)
-    df = df.loc[df['MI_Whole_Best_Model'].notna() & (df['MI_Whole_Winner_R2'] >= r2_floor)].copy()
+    df = df.loc[df['MI_Whole_Best_Model'].notna()
+                & (df['MI_Whole_Winner_R2'] >= r2_floor)].copy()
 
     keep_asp = (df['Condition_Type'] == 'ASP') & (df['Treatment'] == 'WT')
-    keep_ep  = (df['Condition_Type'] == 'EP') & df['Fate_Status'].isin(['intact', 'ruptured_post'])
+    keep_ep  = ((df['Condition_Type'] == 'EP')
+                & df['Fate_Status'].isin(['intact', 'ruptured_post']))
     df = df[keep_asp | keep_ep].copy()
+    if df.empty:
+        return
 
-    if df.empty: return
-
-    df['Bucket']       = df.apply(_fate_box_bucket, axis=1)
     df['Winner_Slope'] = df.apply(_wt_winner_slope, axis=1)
 
-    durations = sorted(df.loc[df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(), key=_duration_sort_key)
-    order = _fate_box_order(df['Bucket'].unique().tolist(), durations)
+    # Category labels follow the same convention as the pre-pulse
+    # SuperPlot so the two figures read as a matched pair.
+    df['Category'] = df.apply(bp._prepulse_new_category_label, axis=1)
+    categories = bp._prepulse_category_order(df)
+
+    # Within-duration Intact-vs-Ruptured brackets.
+    bracket_pairs: List[Tuple[int, int]] = []
+    for i, cat in enumerate(categories):
+        if '(Intact)' in cat:
+            twin = cat.replace('(Intact)', '(Ruptured)')
+            if twin in categories:
+                bracket_pairs.append((i, categories.index(twin)))
 
     panels = [
-        ('Winner_Slope', r'Rate: $m$ (µm/s) if Linear;  $b$ (–) if Power-Law', 'Whole-trace slope (winner)', False, False),
-        ('MI_Whole_PL_a', r'Amplitude $a$ (µm)', 'Whole-trace power-law $a$ (PL winners only)', True, True),
+        ('Winner_Slope',
+         r'Rate: $m$ (µm/s) if Linear; $b$ (–) if Power-Law',
+         'Whole-trace slope\n(winner-model)'),
+        ('MI_Whole_PL_a',
+         r'Amplitude $a$ (µm)',
+         'Whole-trace power-law $a$\n(PL winners only)'),
     ]
 
-    def _style_for_bucket(rows: pd.DataFrame):
-        if rows['Condition_Type'].iloc[0] == 'ASP':
-            treatment = rows['Treatment'].iloc[0] if 'Treatment' in rows.columns else 'WT'
-            if treatment not in ('WT', 'CytD'): treatment = 'WT'
-            col = utils.get_style_color(treatment, 'ASP')
-            return col, col, ''
-        dur_label = rows['Duration_label'].iloc[0] if 'Duration_label' in rows.columns else None
-        protocol = dur_label if dur_label in ('100us', '5ms') else 'ASP'
-        fate = rows['Fate_Status'].iloc[0]
-        col = utils.get_style_color('WT', protocol)
-        if fate == 'ruptured_post':
-            return 'white', col, utils.MFA_STYLE_RUPTURED_HATCH
-        return col, col, ''
-
-    from matplotlib.patches import PathPatch, Rectangle
-    fig, axes = plt.subplots(1, 2, figsize=(max(9, 1.6 * len(order) + 6), 3.8))
-
-    for i, (col, ylabel, title, log_y, pl_only) in enumerate(panels):
-        ax = axes[i]
-        sub = df.loc[df[col].notna()].copy()
-        if pl_only: sub = sub[sub['MI_Whole_Best_Model'] == 'Power-Law']
-        if sub.empty:
-            ax.set_visible(False)
-            continue
-
-        box_face, box_edge, box_hatch = {}, {}, {}
-        for b in order:
-            rows = sub[sub['Bucket'] == b]
-            if rows.empty: continue
-            face, edge, hatch = _style_for_bucket(rows)
-            box_face[b], box_edge[b], box_hatch[b] = face, edge, hatch
-
-        sns.boxplot(data=sub, x='Bucket', y=col, order=order, hue='Bucket',
-                    ax=ax, showfliers=False,
-                    palette=box_face, legend=False, dodge=False)
-
-        box_patches = [p for p in ax.patches if isinstance(p, (PathPatch, Rectangle))]
-        for patch in box_patches:
-            if isinstance(patch, Rectangle):
-                box_x = patch.get_x() + patch.get_width() / 2.0
-            else:
-                box_x = patch.get_path().vertices[:, 0].mean()
-                
-            tick_idx = int(round(box_x))
-            if 0 <= tick_idx < len(order):
-                bucket = order[tick_idx]
-                h = box_hatch.get(bucket, '')
-                e = box_edge.get(bucket)
-                f = box_face.get(bucket)
-                
-                if e is not None: patch.set_edgecolor(e)
-                if f is not None:
-                    patch.set_facecolor(f)
-                    patch.set_alpha(1.0)
-                if h:
-                    patch.set_hatch(h)
-                else:
-                    patch.set_hatch(None)
-
-        for j, bucket in enumerate(order):
-            rows = sub[sub['Bucket'] == bucket]
-            if rows.empty: continue
-            rng = np.random.default_rng(42 + j)
-            jitter = rng.uniform(-0.15, 0.15, size=len(rows))
-            colours = rows['MI_Whole_Best_Model'].map(_MI_MODEL_UTILS_COLOR).fillna('gray')
-            ax.scatter(np.full(len(rows), j) + jitter, rows[col],
-                       s=22, c=colours, edgecolor=colours, linewidths=0.4, alpha=0.85, zorder=3)
-
-        if log_y and (sub[col].dropna() > 0).all(): ax.set_yscale('log')
-        ax.set_title(title, fontsize=10)
-        ax.set_ylabel(ylabel)
-        ax.set_xlabel("")
-        ax.tick_params(axis='x', rotation=45)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-
-    import matplotlib.patches as mpatches
-    import matplotlib.lines as mlines
-    asp_col = utils.get_style_color('WT', 'ASP')
-    handles = [mpatches.Patch(facecolor=asp_col, edgecolor=asp_col, label='ASP-WT reference')]
-    for d in durations:
-        col_wt_dur = utils.get_style_color('WT', d) if d in ('100us', '5ms') else asp_col
-        handles.append(mpatches.Patch(facecolor=col_wt_dur, edgecolor=col_wt_dur, label=f'EP intact ({d})'))
-        handles.append(mpatches.Patch(facecolor='white', edgecolor=col_wt_dur, hatch=utils.MFA_STYLE_RUPTURED_HATCH, label=f'EP ruptured ({d})'))
-    handles += [
-        mlines.Line2D([], [], marker='o', linestyle='', markerfacecolor=_MI_MODEL_UTILS_COLOR.get('Linear', 'gray'), markeredgecolor=_MI_MODEL_UTILS_COLOR.get('Linear', 'gray'), label='Linear winner'),
-        mlines.Line2D([], [], marker='o', linestyle='', markerfacecolor=_MI_MODEL_UTILS_COLOR.get('Power-Law', 'gray'), markeredgecolor=_MI_MODEL_UTILS_COLOR.get('Power-Law', 'gray'), label='Power-Law winner')
-    ]
-    fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.14), ncol=4, frameon=False, fontsize=8)
-
-    plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_Fate_WholeTrace_MI_Boxplots.pdf")
-    plt.close()
-    logger.info("Fate whole-trace MI boxplot written.")
+    bp.render_visco_parameter_superplot(
+        df=df,
+        panels=panels,
+        output_pdf=output_dir / "Thesis_Fate_WholeTrace_MI_Boxplots.pdf",
+        category_col='Category',
+        categories=categories,
+        figsize=(max(12.0, 2.4 * len(categories) + 4.0), 6.0),
+        grid_shape=(1, 3),  # panel-1, panel-2, legend
+        bracket_pairs=bracket_pairs,
+    )
+    logger.info("Fate whole-trace MI SuperPlot written.")
 
 
 def plot_thesis_ep_wholetrace_by_fate(grouped_data: Dict,
@@ -3186,14 +3120,19 @@ def plot_thesis_ep_wholetrace_by_fate(grouped_data: Dict,
         logger.warning("Whole-trace plot skipped: empty mechanics_df.")
         return
 
-    # Cohort: intact ASP + intact/ruptured EP
-    asp_pass = mechanics_df.loc[
-        (mechanics_df['Condition_Type'] == 'ASP')
-        & (mechanics_df['Fate_Status'] == 'intact')
+    # Cohort: cells that passed the MI whole-trace R^2 gate, so this figure
+    # shares its cells with the MI parameter/protrusion figures. Fate axis
+    # then splits the EP cells (intact vs ruptured_post); ASP contributes
+    # its baseline curve.
+    mi_pass = mechanics_df.loc[mechanics_df['MI_Whole_R2_Flag'] == True]
+
+    asp_pass = mi_pass.loc[
+        (mi_pass['Condition_Type'] == 'ASP')
+        & (mi_pass['Fate_Status'] == 'intact')
     ]
-    ep_pass = mechanics_df.loc[
-        (mechanics_df['Condition_Type'] == 'EP')
-        & mechanics_df['Fate_Status'].isin(['intact', 'ruptured_post'])
+    ep_pass = mi_pass.loc[
+        (mi_pass['Condition_Type'] == 'EP')
+        & mi_pass['Fate_Status'].isin(['intact', 'ruptured_post'])
     ]
     asp_pairs = set(zip(asp_pass['Experiment_Folder'], asp_pass['Trap_ID']))
     ep_pairs  = set(zip(ep_pass['Experiment_Folder'],  ep_pass['Trap_ID']))
@@ -3281,6 +3220,8 @@ def plot_thesis_ep_wholetrace_by_fate(grouped_data: Dict,
     # Infer cell_type from the cohort so marker follows Treatment axis.
     cell_type_for_plot = _cell_type_from_grouped_data(grouped_data)
 
+    bp.apply_thesis_rcparams()
+
     for ax, dl in zip(axes, durations):
         # Common time grid per panel
         max_t = 0.0
@@ -3302,48 +3243,50 @@ def plot_thesis_ep_wholetrace_by_fate(grouped_data: Dict,
             ax.axvspan(q1, q3, color='0.85', alpha=0.4, zorder=0)
             ax.axvline(med, color='0.4', lw=0.9, ls='--', zorder=1)
 
-        # Order matters for legend: baseline first, then intact, then ruptured.
-        # Style grammar mapping:
-        #   asp_baseline  -> (cell_type, 'ASP'), fate='intact', is_baseline=True
-        #                    (colour dimmed so ASP reads as background context)
-        #   intact        -> (cell_type, dl),    fate='intact'
-        #   ruptured_post -> (cell_type, dl),    fate='ruptured_post' (dashed)
-        for kind, label in (
-            ('asp_baseline', 'ASP baseline'),
-            ('intact',       'EP intact'),
-            ('ruptured_post','EP ruptured'),
-        ):
+        # Chapter-3 pulse-condition palette: dark navy for No pulse
+        # (dimmed when EP is co-plotted), pulse-specific blue for the EP
+        # cohorts; solid line + filled marker for intact/baseline,
+        # dashed + open marker for ruptured. New-convention labels.
+        ep_colour = bp.PULSE_TRACE_PALETTE.get(('EP', str(dl)), bp.PULSE_100US_COLOUR)
+
+        nopulse_label   = bp.format_condition_label(condition_type='ASP')
+        ep_intact_label = bp.format_condition_label(
+            condition_type='EP', voltage_v=100,
+            duration_label=str(dl), fate_status='intact', with_fate=True)
+        ep_rupt_label   = bp.format_condition_label(
+            condition_type='EP', voltage_v=100,
+            duration_label=str(dl), fate_status='ruptured_post', with_fate=True)
+
+        plot_order = [
+            ('asp_baseline',  bp.NO_PULSE_COLOUR, 'baseline',      True,  nopulse_label),
+            ('intact',        ep_colour,          'intact',        False, ep_intact_label),
+            ('ruptured_post', ep_colour,          'ruptured_post', False, ep_rupt_label),
+        ]
+        for kind, colour, fate, is_baseline, base_label in plot_order:
             trace_list = traces.get((dl, kind), [])
             if not trace_list:
                 continue
             m, sd, n = _aggregate(trace_list, common_t)
             if m is None:
                 continue
-            if kind == 'asp_baseline':
-                lkw = utils.get_line_kwargs(cell_type_for_plot, 'ASP',
-                                            fate='intact', size=5,
-                                            is_baseline=True)
-            elif kind == 'intact':
-                lkw = utils.get_line_kwargs(cell_type_for_plot, dl,
-                                            fate='intact', size=5)
-            else:  # 'ruptured_post'
-                lkw = utils.get_line_kwargs(cell_type_for_plot, dl,
-                                            fate='ruptured_post', size=5)
-            colour = lkw['color']
-            # Sparse markevery so time series don't get overwhelmed
-            ax.plot(common_t, m, markevery=max(1, len(common_t)//10),
-                    label=f"{label} (n={n})", **lkw)
+            lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
+                                              fate=fate,
+                                              treatment=cell_type_for_plot,
+                                              is_baseline=is_baseline)
+            ax.plot(common_t, m, markevery=bp.markevery_from(common_t),
+                    label=f"{base_label} (n={n})", **lkw)
             ax.fill_between(common_t, m - sd, m + sd,
-                            color=colour, alpha=0.18, linewidth=0)
+                            color=colour, alpha=bp.TRACE_BAND_ALPHA,
+                            linewidth=0)
 
-        ax.set_title(f"{dl} pulse", fontsize=10)
+        ax.set_title(f"{dl} pulse")
         ax.set_xlabel("Time from aspiration entry (s)")
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         plt.setp(ax.get_xticklabels(), rotation=30, ha='right')
 
     axes[0].set_ylabel(r"Protrusion length $L(t)$ (µm)")
-    axes[0].legend(frameon=False, fontsize=8, loc='lower right')
+    axes[0].legend(frameon=False, loc='lower right')
 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_EP_WholeTrace_by_Fate.pdf")
@@ -3355,21 +3298,25 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                                                   mechanics_df: pd.DataFrame,
                                                   output_dir: Path,
                                                   global_pre_dur: Optional[float] = None) -> None:
+    """
+    Mean L(t) trace for the pre-pulse window, split by pulse condition
+    and fate. Cell selection matches the MI cohort
+    (``MI_Whole_R2_Flag == True``) so this figure and the MI parameter
+    boxplots share exactly the same cells.
+    """
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("Combined pre-pulse trace skipped: empty mechanics_df.")
         return
 
-    pp_pass = mechanics_df.loc[
-        mechanics_df['PrePulse_Best_Model'].notna()
-        & (mechanics_df['PrePulse_Visco_R2_Flag'] == True)
-    ]
+    # Cell selection: MI cohort (matches the MI parameter/protrusion figures).
+    mi_pass = mechanics_df.loc[mechanics_df['MI_Whole_R2_Flag'] == True]
 
     treatments = mechanics_df['Treatment'].dropna().unique().tolist()
     base_treatment = 'WT' if 'WT' in treatments else (treatments[0] if treatments else 'WT')
 
-    asp_mask = (pp_pass['Condition_Type'] == 'ASP') & (pp_pass['Treatment'] == base_treatment)
-    asp_pairs = set(zip(pp_pass.loc[asp_mask, 'Experiment_Folder'],
-                        pp_pass.loc[asp_mask, 'Trap_ID']))
+    asp_mask = (mi_pass['Condition_Type'] == 'ASP') & (mi_pass['Treatment'] == base_treatment)
+    asp_pairs = set(zip(mi_pass.loc[asp_mask, 'Experiment_Folder'],
+                        mi_pass.loc[asp_mask, 'Trap_ID']))
 
     durations = sorted(
         mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(),
@@ -3378,21 +3325,20 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
     if not durations:
         logger.warning("Combined pre-pulse trace skipped: no EP durations.")
         return
-    
+
     target_dur = durations[0]
 
-    intact_mask = ((pp_pass['Condition_Type'] == 'EP')
-                   & (pp_pass['Duration_label'] == target_dur)
-                   & (pp_pass['Fate_Status'] == 'intact'))
-    ep_intact_pairs = set(zip(pp_pass.loc[intact_mask, 'Experiment_Folder'],
-                              pp_pass.loc[intact_mask, 'Trap_ID']))
+    intact_mask = ((mi_pass['Condition_Type'] == 'EP')
+                   & (mi_pass['Duration_label'] == target_dur)
+                   & (mi_pass['Fate_Status'] == 'intact'))
+    ep_intact_pairs = set(zip(mi_pass.loc[intact_mask, 'Experiment_Folder'],
+                              mi_pass.loc[intact_mask, 'Trap_ID']))
 
-    ep_rupt_all = mechanics_df.loc[
-        (mechanics_df['Condition_Type'] == 'EP')
-        & (mechanics_df['Duration_label'] == target_dur)
-        & (mechanics_df['Fate_Status'] == 'ruptured_post')
-    ]
-    ep_rupt_pairs = set(zip(ep_rupt_all['Experiment_Folder'], ep_rupt_all['Trap_ID']))
+    rupt_mask = ((mi_pass['Condition_Type'] == 'EP')
+                 & (mi_pass['Duration_label'] == target_dur)
+                 & (mi_pass['Fate_Status'] == 'ruptured_post'))
+    ep_rupt_pairs = set(zip(mi_pass.loc[rupt_mask, 'Experiment_Folder'],
+                            mi_pass.loc[rupt_mask, 'Trap_ID']))
 
     traces: Dict[str, list] = {'asp': [], 'intact': [], 'ruptured': []}
     for gk, traps in grouped_data.items():
@@ -3419,7 +3365,7 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                                     dtype=float)
                 if not (0 < pf < len(times)):
                     continue
-                
+
                 t_all = times - times[0]
                 pre_mask = (np.arange(len(times)) < pf) & (lens > 0)
                 if global_pre_dur is not None:
@@ -3456,34 +3402,49 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
             warnings.simplefilter("ignore", category=RuntimeWarning)
             return np.nanmean(M, axis=0), np.nanstd(M, axis=0), len(trace_list)
 
-    fig, ax = plt.subplots(figsize=(5.5, 3.6))
+    bp.apply_thesis_rcparams()
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
 
     if global_pre_dur is not None:
         ax.axvspan(0, float(global_pre_dur), color='0.92', alpha=0.5, zorder=0)
 
+    dur_key   = str(target_dur)
+    ep_colour = bp.PULSE_TRACE_PALETTE.get(('EP', dur_key), bp.PULSE_100US_COLOUR)
+
+    nopulse_label   = bp.format_condition_label(condition_type='ASP')
+    ep_intact_label = bp.format_condition_label(
+        condition_type='EP', voltage_v=100, duration_label=dur_key,
+        fate_status='intact', with_fate=True)
+    ep_rupt_label   = bp.format_condition_label(
+        condition_type='EP', voltage_v=100, duration_label=dur_key,
+        fate_status='ruptured_post', with_fate=True)
+
     plot_order = [
-        ('asp',      utils.get_line_kwargs(base_treatment, 'ASP',   fate='intact',        size=5), f'ASP baseline ({base_treatment})'),
-        ('intact',   utils.get_line_kwargs(base_treatment, target_dur, fate='intact',        size=5), f'EP intact ({target_dur})'),
-        ('ruptured', utils.get_line_kwargs(base_treatment, target_dur, fate='ruptured_post', size=5), f'EP ruptured ({target_dur})'),
+        # (traces_key, colour, fate, is_baseline, label)
+        ('asp',      bp.NO_PULSE_COLOUR, 'baseline',      True,  nopulse_label),
+        ('intact',   ep_colour,          'intact',        False, ep_intact_label),
+        ('ruptured', ep_colour,          'ruptured_post', False, ep_rupt_label),
     ]
-    for key, lkw, base_label in plot_order:
+    for key, colour, fate, is_baseline, base_label in plot_order:
         m, sd, n = _aggregate(traces[key])
         if m is None:
             continue
-        colour = lkw['color']
+        lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
+                                          fate=fate,
+                                          treatment=base_treatment,
+                                          is_baseline=is_baseline)
         ax.plot(common_t, m,
-                markevery=max(1, len(common_t)//10),
+                markevery=bp.markevery_from(common_t),
                 label=f"{base_label} (n={n})", **lkw)
         ax.fill_between(common_t, m - sd, m + sd,
-                        color=colour, alpha=0.18, linewidth=0)
+                        color=colour, alpha=bp.TRACE_BAND_ALPHA, linewidth=0)
 
     ax.set_xlabel("Time from aspiration onset (s)")
     ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
-    ax.set_title(r"Pre-pulse protrusion mechanics ($\Delta t_{\mathrm{pre}}$-matched)",
-                 fontsize=10)
+    ax.set_title(r"Pre-pulse protrusion mechanics ($\Delta t_{\mathrm{pre}}$-matched)")
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.legend(frameon=False, fontsize=8, loc='lower right')
+    ax.legend(frameon=False, loc='lower right')
 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_Combined_PrePulse_Trace_by_Fate.pdf")
@@ -3496,46 +3457,80 @@ def plot_thesis_combined_wholetrace_trace_by_fate(grouped_data: Dict,
                                                     output_dir: Path,
                                                     global_whole_dur: Optional[float] = None) -> None:
     """
-    Single-panel mean L(t) over the whole-trace window global_whole_dur.
-    Overlays five cohorts using the fate-grammar line styles:
-        - ASP WT baseline           -> (WT, ASP)   colour, solid
-        - EP 100us intact           -> (WT, 100us) colour, solid
-        - EP 100us ruptured post    -> (WT, 100us) colour, dashed
-        - EP 5ms   intact           -> (WT, 5ms)   colour, solid
-        - EP 5ms   ruptured post    -> (WT, 5ms)   colour, dashed
-    Complements the two-panel plot_thesis_ep_wholetrace_by_fate by
-    placing all cohorts on a single axis so the reader can compare
-    pulse-condition x fate at a glance.
+    Single-panel mean L(t) over the whole-trace window global_whole_dur,
+    overlaying five cohorts using the Chapter 3 pulse-condition palette
+    and label convention:
+        - No pulse                    -> dark navy,  solid
+        - 100 V, 100 µs (Intact)      -> mid  blue,  solid
+        - 100 V, 100 µs (Ruptured)    -> mid  blue,  dashed
+        - 100 V, 5 ms   (Intact)      -> deep blue,  solid
+        - 100 V, 5 ms   (Ruptured)    -> deep blue,  dashed
+
+    Cell selection matches the MI cohort (`MI_Whole_R2_Flag == True`) so
+    this figure and the MI parameter boxplots share exactly the same cells.
     """
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("Combined whole-trace plot skipped: empty mechanics_df.")
         return
 
-    asp_mask = ((mechanics_df['Condition_Type'] == 'ASP')
-                & (mechanics_df['Treatment'] == 'WT')
-                & (mechanics_df['Fate_Status'] == 'intact'))
-    asp_pairs = set(zip(mechanics_df.loc[asp_mask, 'Experiment_Folder'],
-                        mechanics_df.loc[asp_mask, 'Trap_ID']))
+    # Cell selection: MI cohort (matches MI parameter/protrusion figures).
+    mi_pass = mechanics_df.loc[mechanics_df['MI_Whole_R2_Flag'] == True]
+
+    asp_mask = ((mi_pass['Condition_Type'] == 'ASP')
+                & (mi_pass['Treatment'] == 'WT')
+                & (mi_pass['Fate_Status'] == 'intact'))
+    asp_pairs = set(zip(mi_pass.loc[asp_mask, 'Experiment_Folder'],
+                        mi_pass.loc[asp_mask, 'Trap_ID']))
 
     def _ep_pairs(dur: str, fate: str) -> set:
-        m = mechanics_df.loc[
-            (mechanics_df['Condition_Type'] == 'EP')
-            & (mechanics_df['Duration_label'] == dur)
-            & (mechanics_df['Fate_Status'] == fate)
+        m = mi_pass.loc[
+            (mi_pass['Condition_Type'] == 'EP')
+            & (mi_pass['Duration_label'] == dur)
+            & (mi_pass['Fate_Status'] == fate)
         ]
         return set(zip(m['Experiment_Folder'], m['Trap_ID']))
 
+    # cohort tuples: (key, pairs, pulse_colour, fate, label)
+    nopulse_label = bp.format_condition_label(condition_type='ASP')
     cohort_defs = [
-        ('asp',       asp_pairs,                            ('WT', 'ASP'),   'intact',        'ASP baseline'),
-        ('100us_int', _ep_pairs('100us', 'intact'),         ('WT', '100us'), 'intact',        'EP intact (100µs)'),
-        ('100us_rup', _ep_pairs('100us', 'ruptured_post'),  ('WT', '100us'), 'ruptured_post', 'EP ruptured (100µs)'),
-        ('5ms_int',   _ep_pairs('5ms',   'intact'),         ('WT', '5ms'),   'intact',        'EP intact (5 ms)'),
-        ('5ms_rup',   _ep_pairs('5ms',   'ruptured_post'),  ('WT', '5ms'),   'ruptured_post', 'EP ruptured (5 ms)'),
+        ('asp',
+         asp_pairs,
+         bp.NO_PULSE_COLOUR,
+         'baseline',
+         nopulse_label),
+        ('100us_int',
+         _ep_pairs('100us', 'intact'),
+         bp.PULSE_TRACE_PALETTE[('EP', '100us')],
+         'intact',
+         bp.format_condition_label(condition_type='EP', voltage_v=100,
+                                    duration_label='100us',
+                                    fate_status='intact', with_fate=True)),
+        ('100us_rup',
+         _ep_pairs('100us', 'ruptured_post'),
+         bp.PULSE_TRACE_PALETTE[('EP', '100us')],
+         'ruptured_post',
+         bp.format_condition_label(condition_type='EP', voltage_v=100,
+                                    duration_label='100us',
+                                    fate_status='ruptured_post', with_fate=True)),
+        ('5ms_int',
+         _ep_pairs('5ms', 'intact'),
+         bp.PULSE_TRACE_PALETTE[('EP', '5ms')],
+         'intact',
+         bp.format_condition_label(condition_type='EP', voltage_v=100,
+                                    duration_label='5ms',
+                                    fate_status='intact', with_fate=True)),
+        ('5ms_rup',
+         _ep_pairs('5ms', 'ruptured_post'),
+         bp.PULSE_TRACE_PALETTE[('EP', '5ms')],
+         'ruptured_post',
+         bp.format_condition_label(condition_type='EP', voltage_v=100,
+                                    duration_label='5ms',
+                                    fate_status='ruptured_post', with_fate=True)),
     ]
 
     pair_to_cohort: Dict[Tuple[str, int], str] = {}
     traces: Dict[str, list] = {c[0]: [] for c in cohort_defs}
-    for cohort_key, pairs, _style, _fate, _label in cohort_defs:
+    for cohort_key, pairs, _colour, _fate, _label in cohort_defs:
         for p in pairs:
             pair_to_cohort[p] = cohort_key
 
@@ -3581,26 +3576,31 @@ def plot_thesis_combined_wholetrace_trace_by_fate(grouped_data: Dict,
             warnings.simplefilter("ignore", category=RuntimeWarning)
             return np.nanmean(M, axis=0), np.nanstd(M, axis=0), len(trace_list)
 
-    fig, ax = plt.subplots(figsize=(6.0, 3.8))
+    bp.apply_thesis_rcparams()
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
 
-    for cohort_key, _pairs, (ct, prot), fate, base_label in cohort_defs:
+    for cohort_key, _pairs, colour, fate, base_label in cohort_defs:
         m, sd, n = _aggregate(traces[cohort_key])
         if m is None or n == 0:
             continue
-        lkw = utils.get_line_kwargs(ct, prot, fate=fate, size=5)
-        colour = lkw['color']
+        # No-pulse cohort reads as baseline (dimmed) so the EP cohorts
+        # visually dominate the comparison.
+        is_baseline = (cohort_key == 'asp')
+        lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
+                                          fate=fate, treatment='WT',
+                                          is_baseline=is_baseline)
         ax.plot(common_t, m,
-                markevery=max(1, len(common_t)//12),
+                markevery=bp.markevery_from(common_t),
                 label=f"{base_label} (n={n})", **lkw)
         ax.fill_between(common_t, m - sd, m + sd,
-                        color=colour, alpha=0.15, linewidth=0)
+                        color=colour, alpha=bp.TRACE_BAND_ALPHA, linewidth=0)
 
     ax.set_xlabel("Time from aspiration onset (s)")
     ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
-    ax.set_title("Whole-trace protrusion mechanics by fate", fontsize=10)
+    ax.set_title("Whole-trace protrusion mechanics by fate")
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.legend(frameon=False, fontsize=7, loc='lower right', ncol=1)
+    ax.legend(frameon=False, loc='lower right')
 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_Combined_WholeTrace_Trace_by_Fate.pdf")

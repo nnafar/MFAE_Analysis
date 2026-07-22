@@ -11,7 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import seaborn as sns
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
 from scipy.interpolate import PchipInterpolator
 from scipy.optimize import curve_fit
@@ -48,6 +48,567 @@ COLOR_FIT_POST = 'magenta'
 
 SAVE_DPI = 300
 PANEL_DPI = 150
+
+# ===========================================================================
+# SuperPlot & pulse-trace infrastructure (Chapter 3)
+# ===========================================================================
+# Shared machinery for the Lord-et-al.-style SuperPlot figures and for the
+# WT-condition trace figures (No pulse / 100 V, 100 µs / 100 V, 5 ms).
+#
+# SuperPlot conventions:
+#   colour = Experiment #N (per-treatment ramp, deepest = earliest date)
+#   shape  = Chip_ID (Chip 1 = circle, Chip 2 = triangle)
+#   large marker per (Date, Chip) replicate at replicate mean
+#   central bar = mean of replicate means; error bar = SEM of replicates
+#   cell-level Mann-Whitney U on the bracket (Chapter 3 convention);
+#   experiment-level MWU on replicate means is logged for the supplement.
+#
+# Trace conventions:
+#   No pulse       -> #0a1e3d  (dark navy)
+#   100 V, 5 ms    -> #1065ab  (deep blue)
+#   100 V, 100 µs  -> #3a93c3  (mid blue)
+# ---------------------------------------------------------------------------
+
+# --- Full MFAE diverging palette (blue -> neutral -> red) ---
+MFAE_PALETTE_FULL: List[str] = [
+    "#1065ab", "#3a93c3", "#8ec4de", "#d1e5f0", "#e3dddd",
+    "#fedbc7", "#f6a482", "#d75f4c", "#b31529",
+]
+
+# --- Per-treatment date ramps for SuperPlot experiment encoding ---
+# Deepest shade = earliest experiment within a treatment. Six stops each;
+# extend if a treatment exceeds six independent experiment-days.
+WT_DATE_RAMP:   List[str] = ["#1065ab", "#3a93c3", "#5da5d5", "#8ec4de",
+                             "#4a7bad", "#0a2e5a"]
+CYTD_DATE_RAMP: List[str] = ["#b31529", "#d75f4c", "#f6a482", "#fedbc7",
+                             "#8a1020", "#6b0c19"]
+
+TREATMENT_RAMPS: Dict[str, List[str]] = {
+    "WT":   WT_DATE_RAMP,
+    "CytD": CYTD_DATE_RAMP,
+}
+
+# --- Chip_ID -> marker mapping (global, stable) ---
+CHIP_MARKER_MAP: Dict[str, str] = {
+    "Chip1": "o",
+    "Chip2": "^",
+    "Chip3": "s",
+    "Chip4": "D",
+    "Chip5": "v",
+    "Chip6": "P",
+}
+
+# --- Fixed treatment order (WT before CytD, per Chapter 3 convention) ---
+CATEGORY_ORDER: List[str] = ["WT", "CytD"]
+
+# --- Pulse-condition trace palette (WT-condition comparisons) ---
+NO_PULSE_COLOUR    = "#0a1e3d"   # dark navy
+PULSE_5MS_COLOUR   = "#1065ab"   # deep blue
+PULSE_100US_COLOUR = "#3a93c3"   # mid blue
+
+# Indexed by (condition_type, duration_label). ASP is universal 'No pulse'.
+PULSE_TRACE_PALETTE: Dict[Tuple[str, Optional[str]], str] = {
+    ("ASP", None):    NO_PULSE_COLOUR,
+    ("EP",  "5ms"):   PULSE_5MS_COLOUR,
+    ("EP",  "100us"): PULSE_100US_COLOUR,
+    ("EP",  "100µs"): PULSE_100US_COLOUR,
+}
+
+# --- Canonical WT-vs-CytD colours for ASP-only comparison figures ---
+# Distinct from PULSE_TRACE_PALETTE: those darker/lighter shades are for
+# comparing conditions within WT (No pulse vs 5 ms vs 100 µs). The pair
+# below is for comparing treatments within the No-pulse (ASP) cohort.
+ASP_TREATMENT_COLOUR: Dict[str, str] = {
+    "WT":   "#1065ab",
+    "CytD": "#b31529",
+}
+
+# --- Shared trace style (L(t) and I/F0 mean-trace figures) ---
+# Reference style: plot_thesis_ep_wholetrace_by_fate (and via it the
+# bulk_utils.get_line_kwargs helper, MFA_STYLE_LINE_LW = 1.8). Every
+# trace figure in Chapter 3 pulls from these constants so line thickness,
+# marker frequency, and fill translucency are visually identical
+# figure-to-figure.
+TRACE_LINEWIDTH        = 1.8    # canonical MFA line weight
+TRACE_MARKERSIZE       = 5
+TRACE_MARKEREDGE_WIDTH = 1.2    # marker edge width for open (ruptured) markers
+TRACE_MARKEVERY_FRAC   = 0.10   # one marker every 10% of the common grid
+TRACE_BAND_ALPHA       = 0.18
+TRACE_BASELINE_ALPHA   = 0.5    # No-pulse dimming when EP is co-plotted
+TRACE_MARKER_BY_TREATMENT: Dict[str, str] = {"WT": "o", "CytD": "s"}
+TRACE_LINESTYLE_BY_FATE:    Dict[str, str] = {
+    "intact":         "-",
+    "ruptured_post":  "--",
+    "baseline":       "-",   # No-pulse baseline in pulse-comparison figures
+}
+
+
+def build_trace_line_kwargs(pulse_colour: str,
+                            fate: str = "intact",
+                            treatment: str = "WT",
+                            is_baseline: bool = False) -> Dict:
+    """
+    Kwargs bundle for `ax.plot(...)` calls that draw a mean L(t) or mean
+    I(t)/F0 trace. Every trace figure in Chapter 3 uses this so line
+    thickness, marker size, and fate-encoded style are identical.
+
+    Parameters
+    ----------
+    pulse_colour : str
+        Hex colour from PULSE_TRACE_PALETTE (or ASP_TREATMENT_COLOUR for
+        WT-vs-CytD comparisons).
+    fate : {'intact', 'ruptured_post', 'baseline'}
+        Drives linestyle and marker face:
+            'intact' / 'baseline'  -> solid line, filled marker
+            'ruptured_post'        -> dashed line, open marker with coloured edge
+    treatment : {'WT', 'CytD'}
+        Drives marker shape: circle for WT, square for CytD.
+    is_baseline : bool
+        If True, dims the whole line to TRACE_BASELINE_ALPHA. Used when
+        the No-pulse trace appears alongside EP traces so it reads as
+        background reference rather than a comparison condition.
+    """
+    marker    = TRACE_MARKER_BY_TREATMENT.get(treatment, "o")
+    linestyle = TRACE_LINESTYLE_BY_FATE.get(fate, "-")
+    alpha     = TRACE_BASELINE_ALPHA if is_baseline else 1.0
+    if str(fate).lower() == "ruptured_post":
+        return dict(color=pulse_colour, linestyle=linestyle,
+                    linewidth=TRACE_LINEWIDTH,
+                    marker=marker, markerfacecolor='none',
+                    markeredgecolor=pulse_colour,
+                    markeredgewidth=TRACE_MARKEREDGE_WIDTH,
+                    markersize=TRACE_MARKERSIZE, alpha=alpha)
+    return dict(color=pulse_colour, linestyle=linestyle,
+                linewidth=TRACE_LINEWIDTH,
+                marker=marker, markerfacecolor=pulse_colour,
+                markeredgecolor='none', markeredgewidth=0,
+                markersize=TRACE_MARKERSIZE, alpha=alpha)
+
+
+def markevery_from(common_t) -> int:
+    """One marker every ~10% of the common time grid (min 1)."""
+    n = len(common_t)
+    return max(1, int(n * TRACE_MARKEVERY_FRAC))
+
+# --- Font sizes for thesis-ready figures (A5 at ~0.98x) ---
+FONT_BASE          = 14
+FONT_AXIS_TITLE    = 16
+FONT_AXIS_LABEL    = 15
+FONT_TICK          = 13
+FONT_LEGEND        = 13
+FONT_LEGEND_HEADER = 14
+FONT_BRACKET       = 14
+
+
+def apply_thesis_rcparams() -> None:
+    """
+    Apply the Chapter 3 font-size defaults. Call once at the start of any
+    plotting function that produces a thesis-ready figure.
+    """
+    import matplotlib as mpl
+    mpl.rcParams.update({
+        "font.size":        FONT_BASE,
+        "axes.titlesize":   FONT_AXIS_TITLE,
+        "axes.labelsize":   FONT_AXIS_LABEL,
+        "xtick.labelsize":  FONT_TICK,
+        "ytick.labelsize":  FONT_TICK,
+        "legend.fontsize":  FONT_LEGEND,
+        "axes.titleweight": "bold",
+    })
+
+
+def parse_chip_id(experiment_folder: str) -> str:
+    """
+    Extract 'Chip1', 'Chip2', ... from an Experiment_Folder string of the
+    form 'YYMMDD_CellType_Treatment_ChipN_ExperimentM-...'.  Returns
+    'Unknown' if no such token is present.
+    """
+    for tok in str(experiment_folder).split("_"):
+        if tok.startswith("Chip"):
+            return tok
+    return "Unknown"
+
+
+def format_condition_label(condition_type: str,
+                           voltage_v: Optional[float] = None,
+                           duration_label: Optional[str] = None,
+                           fate_status: Optional[str] = None,
+                           with_fate: bool = False,
+                           pre_post: bool = False) -> str:
+    """
+    Chapter 3 label convention:
+
+        No pulse                          (ASP-only, any treatment)
+        100 V, 100 µs                     (EP, no fate)
+        100 V, 5 ms
+        100 V, 100 µs (Intact)            (EP, with fate)
+        100 V, 100 µs (Ruptured)
+        Intact pre/post                   (paired comparison, pre_post=True)
+        Ruptured pre/post
+
+    Duration mapping: '100us' -> '100 µs', '5ms' -> '5 ms'.
+    Fate mapping:     'intact' -> 'Intact', 'ruptured_post' -> 'Ruptured'.
+    """
+    fate_map = {"intact": "Intact", "ruptured_post": "Ruptured"}
+    fate_disp = fate_map.get(str(fate_status).lower(), None) if fate_status else None
+
+    if pre_post:
+        return f"{fate_disp} pre/post" if fate_disp else "pre/post"
+
+    if str(condition_type).upper() == "ASP":
+        base = "No pulse"
+    else:
+        dur_disp = {"100us": "100 µs", "100µs": "100 µs",
+                    "5ms": "5 ms"}.get(str(duration_label),
+                                       str(duration_label) if duration_label else "")
+        volt_str = f"{int(voltage_v)} V" if voltage_v is not None else ""
+        parts = [p for p in (volt_str, dur_disp) if p]
+        base = ", ".join(parts) if parts else "EP"
+
+    if with_fate and fate_disp:
+        return f"{base} ({fate_disp})"
+    return base
+
+
+def _sp_build_style_maps(df: pd.DataFrame
+                         ) -> Tuple[Dict[int, str], Dict[int, str], Dict[str, str]]:
+    """
+    For a filtered dataframe, assign:
+      date_colours[date]: hex colour from the ramp of that Date's Treatment,
+                          deepest shade for earliest date within treatment
+      date_labels[date]:  'Experiment 1', 'Experiment 2', ... within treatment
+      chip_markers[chip]: 'o', '^', 's', ...
+
+    Requires columns: 'Date' (int), 'Treatment' (str), 'Chip_ID' (str).
+    Raises ValueError if a Treatment has more dates than its ramp supports.
+    """
+    date_treatment = df.groupby("Date")["Treatment"].first().to_dict()
+
+    dates_by_treatment: Dict[str, List[int]] = {}
+    for d, t in date_treatment.items():
+        dates_by_treatment.setdefault(str(t), []).append(int(d))
+    for t in dates_by_treatment:
+        dates_by_treatment[t] = sorted(dates_by_treatment[t])
+
+    date_colours: Dict[int, str] = {}
+    date_labels:  Dict[int, str] = {}
+    for treatment, dates in dates_by_treatment.items():
+        ramp = TREATMENT_RAMPS.get(treatment)
+        if ramp is None:
+            raise ValueError(
+                f"No colour ramp defined for treatment '{treatment}'. "
+                f"Extend TREATMENT_RAMPS in bulk_plotting.py."
+            )
+        if len(dates) > len(ramp):
+            raise ValueError(
+                f"Treatment '{treatment}' has {len(dates)} experiment-dates "
+                f"but the ramp only provides {len(ramp)} colours. Extend "
+                f"the ramp in bulk_plotting.py ({'WT_DATE_RAMP' if treatment == 'WT' else 'CYTD_DATE_RAMP'})."
+            )
+        for i, d in enumerate(dates):
+            date_colours[d] = ramp[i]
+            date_labels[d]  = f"Experiment {i + 1}"
+
+    chip_ids = sorted(df["Chip_ID"].unique())
+    fallback = ["o", "^", "s", "D", "v", "P", "X", "*"]
+    chip_markers: Dict[str, str] = {}
+    for i, c in enumerate(chip_ids):
+        chip_markers[c] = CHIP_MARKER_MAP.get(c, fallback[i % len(fallback)])
+
+    return date_colours, date_labels, chip_markers
+
+
+def _sp_experiment_level_mw(rep_means_a: np.ndarray,
+                            rep_means_b: np.ndarray) -> Tuple[float, int, int]:
+    """Mann-Whitney U on replicate means. Returns (p, n_a, n_b)."""
+    n_a, n_b = len(rep_means_a), len(rep_means_b)
+    if n_a < 2 or n_b < 2:
+        return float('nan'), n_a, n_b
+    try:
+        _, p = mannwhitneyu(rep_means_a, rep_means_b, alternative="two-sided")
+    except ValueError:
+        return float('nan'), n_a, n_b
+    return p, n_a, n_b
+
+
+# --- Geometry constants for panel rendering ---
+_SP_JITTER_WIDTH               = 0.18
+_SP_CELL_MARKER_SIZE           = 40
+_SP_CELL_ALPHA                 = 0.50
+_SP_REPLICATE_MARKER_SIZE      = 220
+_SP_REPLICATE_OFFSET_HALFWIDTH = 0.18
+_SP_MEAN_BAR_HALFWIDTH         = 0.32
+
+
+def _sp_render_panel(ax,
+                     panel_df: pd.DataFrame,
+                     col: str,
+                     categories: List[str],
+                     date_colours: Dict[int, str],
+                     chip_markers: Dict[str, str],
+                     log_axis: bool,
+                     rng: np.random.Generator) -> None:
+    """
+    Render a single SuperPlot panel on `ax`:
+      - one small semi-transparent marker per cell (colour=Date, shape=Chip)
+      - one large marker per (Date, Chip) replicate at replicate mean
+      - central bar at mean-of-replicate-means + SEM error bar
+
+    `panel_df` must contain the columns: 'Category', 'Date', 'Chip_ID',
+    and the value column `col`.
+    """
+    all_values: List[float] = []
+
+    for x_idx, cat in enumerate(categories):
+        cat_df = panel_df[panel_df["Category"] == cat]
+        if cat_df.empty:
+            continue
+
+        # Small cell-level dots
+        for _, row in cat_df.iterrows():
+            colour = date_colours.get(int(row["Date"]), "#7f7f7f")
+            marker = chip_markers.get(row["Chip_ID"], "o")
+            x = x_idx + rng.uniform(-_SP_JITTER_WIDTH, _SP_JITTER_WIDTH)
+            ax.scatter(x, row[col],
+                       s=_SP_CELL_MARKER_SIZE, marker=marker,
+                       facecolor=colour, edgecolor="none",
+                       alpha=_SP_CELL_ALPHA, zorder=2)
+            all_values.append(row[col])
+
+        # Per-replicate mean markers with ordered horizontal offset
+        replicate_keys = sorted(cat_df.groupby(["Date", "Chip_ID"]).groups.keys())
+        n_reps = len(replicate_keys)
+        if n_reps == 1:
+            offsets = [0.0]
+        else:
+            offsets = np.linspace(-_SP_REPLICATE_OFFSET_HALFWIDTH,
+                                  _SP_REPLICATE_OFFSET_HALFWIDTH, n_reps)
+
+        replicate_means: List[float] = []
+        for (date, chip), x_off in zip(replicate_keys, offsets):
+            rep_df = cat_df[(cat_df["Date"] == date) & (cat_df["Chip_ID"] == chip)]
+            rep_mean = float(rep_df[col].mean())
+            replicate_means.append(rep_mean)
+            colour = date_colours.get(int(date), "#7f7f7f")
+            marker = chip_markers.get(chip, "o")
+            ax.scatter(x_idx + x_off, rep_mean,
+                       s=_SP_REPLICATE_MARKER_SIZE, marker=marker,
+                       facecolor=colour, edgecolor="black",
+                       linewidth=1.6, alpha=1.0, zorder=4)
+
+        # Central tendency + SEM
+        # Explicit marker='' and linestyle='-' defends against
+        # bulk_utils.set_paper_style() prop_cycles that would otherwise
+        # inject default markers or dashed lines onto ax.plot() calls.
+        if replicate_means:
+            grand_mean = float(np.mean(replicate_means))
+            sem = (float(np.std(replicate_means, ddof=1)
+                         / np.sqrt(len(replicate_means)))
+                   if len(replicate_means) > 1 else 0.0)
+            ax.plot([x_idx - _SP_MEAN_BAR_HALFWIDTH,
+                     x_idx + _SP_MEAN_BAR_HALFWIDTH],
+                    [grand_mean, grand_mean],
+                    color="black", lw=2.2, linestyle='-', marker='',
+                    zorder=5)
+            if sem > 0:
+                ax.plot([x_idx, x_idx],
+                        [grand_mean - sem, grand_mean + sem],
+                        color="black", lw=1.6, linestyle='-', marker='',
+                        zorder=5)
+                cap = _SP_MEAN_BAR_HALFWIDTH * 0.35
+                for y in (grand_mean - sem, grand_mean + sem):
+                    ax.plot([x_idx - cap, x_idx + cap], [y, y],
+                            color="black", lw=1.6, linestyle='-', marker='',
+                            zorder=5)
+
+    ax.set_xticks(range(len(categories)))
+    ax.set_xticklabels(categories)
+    ax.tick_params(axis='x', which='major', pad=6)
+    if log_axis and all_values and min(all_values) > 0:
+        ax.set_yscale("log")
+
+
+def _sp_build_legend_handles(df: pd.DataFrame,
+                             chips_present: List[str],
+                             date_colours: Dict[int, str],
+                             date_labels:  Dict[int, str],
+                             chip_markers: Dict[str, str]) -> List[mlines.Line2D]:
+    """
+    Treatment-grouped legend:
+        WT
+          Experiment 1, 2, 3, ...
+        CytD
+          Experiment 1, 2, ...
+        Chip
+          Chip 1, Chip 2, ...
+    """
+    handles: List[mlines.Line2D] = []
+    date_treatment = df.groupby("Date")["Treatment"].first().to_dict()
+
+    for treatment in CATEGORY_ORDER:
+        dates = sorted([int(d) for d, t in date_treatment.items()
+                        if str(t) == treatment])
+        if not dates:
+            continue
+        handles.append(mlines.Line2D([0], [0], marker="", linestyle="",
+                                     label=r"$\bf{" + treatment + "}$"))
+        for d in dates:
+            handles.append(mlines.Line2D([0], [0], marker="o", linestyle="",
+                                         markerfacecolor=date_colours[d],
+                                         markeredgecolor="black",
+                                         markersize=11,
+                                         label=date_labels[d]))
+
+    handles.append(mlines.Line2D([0], [0], marker="", linestyle="",
+                                 label=r"$\bf{Chip}$"))
+    for c in chips_present:
+        marker = chip_markers[c]
+        display_label = str(c).replace("Chip", "Chip ")
+        handles.append(mlines.Line2D([0], [0], marker=marker, linestyle="",
+                                     markerfacecolor="lightgray",
+                                     markeredgecolor="black",
+                                     markersize=11,
+                                     label=display_label))
+    return handles
+
+
+def render_visco_parameter_superplot(df: pd.DataFrame,
+                                     panels: List[Tuple[str, str, str]],
+                                     output_pdf: Path,
+                                     category_col: str = "Treatment",
+                                     categories: Optional[List[str]] = None,
+                                     figsize: Tuple[float, float] = (16, 10),
+                                     grid_shape: Tuple[int, int] = (2, 3),
+                                     bracket_pairs: Optional[List[Tuple[int, int]]] = None,
+                                     ) -> None:
+    """
+    Draw a SuperPlot grid (default 2x3 with the sixth slot for the legend).
+
+    Parameters
+    ----------
+    df : DataFrame
+        Must contain columns 'Date', 'Treatment', 'Experiment_Folder' plus the
+        value columns referenced by `panels`. A 'Chip_ID' column will be
+        derived from 'Experiment_Folder' if missing.
+    panels : list of (column, ylabel, title)
+        One entry per parameter panel. Up to len(panels) panels are drawn;
+        remaining grid slots hold the legend or are hidden.
+    output_pdf : Path
+        Destination PDF path.
+    category_col : str
+        DataFrame column carrying the x-axis category (default 'Treatment').
+    categories : list of str, optional
+        Ordered list of category values to draw. Defaults to CATEGORY_ORDER
+        filtered by what's present.
+    bracket_pairs : list of (i, j) index tuples, optional
+        Which category pairs to draw statistical brackets between (indices
+        into `categories`). Defaults:
+          - 2 categories:  single bracket (0, 1)
+          - >2 categories: adjacent pairs (0,1), (1,2), ...
+        Pass an empty list to suppress all brackets.
+    """
+    apply_thesis_rcparams()
+
+    df = df.copy()
+    if "Chip_ID" not in df.columns:
+        df["Chip_ID"] = df["Experiment_Folder"].apply(parse_chip_id)
+    df["Category"] = df[category_col].astype(str)
+
+    if categories is None:
+        categories = [c for c in CATEGORY_ORDER if c in df["Category"].unique()]
+
+    if bracket_pairs is None:
+        if len(categories) == 2:
+            bracket_pairs = [(0, 1)]
+        elif len(categories) > 2:
+            bracket_pairs = [(i, i + 1) for i in range(len(categories) - 1)]
+        else:
+            bracket_pairs = []
+
+    date_colours, date_labels, chip_markers = _sp_build_style_maps(df)
+
+    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=figsize)
+    axes = np.asarray(axes).flatten()
+    rng = np.random.default_rng(seed=42)
+
+    n_panels = len(panels)
+    for i, ax in enumerate(axes):
+        if i >= n_panels:
+            ax.set_visible(False)
+            continue
+
+        col, ylabel, title = panels[i]
+        panel_df = df[df[col].notna()].copy()
+        if panel_df.empty:
+            ax.set_visible(False)
+            continue
+
+        log_axis = (panel_df[col] > 0).all()
+        _sp_render_panel(ax, panel_df, col, categories,
+                         date_colours, chip_markers, log_axis, rng)
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel("")
+
+        # X-tick rotation only when labels are long enough to collide.
+        max_label_len = max((len(str(c)) for c in categories), default=0)
+        if max_label_len > 8:
+            ax.tick_params(axis='x', rotation=30)
+            for lbl in ax.get_xticklabels():
+                lbl.set_ha('right')
+
+        # Brackets for the specified pairs. Cell-level MWU for the label
+        # (Chapter 3 main-text convention); experiment-level MWU logged.
+        for (idx_a, idx_b) in bracket_pairs:
+            if idx_a >= len(categories) or idx_b >= len(categories):
+                continue
+            cat_a = categories[idx_a]
+            cat_b = categories[idx_b]
+            a = panel_df.loc[panel_df["Category"] == cat_a, col].dropna().values
+            b = panel_df.loc[panel_df["Category"] == cat_b, col].dropna().values
+            if len(a) < 2 or len(b) < 2:
+                continue
+            stars, label, lw, delta = _build_stat_label(a, b)
+
+            rep_a = (panel_df[panel_df["Category"] == cat_a]
+                     .groupby(["Date", "Chip_ID"])[col].mean().values)
+            rep_b = (panel_df[panel_df["Category"] == cat_b]
+                     .groupby(["Date", "Chip_ID"])[col].mean().values)
+            p_exp, n_exp_a, n_exp_b = _sp_experiment_level_mw(rep_a, rep_b)
+
+            logger.info(
+                f"  [{title.splitlines()[0]:<30}] {cat_a} vs {cat_b}: "
+                f"cells n=({len(a)},{len(b)})  stars={stars}  delta={delta:+.3f}  "
+                f"exp n=({n_exp_a},{n_exp_b})  p_exp={p_exp:.4g}"
+            )
+
+            if label is not None:
+                y_top = float(np.nanmax(np.concatenate([a, b])))
+                _add_bracket(ax, idx_a, idx_b, y_top, label,
+                             lw=lw, fontsize=FONT_BRACKET)
+
+    # Legend in the last unused slot
+    if n_panels < len(axes):
+        legend_ax = axes[-1]
+        legend_ax.set_visible(True)
+        legend_ax.axis("off")
+        chips_present = sorted(df["Chip_ID"].unique())
+        handles = _sp_build_legend_handles(df, chips_present,
+                                           date_colours, date_labels,
+                                           chip_markers)
+        legend_ax.legend(handles=handles, loc="center", frameon=False,
+                         fontsize=FONT_LEGEND, handletextpad=0.8,
+                         labelspacing=0.7,
+                         title_fontsize=FONT_LEGEND_HEADER)
+
+    plt.tight_layout()
+    utils.save_plot_pdf(output_pdf, dpi=SAVE_DPI)
+    plt.close(fig)
+
+# ===========================================================================
+# End SuperPlot & pulse-trace infrastructure
+# ===========================================================================
+
 
 def get_cond_label(meta: bfh.ExperimentMetadata) -> str:
     if meta.condition_type == "ASP":
@@ -954,7 +1515,22 @@ def plot_asp_best_fit_multipanel(
 
 
 def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
-    logger.info("Generating: ASP Parameter Boxplots (reduced grouping)...")
+    """
+    ASP-only viscoelastic parameter SuperPlot (WT vs CytD) plus the
+    stacked-bar model-selection frequency chart.
+
+    The SuperPlot replaces the previous box+strip figure but writes to the
+    same filename (Thesis_ASP_Visco_Parameter_Boxplots.pdf) so LaTeX
+    references remain valid. Each cell is a small semi-transparent marker;
+    colour encodes the experiment-day within treatment and shape encodes
+    the chip. Large filled markers mark per-replicate means; the black bar
+    is the mean of replicate means with an SEM error bar.
+
+    Statistics on the bracket are cell-level Mann-Whitney U (the Chapter 3
+    main-text convention); experiment-level MWU on replicate means is
+    logged for the supplement.
+    """
+    logger.info("Generating: ASP Parameter SuperPlot...")
 
     df = mechanics_df[
         (mechanics_df['Condition_Type'] == 'ASP') &
@@ -967,119 +1543,29 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
         logger.info("  No fitted ASP data — skipping.")
         return
 
-    df['Category'] = df.apply(_asp_category_label_from_row, axis=1)
-    sorted_cats_full = sorted(df['Category'].unique())
-
-    label_map = _reduce_labels(sorted_cats_full)
-    df['Category'] = df['Category'].map(label_map)
-    sorted_cats = [label_map[c] for c in sorted_cats_full]
-
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    axes = axes.flatten()
-
-    # Panel titles / y-labels aligned with plot_prepulse_visco_parameter_boxplots
-    # so the ASP-only figure and the pre-pulse figure can be read side-by-side
-    # without translating between different names for the same parameter.
-    panels = [
+    # ---- SuperPlot ---------------------------------------------------------
+    # Panel spec matches the pre-pulse visco figure so the two are directly
+    # side-by-side readable in the thesis.
+    asp_visco_panels: List[Tuple[str, str, str]] = [
         ('E_Pa',      r'$E$ (Pa)',                'Parallel Spring Modulus'),
         ('E1_Pa',     r'$E_{1}$ (Pa)',            'Burgers Maxwell Spring\n(Burgers only)'),
         ('eta1_Pa_s', r'$\eta_{1}$ (Pa$\cdot$s)', 'Parallel Dashpot'),
         ('eta2_Pa_s', r'$\eta_{2}$ (Pa$\cdot$s)', 'Flow Viscosity\n(Jeffreys / Burgers)'),
         ('Tau_s',     r'$\tau$ (s)',              'Characteristic Time'),
     ]
-    
-    # Grammar-based per-treatment tint and marker. Best_Model info is
-    # preserved separately in Thesis_ASP_Visco_Model_Selection_Frequency
-    # (stacked-bar figure below), so we free the scatter's colour and
-    # marker axis to encode Treatment: colour = (Treatment, 'ASP'),
-    # marker = circle for WT, square for CytD.
-    from matplotlib.colors import to_rgba
+    render_visco_parameter_superplot(
+        df=df,
+        panels=asp_visco_panels,
+        output_pdf=output_dir / "Thesis_ASP_Visco_Parameter_Boxplots.pdf",
+        category_col='Treatment',
+    )
 
-    def _tint(hex_color: str, alpha: float = 0.30) -> tuple:
-        r, g, b, _ = to_rgba(hex_color)
-        return (r, g, b, alpha)
-
-    def _cat_to_treatment(cat_label: str) -> str:
-        tok = str(cat_label).split('_')[0].split(' ')[0]
-        return tok if tok in ('WT', 'CytD') else 'WT'
-
-    cat_treatment = {c: _cat_to_treatment(c) for c in sorted_cats}
-    box_palette   = {c: _tint(utils.get_style_color(cat_treatment[c], 'ASP'), 0.25)
-                     for c in sorted_cats}
-    box_edges     = {c: utils.get_style_color(cat_treatment[c], 'ASP')
-                     for c in sorted_cats}
-
-    for i, ax in enumerate(axes):
-        if i >= len(panels):
-            ax.set_visible(False)
-            continue
-
-        col, ylabel, title = panels[i]
-        sub = df[df[col].notna()]
-        if sub.empty:
-            ax.set_visible(False)
-            continue
-
-        sns.boxplot(data=sub, x='Category', y=col, order=sorted_cats,
-                    ax=ax, showfliers=False,
-                    palette=box_palette, hue='Category', legend=False, dodge=False)
-        # Sharp grammar-colour edges on the tinted boxes
-        for patch, cat in zip(ax.patches, sorted_cats):
-            e = box_edges.get(cat)
-            if e is not None:
-                patch.set_edgecolor(e)
-
-        # One stripplot per category so we can vary marker per Treatment.
-        # Points carry the fully-saturated grammar colour so they read
-        # clearly against the tinted box.
-        for cat in sorted_cats:
-            cat_sub = sub[sub['Category'] == cat]
-            if cat_sub.empty:
-                continue
-            t = cat_treatment[cat]
-            c = utils.get_style_color(t, 'ASP')
-            m = utils.get_style_marker(t)
-            sns.stripplot(data=cat_sub, x='Category', y=col, order=sorted_cats,
-                          color=c, marker=m, alpha=0.75, ax=ax, size=6)
-
-        ax.set_title(title, fontweight='bold')
-        ax.set_ylabel(ylabel)
-        ax.set_xlabel("")
-        ax.tick_params(axis='x', rotation=45)
-
-        if (sub[col] > 0).all():
-            ax.set_yscale('log')
-
-        pairs = [(sorted_cats[j], sorted_cats[j + 1])
-                 for j in range(len(sorted_cats) - 1)]
-
-        for cat_a, cat_b in pairs:
-            vals_a = sub.loc[sub['Category'] == cat_a, col].dropna().values
-            vals_b = sub.loc[sub['Category'] == cat_b, col].dropna().values
-            stars, label, lw, delta = _build_stat_label(vals_a, vals_b)
-
-            n_a, n_b = len(vals_a), len(vals_b)
-            logger.info(
-                f"  [{title.splitlines()[0]:<30}] {cat_a} vs {cat_b}: "
-                f"n=({n_a},{n_b})  stars={stars}  delta={delta:+.3f}"
-            )
-
-            if label is None:
-                continue  
-
-            x1 = sorted_cats.index(cat_a)
-            x2 = sorted_cats.index(cat_b)
-            y_top = float(np.nanmax(np.concatenate([vals_a, vals_b])))
-            _add_bracket(ax, x1, x2, y_top, label, lw=lw)
-
-        if i != 0:
-            legend = ax.get_legend()
-            if legend:
-                legend.remove()
-
-    plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_ASP_Visco_Parameter_Boxplots.pdf", dpi=SAVE_DPI)
-    plt.close()
+    # ---- Model-selection frequency (unchanged) -----------------------------
+    df['Category'] = df.apply(_asp_category_label_from_row, axis=1)
+    sorted_cats_full = sorted(df['Category'].unique())
+    label_map = _reduce_labels(sorted_cats_full)
+    df['Category'] = df['Category'].map(label_map)
+    sorted_cats = [label_map[c] for c in sorted_cats_full]
 
     model_counts = (df.groupby(['Category', 'Best_Model'])
                     .size()
@@ -1101,13 +1587,11 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
 
 def plot_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     """
-    Two-panel per-cell F0 boxplot for the ASP visco-pass cohort:
-    body region (F0_Body) and protrusion region (F0_Prot), split by
-    condition. Uses the same cohort filter as
-    `plot_asp_parameter_boxplots`, so the F0 figure can sit alongside
-    the mechanical boxplots without cohort mismatch.
+    ASP-only actin F0 SuperPlot (WT vs CytD): body region (F0_Body) and
+    protrusion region (F0_Prot). Uses the same cohort filter as
+    `plot_asp_parameter_boxplots` so cell counts match the visco figure.
     """
-    logger.info("Generating: ASP Actin F0 Boxplots (visco-pass cohort)...")
+    logger.info("Generating: ASP Actin F0 SuperPlot...")
 
     df = mechanics_df[
         (mechanics_df['Condition_Type'] == 'ASP') &
@@ -1120,115 +1604,27 @@ def plot_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> 
         logger.info("  No fitted ASP data — skipping.")
         return
 
-    df['Category'] = df.apply(_asp_category_label_from_row, axis=1)
-    sorted_cats_full = sorted(df['Category'].unique())
-
-    label_map = _reduce_labels(sorted_cats_full)
-    df['Category'] = df['Category'].map(label_map)
-    sorted_cats = [label_map[c] for c in sorted_cats_full]
-
-    # Grammar-based per-category palette and markers. The category label
-    # comes from _asp_category_label_from_row, e.g. 'WT_None_1100Pa' or
-    # 'CytD_CytD_1100Pa', then may be shortened by _reduce_labels. We
-    # parse the leading token to determine the Treatment and route
-    # through (Treatment, 'ASP') colour + Treatment marker.
-    from matplotlib.colors import to_rgba
-
-    def _tint(hex_color: str, alpha: float = 0.30) -> tuple:
-        r, g, b, _ = to_rgba(hex_color)
-        return (r, g, b, alpha)
-
-    def _cat_to_treatment(cat_label: str) -> str:
-        tok = str(cat_label).split('_')[0].split(' ')[0]
-        return tok if tok in ('WT', 'CytD') else 'WT'
-
-    cat_treatment = {c: _cat_to_treatment(c) for c in sorted_cats}
-    box_palette   = {c: _tint(utils.get_style_color(cat_treatment[c], 'ASP'), 0.25)
-                     for c in sorted_cats}
-    box_edges     = {c: utils.get_style_color(cat_treatment[c], 'ASP')
-                     for c in sorted_cats}
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    panels = [
-        ('F0_Body', r'$F_{0,\mathrm{body}}$ (ADU)', r'Cell-Body Actin Baseline'),
-        ('F0_Prot', r'$F_{0,\mathrm{prot}}$ (ADU)', r'Protrusion Actin Baseline'),
+    panels: List[Tuple[str, str, str]] = [
+        ('F0_Body', r'$F_{0,\mathrm{body}}$ (ADU)', 'Cell-Body Actin Baseline'),
+        ('F0_Prot', r'$F_{0,\mathrm{prot}}$ (ADU)', 'Protrusion Actin Baseline'),
     ]
 
-    for ax, (col, ylabel, title) in zip(axes, panels):
-        if col not in df.columns:
-            ax.set_visible(False)
-            continue
-
-        sub = df[df[col].notna()]
-        if sub.empty:
-            ax.set_visible(False)
-            continue
-
-        sns.boxplot(data=sub, x='Category', y=col, order=sorted_cats,
-                    ax=ax, showfliers=False,
-                    palette=box_palette, hue='Category', legend=False, dodge=False)
-        # Set box edge colour to the fully-saturated grammar colour so
-        # the boxes read as sharp against the tinted fill.
-        for patch, cat in zip(ax.patches, sorted_cats):
-            e = box_edges.get(cat)
-            if e is not None:
-                patch.set_edgecolor(e)
-
-        # Points: one stripplot per category with its own marker + colour.
-        for cat in sorted_cats:
-            cat_sub = sub[sub['Category'] == cat]
-            if cat_sub.empty:
-                continue
-            t = cat_treatment[cat]
-            c = utils.get_style_color(t, 'ASP')
-            m = utils.get_style_marker(t)
-            sns.stripplot(data=cat_sub, x='Category', y=col, order=sorted_cats,
-                          color=c, marker=m, alpha=0.75, ax=ax, size=5)
-
-        ax.set_title(title, fontweight='bold')
-        ax.set_ylabel(ylabel)
-        ax.set_xlabel("")
-        ax.tick_params(axis='x', rotation=45)
-
-        if (sub[col] > 0).all():
-            ax.set_yscale('log')
-
-        pairs = [(sorted_cats[j], sorted_cats[j + 1])
-                 for j in range(len(sorted_cats) - 1)]
-
-        for cat_a, cat_b in pairs:
-            vals_a = sub.loc[sub['Category'] == cat_a, col].dropna().values
-            vals_b = sub.loc[sub['Category'] == cat_b, col].dropna().values
-            stars, label, lw, delta = _build_stat_label(vals_a, vals_b)
-
-            n_a, n_b = len(vals_a), len(vals_b)
-            logger.info(
-                f"  [{title:<30}] {cat_a} vs {cat_b}: "
-                f"n=({n_a},{n_b})  stars={stars}  delta={delta:+.3f}"
-            )
-
-            if label is None:
-                continue
-
-            x1 = sorted_cats.index(cat_a)
-            x2 = sorted_cats.index(cat_b)
-            y_top = float(np.nanmax(np.concatenate([vals_a, vals_b])))
-            _add_bracket(ax, x1, x2, y_top, label, lw=lw)
-
-    plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_ASP_Actin_F0_Boxplots.pdf",
-                        dpi=SAVE_DPI)
-    plt.close()
+    # Two panels + one legend slot -> 1x3 grid.
+    render_visco_parameter_superplot(
+        df=df,
+        panels=panels,
+        output_pdf=output_dir / "Thesis_ASP_Actin_F0_Boxplots.pdf",
+        category_col='Treatment',
+        figsize=(15, 5.5),
+        grid_shape=(1, 3),
+    )
 
 
 def _prepulse_visco_category_label(row: pd.Series) -> str:
     """
-    Fate-aware category label for the three-way pre-pulse viscoelastic
-    boxplot. ASP rows are labelled by treatment (e.g. `ASP WT`,
-    `ASP CytD`), so the CytD baseline can be shown as an optional
-    reference alongside the WT baseline. EP-pre rows are labelled by
-    voltage, duration and fate (e.g. `EP-pre 100V 100us (intact)`).
+    Legacy fate-aware category label for the pre-pulse viscoelastic boxplot
+    (kept for backward compatibility). Returns 'ASP WT', 'ASP CytD',
+    'EP-pre 100V 100us (intact)', etc.
     """
     ct = row.get('Condition_Type')
     if ct == 'ASP':
@@ -1239,32 +1635,100 @@ def _prepulse_visco_category_label(row: pd.Series) -> str:
     return f"{base} (intact)"
 
 
+def _prepulse_new_category_label(row: pd.Series) -> str:
+    """
+    Chapter 3 new-convention category label for the pre-pulse cohort.
+    ASP rows -> 'No pulse' (CytD baseline is annotated ' (CytD)' when
+    include_cytd=True keeps it in the cohort). EP rows -> the full
+    label from format_condition_label with fate suffix.
+    """
+    ct = str(row.get('Condition_Type', '')).upper()
+    treatment = str(row.get('Treatment', ''))
+    if ct == 'ASP':
+        label = format_condition_label(condition_type='ASP')
+        return label if treatment == 'WT' else f"{label} ({treatment})"
+    return format_condition_label(
+        condition_type='EP',
+        voltage_v=row.get('Voltage_V'),
+        duration_label=row.get('Duration_label'),
+        fate_status=row.get('Fate_Status'),
+        with_fate=True,
+    )
+
+
+def _prepulse_category_order(df: pd.DataFrame) -> List[str]:
+    """
+    Ordered category list for the pre-pulse SuperPlot:
+        No pulse
+        No pulse (CytD)          [only if present]
+        100 V, 100 µs (Intact)
+        100 V, 100 µs (Ruptured)
+        100 V, 5 ms (Intact)
+        100 V, 5 ms (Ruptured)
+    Uses the actual pulse durations present in the dataframe to build the
+    EP entries so the function generalises beyond the current two durations.
+    """
+    present = list(df['Category'].unique())
+    ordered: List[str] = []
+
+    nopulse_wt = format_condition_label(condition_type='ASP')
+    if nopulse_wt in present:
+        ordered.append(nopulse_wt)
+    for cyt_candidate in (f"{nopulse_wt} (CytD)",):
+        if cyt_candidate in present:
+            ordered.append(cyt_candidate)
+
+    # Sort EP durations: shorter pulses first (100us -> 5ms).
+    dur_priority = {'100us': 0, '100µs': 0, '5ms': 1}
+    dur_labels = sorted(
+        {str(d) for d in df.loc[df['Condition_Type'] == 'EP',
+                                'Duration_label'].dropna().unique()},
+        key=lambda d: dur_priority.get(d, 99),
+    )
+    for dur in dur_labels:
+        for fate in ('intact', 'ruptured_post'):
+            lab = format_condition_label(
+                condition_type='EP', voltage_v=100,
+                duration_label=dur, fate_status=fate, with_fate=True)
+            if lab in present:
+                ordered.append(lab)
+
+    # Append anything else that happens to be present (safety net).
+    for c in present:
+        if c not in ordered:
+            ordered.append(c)
+    return ordered
+
+
 def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
                                             output_dir: Path,
                                             include_cytd: bool = False) -> None:
     r"""
-    Three-way pre-pulse viscoelastic parameter boxplot on the
-    matched-horizon PrePulse_* fits. Compares ASP WT baseline against
-    EP-pre intact and EP-pre ruptured cohorts using the same
-    viscoelastic descriptors ($E$, $E_{1}$, $\eta_{1}$, $\eta_{2}$,
-    $\tau$) that appear in the aspiration-only subsection, but computed
-    on the fit window truncated to `global_pre_dur` so that all
-    cohorts enter the comparison with matched fit horizons.
+    Pre-pulse viscoelastic parameter SuperPlot (Chapter 3 Claim 2).
+
+    Compares 'No pulse' (WT ASP baseline; and optionally CytD baseline)
+    against the EP-pre cohorts split by fate:
+        No pulse
+        100 V, 100 µs (Intact)
+        100 V, 100 µs (Ruptured)
+        100 V, 5 ms (Intact)
+        100 V, 5 ms (Ruptured)
+
+    Uses the matched-horizon PrePulse_* fits so cohorts enter the
+    comparison with matched fit windows.
 
     Parameters
     ----------
     mechanics_df : pd.DataFrame
-        Bulk mechanics dataframe with PrePulse_* columns populated by
-        `run_all_mechanics`.
+        Bulk mechanics dataframe with PrePulse_* columns populated.
     output_dir : Path
         Directory in which the PDF is saved.
     include_cytd : bool, default False
-        If True, the ASP CytD baseline is also shown as a reference.
-        Left False by default because the electroporation experiments
-        were carried out on WT cells only, so the fair between-condition
-        contrast is against ASP WT.
+        If True, keeps the ASP CytD baseline (labelled 'No pulse (CytD)').
+        EP experiments are WT-only, so the default fair comparison is
+        against the WT baseline alone.
     """
-    logger.info("Generating: Pre-Pulse Viscoelastic Parameter Boxplots...")
+    logger.info("Generating: Pre-Pulse Viscoelastic Parameter SuperPlot...")
 
     df = mechanics_df[
         mechanics_df['PrePulse_Best_Model'].notna() &
@@ -1280,11 +1744,8 @@ def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
         logger.info("  No cells pass pre-pulse viscoelastic filter — skipping.")
         return
 
-    df['Category'] = df.apply(_prepulse_visco_category_label, axis=1)
-
-    asp_cats = sorted(c for c in df['Category'].unique() if c.startswith('ASP'))
-    ep_cats  = sorted(c for c in df['Category'].unique() if c.startswith('EP-pre'))
-    sorted_cats = asp_cats + ep_cats
+    df['Category'] = df.apply(_prepulse_new_category_label, axis=1)
+    categories = _prepulse_category_order(df)
 
     panels = [
         ('PrePulse_E_Pa',        r'$E$ (Pa)',
@@ -1299,151 +1760,13 @@ def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
          'Characteristic Time'),
     ]
 
-    # Grammar-based per-category style. Categories from
-    # _prepulse_visco_category_label are:
-    #   'ASP WT'                          -> (WT,   'ASP')
-    #   'ASP CytD'                        -> (CytD, 'ASP')
-    #   'EP-pre 100V 100us (intact)'      -> (WT,   '100us'), intact fate
-    #   'EP-pre 100V 100us (ruptured)'    -> (WT,   '100us'), ruptured fate
-    #   'EP-pre 100V 5ms (...)' similarly.
-    # ASP and intact draw with a solid fill in the (treatment, protocol)
-    # colour and matching edge; ruptured cohorts draw as white face with
-    # a coloured backslash hatch and coloured edge. EP cohort is WT-only
-    # per include_cytd default; if that ever changes the parser would
-    # need Treatment info in the category label too.
-    def _cat_to_grammar(cat_label: str) -> tuple:
-        """Return (treatment, protocol, fate) for a category label."""
-        s = str(cat_label)
-        if s.startswith('ASP '):
-            tok = s.split(' ', 1)[1].strip()
-            treatment = tok if tok in ('WT', 'CytD') else 'WT'
-            return (treatment, 'ASP', 'intact')
-        # EP-pre 100V {dur} (intact|ruptured)
-        protocol = '100us' if '100us' in s else ('5ms' if '5ms' in s else 'ASP')
-        fate = 'ruptured_post' if '(ruptured)' in s else 'intact'
-        return ('WT', protocol, fate)
-
-    cat_grammar = {c: _cat_to_grammar(c) for c in sorted_cats}
-    box_face   = {}
-    box_edges  = {}
-    box_hatches = {}
-    for c in sorted_cats:
-        t, p, f = cat_grammar[c]
-        col = utils.get_style_color(t, p)
-        if f == 'ruptured_post':
-            box_face[c]    = 'white'
-            box_edges[c]   = col
-            box_hatches[c] = utils.MFA_STYLE_RUPTURED_HATCH
-        else:
-            box_face[c]    = col
-            box_edges[c]   = col
-            box_hatches[c] = ''
-
-    ncols = 3
-    nrows = 2
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 5 * nrows))
-    axes = axes.flatten()
-
-    for panel_idx, (col, ylabel, title) in enumerate(panels):
-        ax = axes[panel_idx]
-
-        if col not in df.columns:
-            ax.set_visible(False)
-            continue
-
-        sub = df[df[col].notna()]
-        if sub.empty:
-            ax.set_visible(False)
-            continue
-
-        cats_here = [c for c in sorted_cats if c in sub['Category'].values]
-
-        sns.boxplot(data=sub, x='Category', y=col, order=cats_here,
-                    ax=ax, showfliers=False,
-                    palette={c: box_face[c] for c in cats_here},
-                    hue='Category', legend=False, dodge=False)
-        # Apply grammar edge colour and (for ruptured) hatch after
-        # seaborn has drawn the boxes.
-        for patch, cat in zip(ax.patches, cats_here):
-            e = box_edges.get(cat)
-            h = box_hatches.get(cat, '')
-            if e is not None:
-                patch.set_edgecolor(e)
-            if h:
-                patch.set_hatch(h)
-                patch.set_facecolor('white')
-                
-
-        # One stripplot per category so marker follows Treatment.
-        for cat in cats_here:
-            cat_sub = sub[sub['Category'] == cat]
-            if cat_sub.empty:
-                continue
-            t, p, _f = cat_grammar[cat]
-            c_hex = utils.get_style_color(t, p)
-            m_sym = utils.get_style_marker(t)
-            sns.stripplot(data=cat_sub, x='Category', y=col, order=cats_here,
-                          color=c_hex, marker=m_sym,
-                          alpha=0.75, ax=ax, size=6)
-
-        ax.set_title(title, fontweight='bold')
-        ax.set_ylabel(ylabel)
-        ax.set_xlabel("")
-        ax.tick_params(axis='x', rotation=45)
-
-        if (sub[col] > 0).all():
-            ax.set_yscale('log')
-
-        # Remove default seaborn legend on individual axes
-        leg = ax.get_legend()
-        if leg is not None:
-            leg.remove()
-
-        pairs = [(cats_here[j], cats_here[j + 1])
-                 for j in range(len(cats_here) - 1)]
-
-        for cat_a, cat_b in pairs:
-            vals_a = sub.loc[sub['Category'] == cat_a, col].dropna().values
-            vals_b = sub.loc[sub['Category'] == cat_b, col].dropna().values
-            if len(vals_a) < 2 or len(vals_b) < 2:
-                continue
-            stars, label, lw, delta = _build_stat_label(vals_a, vals_b)
-
-            n_a, n_b = len(vals_a), len(vals_b)
-            logger.info(
-                f"  [{title.replace(chr(10), ' '):<30}] {cat_a} vs {cat_b}: "
-                f"n=({n_a},{n_b})  stars={stars}  delta={delta:+.3f}"
-            )
-
-            if label is None:
-                continue
-
-            x1 = cats_here.index(cat_a)
-            x2 = cats_here.index(cat_b)
-            y_top = float(np.nanmax(np.concatenate([vals_a, vals_b])))
-            _add_bracket(ax, x1, x2, y_top, label, lw=lw)
-
-    # Hide any unused axes
-    for j in range(len(panels), len(axes)):
-        axes[j].set_visible(False)
-
-    # Model-colour legend on the last visible axis position
-    handles = [
-        plt.Line2D([0], [0], marker='o', color='w',
-                   markerfacecolor=VISCO_MODEL_PALETTE.get(m, 'gray'),
-                   markersize=8, label=m)
-        for m in ['Kelvin-Voigt', 'Jeffreys', 'Burgers']
-        if m in VISCO_MODEL_PALETTE
-    ]
-    if handles:
-        fig.legend(handles=handles, loc='lower right',
-                   bbox_to_anchor=(0.98, 0.02), title='Winning model',
-                   frameon=True)
-
-    plt.tight_layout(rect=(0, 0.03, 1, 1))
-    utils.save_plot_pdf(output_dir / "Thesis_PrePulse_Visco_Parameter_Boxplots.pdf",
-                        dpi=SAVE_DPI)
-    plt.close()
+    render_visco_parameter_superplot(
+        df=df,
+        panels=panels,
+        output_pdf=output_dir / "Thesis_PrePulse_Visco_Parameter_Boxplots.pdf",
+        category_col='Category',
+        categories=categories,
+    )
 
 
 def plot_model_independent_fits_multipanel(
