@@ -764,62 +764,93 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
                                         treatment: str = 'WT'
                                         ) -> None:
     """
-    Two-panel scatter of uptake plateau A vs pre-pulse maximum
-    protrusion length.  Panels: body (left), protrusion (right).
+    Two-panel scatter of uptake plateau A vs a pre-pulse geometric
+    descriptor. Body panel (left): body-region uptake plateau A vs
+    pre-pulse cell body volume. Protrusion panel (right):
+    protrusion-region uptake plateau A vs max pre-pulse protrusion
+    length.
 
-    The question is whether a bigger pre-pulse protrusion (which
-    reflects both cell deformability and how far the tip reached
-    into the microfluidic channel before the pulse) predicts a
-    larger post-pulse uptake plateau.  Because this correlation
-    involves only quantities from the uptake fit and the
-    protrusion-length descriptor (no viscoelastic or MI fit needed),
-    no mechanics R² filter is applied — the cohort is defined only
-    by the uptake R² flag per region.
+    The body panel asks whether cell size at loading predicts the
+    post-pulse body uptake plateau (Section 1.2.11). The protrusion
+    panel asks whether a longer pre-pulse protrusion, which sits
+    further inside the concentrated intra-channel field, predicts a
+    larger post-pulse protrusion uptake plateau.
 
-    Cohort:
-        - EP cells of `treatment` with intact / ruptured_post fate.
-        - Additionally per-panel: `Uptake_{region}_VolNorm_R2_Flag == True`
-          for the region shown in that panel.  A cell that passed the
+    Cohort, pooled across pulse duration (5 ms and 100 us are not
+    split into separate panels or separate statistics):
+        - EP cells of `treatment` with intact fate only.
+          Ruptured_post cells are excluded: their protrusion and
+          uptake trajectories are truncated by rupture, so the
+          fitted geometry and uptake plateau do not describe the
+          same intact membrane-cortex composite as the rest of the
+          cohort.
+        - Per-panel: `Uptake_{region}_VolNorm_R2_Flag == True` for
+          the region shown in that panel. A cell that passed the
           body fit but failed the protrusion fit contributes to the
           body panel only.
+        - Per-panel: `Uptake_{region}_VolNorm_A < 100` AND
+          `Uptake_{region}_VolNorm_tau <= 20000` (s) jointly exclude the
+          runaway mono-exponential fits described in Section 1.2.10.
+          These are an identifiability failure of the fit: a near-linear
+          rise over the recording window is equally well described by
+          a small amplitude/moderate tau or a large amplitude/tau in
+          the hundreds-of-thousands-to-millions-of-seconds range, so
+          either branch can surface. The amplitude ceiling alone does
+          not catch every case: a small number of fits land with a
+          "sensible"-looking A (< 100) but a tau of order 1e5-1e6 s,
+          i.e. days, which is just as unresolved given a recording
+          window on the order of ~350 s post-pulse. The 20000 s
+          ceiling sits in a clean gap in the pooled EP-intact data
+          (resolved fits top out under ~13000 s; the leaking fits sit
+          at 2.6-3.4e5 s), so no genuinely resolved fit is cut. No
+          per-cell value from either failure branch belongs in a
+          correlation.
 
     X-axis: log for uptake amplitude (multi-decade spread).
-    Y-axis: linear for protrusion length (5–35 µm, no decade spread).
+    Y-axis: linear (body volume in µm³, protrusion length in µm).
     Colour: condition (5ms / 100us) from the WT ramp.
-    Marker: fate (intact = filled, ruptured_post = open).
 
-    Spearman rho + p annotated per panel across all points.
+    Spearman rho + p annotated per panel across all pooled points.
     """
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("Uptake-vs-protlength skipped: empty mechanics_df.")
         return
 
+    RUNAWAY_A_THRESHOLD = 100.0
+    RUNAWAY_TAU_THRESHOLD_S = 20000.0
+
     df = mechanics_df[
         (mechanics_df['Treatment'] == treatment)
         & (mechanics_df['Condition_Type'] == 'EP')
-        & mechanics_df['Fate_Status'].isin(['intact', 'ruptured_post'])
+        & (mechanics_df['Fate_Status'] == 'intact')
     ].copy()
     if df.empty:
-        logger.warning("Uptake-vs-protlength skipped: no EP cells for "
-                       f"treatment={treatment}.")
+        logger.warning("Uptake-vs-protlength skipped: no intact EP cells "
+                       f"for treatment={treatment}.")
         return
 
     region_spec = {
-        'Body': ('Uptake_Body_VolNorm_A', 'Uptake_Body_VolNorm_R2_Flag',
-                 'Body uptake plateau'),
-        'Prot': ('Uptake_Prot_VolNorm_A', 'Uptake_Prot_VolNorm_R2_Flag',
-                 'Protrusion uptake plateau'),
+        'Body': ('Uptake_Body_VolNorm_A', 'Uptake_Body_VolNorm_tau',
+                 'Uptake_Body_VolNorm_R2_Flag',
+                 'Body uptake plateau', 'Cell_Body_Volume_PrePulse_um3',
+                 r"Body volume ($\mathrm{\mu m}^{3}$, pre-pulse)"),
+        'Prot': ('Uptake_Prot_VolNorm_A', 'Uptake_Prot_VolNorm_tau',
+                 'Uptake_Prot_VolNorm_R2_Flag',
+                 'Protrusion uptake plateau', 'Max_Prot_length_PrePulse_um',
+                 r"Max protrusion length ($\mathrm{\mu m}$)"),
     }
-    prot_len_col = 'Max_Prot_length_PrePulse_um'
 
     utils.set_paper_style()
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
 
     for ax, region in zip(axes, ('Body', 'Prot')):
-        a_col, flag_col, xlab = region_spec[region]
+        a_col, tau_col, flag_col, xlab, y_col, ylab = region_spec[region]
         keep = (df[flag_col].fillna(False).astype(bool)
                 & df[a_col].notna()
-                & df[prot_len_col].notna())
+                & (df[a_col] < RUNAWAY_A_THRESHOLD)
+                & df[tau_col].notna()
+                & (df[tau_col] <= RUNAWAY_TAU_THRESHOLD_S)
+                & df[y_col].notna())
         sub = df[keep].copy()
         if sub.empty:
             ax.text(0.5, 0.5, "No cells pass R² ≥ 0.85",
@@ -831,28 +862,19 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
         sub['Cond_Key'] = sub.apply(_condition_key, axis=1)
 
         for cond_key in CONDITION_ORDER:
-            for fate, marker_kwargs in (
-                ('intact',
-                 dict(facecolor=_condition_color(cond_key, treatment),
-                      edgecolor='white', linewidths=0.5)),
-                ('ruptured_post',
-                 dict(facecolor='none',
-                      edgecolor=_condition_color(cond_key, treatment),
-                      linewidths=1.4)),
-            ):
-                pts = sub[(sub['Cond_Key'] == cond_key)
-                          & (sub['Fate_Status'] == fate)]
-                if pts.empty:
-                    continue
-                x = pts[a_col].to_numpy(dtype=float)
-                y = pts[prot_len_col].to_numpy(dtype=float)
-                ax.scatter(x, y, s=40, alpha=0.75, marker='o',
-                           label=f"{CONDITION_LABEL[cond_key]} ({fate})",
-                           **marker_kwargs)
+            pts = sub[sub['Cond_Key'] == cond_key]
+            if pts.empty:
+                continue
+            x = pts[a_col].to_numpy(dtype=float)
+            y = pts[y_col].to_numpy(dtype=float)
+            ax.scatter(x, y, s=40, alpha=0.75, marker='o',
+                       facecolor=_condition_color(cond_key, treatment),
+                       edgecolor='white', linewidths=0.5,
+                       label=f"{CONDITION_LABEL[cond_key]} (n={len(pts)})")
 
-        # Spearman across all points.
+        # Spearman across all pooled points (both durations together).
         x_all = sub[a_col].to_numpy(dtype=float)
-        y_all = sub[prot_len_col].to_numpy(dtype=float)
+        y_all = sub[y_col].to_numpy(dtype=float)
         m = np.isfinite(x_all) & np.isfinite(y_all)
         if m.sum() >= 3:
             rho, p = stats.spearmanr(x_all[m], y_all[m])
@@ -866,10 +888,9 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
 
         ax.set_xlabel(xlab + r"  (a.u. / $\mathrm{\mu m}^{3}$)")
         ax.set_xscale('log')
+        ax.set_ylabel(ylab)
         ax.set_title(f"{region}  (n = {len(sub)})")
         ax.spines[['top', 'right']].set_visible(False)
-
-    axes[0].set_ylabel(r"Max protrusion length ($\mathrm{\mu m}$)")
 
     # Shared legend below.
     handles, labels = axes[0].get_legend_handles_labels()
@@ -877,8 +898,8 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
         fig.legend(handles, labels, loc='lower center', ncol=2,
                    bbox_to_anchor=(0.5, -0.08), frameon=False, fontsize=9)
 
-    fig.suptitle(f"{treatment} — uptake plateau A vs max pre-pulse "
-                 "protrusion length",
+    fig.suptitle(f"{treatment} — uptake plateau A vs pre-pulse geometry "
+                 "(intact cells only)",
                  y=1.02, fontweight='bold')
     fig.tight_layout()
     out = Path(output_dir) / f"Thesis_Uptake_vs_ProtLength_{treatment}.pdf"

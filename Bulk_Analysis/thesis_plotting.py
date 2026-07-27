@@ -3293,6 +3293,21 @@ def plot_thesis_ep_wholetrace_by_fate(grouped_data: Dict,
     plt.close()
     logger.info("Whole-trace by fate written.")
 
+def _align_to_entry(t: np.ndarray, L: np.ndarray):
+    """
+    Return (t, L) re-zeroed so t = 0 corresponds to cell entry, defined
+    as the first frame with L > 0. Leading zero-length frames from the
+    recording's dead time (before the cell enters the trap) are
+    discarded. Returns (None, None) if no L > 0 frame exists.
+    """
+    if t is None or L is None or len(t) == 0:
+        return None, None
+    positive = L > 0
+    if not np.any(positive):
+        return None, None
+    entry_idx = int(np.argmax(positive))
+    return t[entry_idx:] - t[entry_idx], L[entry_idx:]
+ 
 
 def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                                                   mechanics_df: pd.DataFrame,
@@ -3300,46 +3315,80 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                                                   global_pre_dur: Optional[float] = None) -> None:
     """
     Mean L(t) trace for the pre-pulse window, split by pulse condition
-    and fate. Cell selection matches the MI cohort
-    (``MI_Whole_R2_Flag == True``) so this figure and the MI parameter
-    boxplots share exactly the same cells.
+    and fate.
+ 
+    Cell selection is the pre-pulse viscoelastic-fit cohort
+    (``PrePulse_Visco_R2_Flag == True``) so this figure and the
+    pre-pulse viscoelastic parameter boxplots (§3.7) share exactly the
+    same cells.
+ 
+    Every trace is re-zeroed to cell entry (the first frame with
+    L > 0) so that t = 0 has the same physical meaning for every
+    cell: the moment the protrusion first appears in the trap. The
+    ``global_pre_dur`` window is therefore measured from cell entry.
+ 
+    A cohort with fewer than three cells is rendered as individual
+    thin traces rather than as a mean with SD band, since a two-cell
+    mean is not a meaningful average.
     """
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("Combined pre-pulse trace skipped: empty mechanics_df.")
         return
-
-    # Cell selection: MI cohort (matches the MI parameter/protrusion figures).
-    mi_pass = mechanics_df.loc[mechanics_df['MI_Whole_R2_Flag'] == True]
-
+ 
+    # -----------------------------------------------------------------
+    # Cohort selection: pre-pulse viscoelastic gate.
+    #
+    # Matches the parameter boxplots drawn in the same figure, so the
+    # mean trace and the per-cell fits are drawn from an identical set
+    # of cells. Cells that cleared this gate necessarily had a defined
+    # pre-pulse trajectory of at least 15 L > 0 points, so no further
+    # length or point-count filter is applied downstream.
+    # -----------------------------------------------------------------
+    visco_pass = mechanics_df.loc[mechanics_df['PrePulse_Visco_R2_Flag'] == True]
+ 
     treatments = mechanics_df['Treatment'].dropna().unique().tolist()
     base_treatment = 'WT' if 'WT' in treatments else (treatments[0] if treatments else 'WT')
-
-    asp_mask = (mi_pass['Condition_Type'] == 'ASP') & (mi_pass['Treatment'] == base_treatment)
-    asp_pairs = set(zip(mi_pass.loc[asp_mask, 'Experiment_Folder'],
-                        mi_pass.loc[asp_mask, 'Trap_ID']))
-
+ 
+    asp_mask = ((visco_pass['Condition_Type'] == 'ASP')
+                & (visco_pass['Treatment'] == base_treatment))
+    asp_pairs = set(zip(visco_pass.loc[asp_mask, 'Experiment_Folder'],
+                        visco_pass.loc[asp_mask, 'Trap_ID']))
+ 
     durations = sorted(
-        mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP', 'Duration_label'].dropna().unique(),
-        key=_duration_sort_key
+        mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP', 'Duration_label']
+                    .dropna().unique(),
+        key=_duration_sort_key,
     )
     if not durations:
         logger.warning("Combined pre-pulse trace skipped: no EP durations.")
         return
-
     target_dur = durations[0]
-
-    intact_mask = ((mi_pass['Condition_Type'] == 'EP')
-                   & (mi_pass['Duration_label'] == target_dur)
-                   & (mi_pass['Fate_Status'] == 'intact'))
-    ep_intact_pairs = set(zip(mi_pass.loc[intact_mask, 'Experiment_Folder'],
-                              mi_pass.loc[intact_mask, 'Trap_ID']))
-
-    rupt_mask = ((mi_pass['Condition_Type'] == 'EP')
-                 & (mi_pass['Duration_label'] == target_dur)
-                 & (mi_pass['Fate_Status'] == 'ruptured_post'))
-    ep_rupt_pairs = set(zip(mi_pass.loc[rupt_mask, 'Experiment_Folder'],
-                            mi_pass.loc[rupt_mask, 'Trap_ID']))
-
+ 
+    intact_mask = ((visco_pass['Condition_Type'] == 'EP')
+                   & (visco_pass['Duration_label'] == target_dur)
+                   & (visco_pass['Fate_Status'] == 'intact'))
+    ep_intact_pairs = set(zip(visco_pass.loc[intact_mask, 'Experiment_Folder'],
+                              visco_pass.loc[intact_mask, 'Trap_ID']))
+ 
+    rupt_mask = ((visco_pass['Condition_Type'] == 'EP')
+                 & (visco_pass['Duration_label'] == target_dur)
+                 & (visco_pass['Fate_Status'] == 'ruptured_post'))
+    ep_rupt_pairs = set(zip(visco_pass.loc[rupt_mask, 'Experiment_Folder'],
+                            visco_pass.loc[rupt_mask, 'Trap_ID']))
+ 
+    # -----------------------------------------------------------------
+    # Per-cell trace extraction.
+    #
+    # Extraction proceeds in three steps, uniformly for ASP and EP:
+    #   1. Grab the raw pre-pulse trajectory (ASP: full aspiration
+    #      trace via the helper; EP: raw frames up to the pulse
+    #      frame).
+    #   2. Re-zero to cell entry via _align_to_entry, so leading dead
+    #      time frames with L = 0 are dropped and t = 0 corresponds
+    #      to the first L > 0 frame.
+    #   3. Truncate to the shared global_pre_dur window, which is now
+    #      measured from cell entry.
+    # -----------------------------------------------------------------
     traces: Dict[str, list] = {'asp': [], 'intact': [], 'ruptured': []}
     for gk, traps in grouped_data.items():
         if not traps:
@@ -3347,84 +3396,93 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
         for trap in traps:
             meta = trap.metadata
             key = (meta.full_path.name, trap.trap_id)
+ 
             if meta.condition_type == 'ASP' and key in asp_pairs:
                 t, L = _extract_asp_phase_trace(trap)
+                if t is None:
+                    continue
+                t, L = _align_to_entry(t, L)
                 if t is None:
                     continue
                 if global_pre_dur is not None:
                     m = t <= global_pre_dur
                     t, L = t[m], L[m]
-                if len(t) >= 15:
+                if len(t) > 0:
                     traces['asp'].append((t, L))
+ 
             elif (meta.condition_type == 'EP'
                   and meta.duration_label == target_dur
                   and (key in ep_intact_pairs or key in ep_rupt_pairs)):
                 pf = meta.pulse_frame
-                times = np.asarray(trap.protrusion_data.get('Time_s', []), dtype=float)
+                times = np.asarray(trap.protrusion_data.get('Time_s', []),
+                                    dtype=float)
                 lens  = np.asarray(trap.protrusion_data.get('Protrusion_Length_um', []),
                                     dtype=float)
                 if not (0 < pf < len(times)):
                     continue
-
+ 
                 t_all = times - times[0]
-                pre_mask = (np.arange(len(times)) < pf) & (lens > 0)
-                if global_pre_dur is not None:
-                    pre_mask &= (t_all <= global_pre_dur)
+                pre_mask = np.arange(len(times)) < pf
                 t = t_all[pre_mask]
                 L = lens[pre_mask]
-                if len(t) < 15:
+                if len(t) == 0:
                     continue
+ 
+                t, L = _align_to_entry(t, L)
+                if t is None:
+                    continue
+                if global_pre_dur is not None:
+                    m = t <= global_pre_dur
+                    t, L = t[m], L[m]
+                if len(t) == 0:
+                    continue
+ 
                 if key in ep_intact_pairs:
                     traces['intact'].append((t, L))
                 elif key in ep_rupt_pairs:
                     traces['ruptured'].append((t, L))
-
+ 
+    # -----------------------------------------------------------------
+    # Aggregation grid.
+    # -----------------------------------------------------------------
     max_t = global_pre_dur if global_pre_dur is not None else max(
         (float(t[-1]) for group in traces.values() for t, _L in group),
         default=0.0,
     )
     if max_t <= 0:
-        logger.warning("Combined pre-pulse trace skipped: no traces matched length/mask criteria.")
+        logger.warning("Combined pre-pulse trace skipped: no traces matched criteria.")
         return
     common_t = np.linspace(0.0, float(max_t), 120)
-
-    # Fraction of the cohort that must still be contributing at a grid
-    # point for that point to be plotted. Matches the guard used by
-    # plot_asp_protrusion_dynamics / plot_mi_protrusion_dynamics — see
-    # them for rationale. Without this, the tail of the mean trace is a
-    # mean over a shrinking sub-cohort and shows step artifacts when
-    # individual cells drop out.
-    MIN_FRAC_CONTRIBUTING = 0.25
-
+ 
     def _aggregate(trace_list):
         if not trace_list:
-            return None, None, None, 0
+            return None, None, 0
         M = np.full((len(trace_list), len(common_t)), np.nan)
         for i, (t_arr, L_arr) in enumerate(trace_list):
             if len(t_arr) < 2:
                 continue
-            f = interp1d(t_arr, L_arr, bounds_error=False, fill_value=np.nan,
+            f = interp1d(t_arr, L_arr,
+                         bounds_error=False, fill_value=np.nan,
                          assume_sorted=True)
             M[i, :] = f(common_t)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            m_arr  = np.nanmean(M, axis=0)
-            sd_arr = np.nanstd(M, axis=0)
-            n_arr  = np.sum(np.isfinite(M), axis=0)
-        n_start = len(trace_list)
-        min_n_required = max(1, int(np.ceil(MIN_FRAC_CONTRIBUTING * n_start)))
-        mask = np.isfinite(m_arr) & np.isfinite(sd_arr) & (n_arr >= min_n_required)
-        return m_arr, sd_arr, mask, n_start
-
+            return (np.nanmean(M, axis=0),
+                    np.nanstd(M, axis=0),
+                    len(trace_list))
+ 
+    # -----------------------------------------------------------------
+    # Rendering.
+    # -----------------------------------------------------------------
     bp.apply_thesis_rcparams()
     fig, ax = plt.subplots(figsize=(7.2, 4.6))
-
+ 
     if global_pre_dur is not None:
         ax.axvspan(0, float(global_pre_dur), color='0.92', alpha=0.5, zorder=0)
-
+ 
     dur_key   = str(target_dur)
     ep_colour = bp.PULSE_TRACE_PALETTE.get(('EP', dur_key), bp.PULSE_100US_COLOUR)
-
+ 
     nopulse_label   = bp.format_condition_label(condition_type='ASP')
     ep_intact_label = bp.format_condition_label(
         condition_type='EP', voltage_v=100, duration_label=dur_key,
@@ -3432,46 +3490,64 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
     ep_rupt_label   = bp.format_condition_label(
         condition_type='EP', voltage_v=100, duration_label=dur_key,
         fate_status='ruptured_post', with_fate=True)
-
+ 
+    # (traces_key, colour, fate, is_baseline, label)
     plot_order = [
-        # (traces_key, colour, fate, is_baseline, label)
         ('asp',      bp.NO_PULSE_COLOUR, 'baseline',      True,  nopulse_label),
         ('intact',   ep_colour,          'intact',        False, ep_intact_label),
         ('ruptured', ep_colour,          'ruptured_post', False, ep_rupt_label),
     ]
+ 
+    # Cohorts smaller than this are drawn as individual thin traces
+    # instead of a mean-with-band, since the SD band collapses to a
+    # meaningless width at n = 1 or 2.
+    SMALL_COHORT_N = 3
+ 
     for key, colour, fate, is_baseline, base_label in plot_order:
-        m, sd, mask, n = _aggregate(traces[key])
-        if m is None or not np.any(mask):
+        trace_list = traces[key]
+        n = len(trace_list)
+        if n == 0:
             continue
-        t_masked  = common_t[mask]
-        m_masked  = m[mask]
-        sd_masked = sd[mask]
+ 
         lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
                                           fate=fate,
                                           treatment=base_treatment,
                                           is_baseline=is_baseline)
-        ax.plot(t_masked, m_masked,
-                markevery=bp.markevery_from(t_masked),
-                label=f"{base_label} (n={n})", **lkw)
-        ax.fill_between(t_masked, m_masked - sd_masked, m_masked + sd_masked,
-                        color=colour, alpha=bp.TRACE_BAND_ALPHA, linewidth=0)
-        logger.info(
-            f"  [PrePulse trace] {key}: n_start={n} "
-            f"plotted_to={float(t_masked[-1]):.1f}s "
-            f"(min_n={max(1, int(np.ceil(MIN_FRAC_CONTRIBUTING * n)))})"
-        )
-
-    ax.set_xlabel("Time from aspiration onset (s)")
+ 
+        if n < SMALL_COHORT_N:
+            per_cell_kwargs = {
+                'color':     colour,
+                'linewidth': 0.9,
+                'alpha':     0.75,
+                'linestyle': lkw.get('linestyle', '-'),
+                'marker':    '',
+            }
+            for i, (t_arr, L_arr) in enumerate(trace_list):
+                ax.plot(t_arr, L_arr,
+                        label=(f"{base_label} (n={n}, per-cell)"
+                               if i == 0 else None),
+                        **per_cell_kwargs)
+        else:
+            m, sd, _ = _aggregate(trace_list)
+            if m is None:
+                continue
+            ax.plot(common_t, m,
+                    markevery=bp.markevery_from(common_t),
+                    label=f"{base_label} (n={n})", **lkw)
+            ax.fill_between(common_t, m - sd, m + sd,
+                            color=colour, alpha=bp.TRACE_BAND_ALPHA, linewidth=0)
+ 
+    ax.set_xlabel("Time from cell entry (s)")
     ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
     ax.set_title(r"Pre-pulse protrusion mechanics ($\Delta t_{\mathrm{pre}}$-matched)")
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.legend(frameon=False, loc='lower right')
-
+ 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_Combined_PrePulse_Trace_by_Fate.pdf")
     plt.close()
-    logger.info("Combined pre-pulse mean L(t) written.")
+    logger.info("Combined pre-pulse mean L(t) written (visco cohort, entry-aligned).")
 
 
 def plot_thesis_combined_wholetrace_trace_by_fate(grouped_data: Dict,
