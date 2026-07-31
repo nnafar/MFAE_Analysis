@@ -18,6 +18,12 @@ import bulk_mechanics as bm
 import bulk_plotting as bp
 import bulk_utils as utils
 from thesis_plotting_actin_by_fate import register_by_fate_actin_plots
+from thesis_plotting_uptake import (
+    apply_runaway_gate,
+    REGION_PREFIX,
+    DEFAULT_RUNAWAY_RULE,
+    ANALYSIS_FATE_STATES,
+)
 
 logger = logging.getLogger(__name__)
 utils.set_paper_style()
@@ -1670,6 +1676,21 @@ def plot_thesis_mechanics_vs_uptake_mi(mechanics_df: pd.DataFrame, output_dir: P
     body_uptake = 'Uptake_Body_VolNorm_A'
     prot_uptake = 'Uptake_Prot_VolNorm_A'
 
+    # Analysis cohort.  Uptake A is only meaningful for cells whose fit
+    # converged (per-region R2 flag) and had an identifiable plateau
+    # (runaway exclusion).  Runaway fits pass the R2 gate comfortably, so
+    # the flag alone is not enough, and the log axes below hide them
+    # visually while they still enter every Spearman rho.  Blanking the
+    # amplitude rather than dropping the row keeps the mechanics panels
+    # on their own cohorts.
+    for _region, _a_col in (('Body', body_uptake),
+                            ('Protrusion', prot_uptake)):
+        _flag = f'{REGION_PREFIX[_region]}_R2_Flag'
+        if _flag in df.columns:
+            df.loc[~df[_flag].fillna(False).astype(bool), _a_col] = np.nan
+        _kept = apply_runaway_gate(df, _region, rule=DEFAULT_RUNAWAY_RULE)
+        df.loc[~df.index.isin(_kept.index), _a_col] = np.nan
+
     for bucket, sub_df in df.groupby('Bucket'):
         if len(sub_df) < 5:
             continue
@@ -1814,6 +1835,14 @@ def plot_thesis_spatial_mechanics_uptake(mechanics_df: pd.DataFrame, output_dir:
         ('PL_b', 'Power-Law b')
     ]
     uptake_col = 'Uptake_Prot_VolNorm_A'
+
+    # Analysis cohort, matching the uptake-kinetics table: per-region R2
+    # flag plus runaway exclusion.  Without this the 3-D surfaces are
+    # fitted through amplitudes of order 1e4 that carry no information.
+    _flag = f'{REGION_PREFIX["Protrusion"]}_R2_Flag'
+    if _flag in df.columns:
+        df = df[df[_flag].fillna(False).astype(bool)]
+    df = apply_runaway_gate(df, 'Protrusion', rule=DEFAULT_RUNAWAY_RULE)
     u_label = 'Log10 Protrusion Uptake\nPlateau (ADU/µm³)'
                    
     for bucket, sub_df in df.groupby('Bucket'):
@@ -4377,6 +4406,14 @@ def plot_thesis_mean_uptake_trace_wt(grouped_data: Dict,
                 y = np.asarray(ud[col], dtype=float)
                 if len(y) != len(t_zero):
                     continue
+
+                # `*_VolNorm` arrives baseline-corrected from
+                # `bulk_file_handling` as (I(t) - F0) / V(t), so no
+                # subtraction is needed here.  Note this figure aligns on
+                # aspiration onset while F0 is a pre-pulse window for EP
+                # cells and a post-entry window for ASP cells, matching
+                # the two branches in UptakeQuantification.
+
                 valid = np.isfinite(t_zero) & np.isfinite(y)
                 if valid.sum() < 5:
                     continue
@@ -4491,7 +4528,7 @@ def plot_thesis_mean_uptake_trace_wt(grouped_data: Dict,
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
-    axes[0].set_ylabel(r"$I(t)$  (ADU/µm³)")
+    axes[0].set_ylabel(r"Volume-normalised uptake" "\n" r"$(I(t) - I_{0})\,/\,V(t)$  (ADU/µm³)")
     axes[0].legend(frameon=False, fontsize=8, loc='upper left')
 
     plt.tight_layout()

@@ -648,19 +648,95 @@ class BulkDataLoader:
                 uptake_dict['Tip_Intensity'] = np.asarray(
                     uptake_dict['Tip_Intensity'][:n], dtype=float)
 
-        # --- Volume-normalized intensities -----------------------------------
-        pairs = [
-            ('Body_VolNorm',       'Body_Intensity',       'Volume_Body_um3'),
-            ('Protrusion_VolNorm', 'Prot_Intensity',       'Volume_Prot_um3'),
-            ('Total_VolNorm',      'Total_Intensity',      'Volume_Total_um3'),
+        # --- Volume-normalised uptake ----------------------------------------
+        # (I(t) - I0) / V(t)
+        #
+        # The baseline is subtracted BEFORE dividing.  I(t) is the mean dye
+        # intensity over the region mask and I0 is that same mean over the
+        # pre-pulse window (the F0_* columns, written by
+        # UptakeQuantification and constant down each column), so the
+        # difference is the rise above resting level.  Dividing afterwards
+        # normalises that rise by the volume at time t.
+        #
+        # The previous form divided first and let the fitter subtract a
+        # baseline afterwards, which subtracts a quantity evaluated at V(0)
+        # from a signal evaluated at V(t).  Those differ whenever the
+        # region grows: on a representative trace V_prot moves by a factor
+        # of 4.3 within a single acquisition.
+        vol_pairs = [
+            ('Body_VolNorm',       'Body_Intensity', 'Volume_Body_um3',
+             'F0_Body', 'Body_Mask_Count'),
+            ('Protrusion_VolNorm', 'Prot_Intensity', 'Volume_Prot_um3',
+             'F0_Prot', 'Prot_Mask_Count'),
         ]
-        for out_col, int_col, vol_col in pairs:
-            if int_col not in uptake_dict:
+        corrected_by_region = {}
+        for out_col, int_col, vol_col, f0_col, count_col in vol_pairs:
+            if int_col not in uptake_dict or f0_col not in uptake_dict:
+                logger.debug(
+                    f"Uptake CSV lacks {int_col} or {f0_col}; "
+                    f"skipping {out_col}.")
                 continue
+
             intensity = np.asarray(uptake_dict[int_col][:n], dtype=float)
-            volume    = np.asarray(uptake_dict[vol_col],   dtype=float)
+            volume    = np.asarray(uptake_dict[vol_col], dtype=float)
+
+            # F0 is a per-cell scalar broadcast to every row; take the
+            # first finite entry rather than assuming row 0 is valid.
+            f0_arr = np.asarray(uptake_dict[f0_col], dtype=float)
+            f0_finite = f0_arr[np.isfinite(f0_arr)]
+            if f0_finite.size == 0:
+                logger.warning(
+                    f"{f0_col} is all-NaN; cannot baseline-correct "
+                    f"{out_col}.")
+                continue
+            f0 = float(f0_finite[0])
+
+            corrected = intensity - f0
+            corrected_by_region[out_col] = corrected
+
+            # An empty mask means the region does not exist in this frame.
+            # UptakeQuantification writes 0.0 there as a sentinel, which
+            # would otherwise become -F0/V: a large spurious negative at
+            # the start of every trace where the protrusion has not yet
+            # formed.  NaN keeps those frames out of fits and medians.
+            if count_col in uptake_dict:
+                counts = np.asarray(uptake_dict[count_col][:n], dtype=float)
+            else:
+                counts = np.ones(n, dtype=float)
+
+            valid = (counts > 0) & (volume > 0) & np.isfinite(corrected)
             with np.errstate(divide='ignore', invalid='ignore'):
-                uptake_dict[out_col] = np.where(volume > 0, intensity / volume, 0.0)
+                uptake_dict[out_col] = np.where(valid, corrected / volume,
+                                                np.nan)
+
+        # Total: no F0_Total exists, so build it from the already-corrected
+        # components using the same area weighting as Total_Intensity above.
+        if ('Body_VolNorm' in corrected_by_region
+                and 'Protrusion_VolNorm' in corrected_by_region
+                and A_prot is not None):
+            corr_body = corrected_by_region['Body_VolNorm']
+            corr_prot = corrected_by_region['Protrusion_VolNorm']
+            body_counts = np.asarray(
+                uptake_dict.get('Body_Mask_Count', np.ones(n))[:n], dtype=float)
+            prot_counts = np.asarray(
+                uptake_dict.get('Prot_Mask_Count', np.ones(n))[:n], dtype=float)
+
+            # A frame with no protrusion still has a valid body, so weight
+            # by the areas that actually exist rather than dropping it.
+            w_body = np.where(body_counts > 0, A_body, 0.0)
+            w_prot = np.where(prot_counts > 0, A_prot, 0.0)
+            denom_w = w_body + w_prot
+            V_tot = np.asarray(uptake_dict['Volume_Total_um3'], dtype=float)
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                corr_total = np.where(
+                    denom_w > 0,
+                    (np.nan_to_num(corr_body) * w_body
+                     + np.nan_to_num(corr_prot) * w_prot) / denom_w,
+                    np.nan)
+                uptake_dict['Total_VolNorm'] = np.where(
+                    (denom_w > 0) & (V_tot > 0),
+                    corr_total / V_tot, np.nan)
 
         # Trim any other per-frame columns to the same length so downstream
         # code sees a consistent frame count.
@@ -686,15 +762,23 @@ def extract_all_scalars(grouped_data: Dict[Tuple[str, str, int, int, float], Lis
                 'Trap_ID': trap.trap_id
             }
 
+            # NaN-safe reduction.  The *_VolNorm columns legitimately
+            # contain NaN for frames where a region's mask is empty (no
+            # protrusion yet), so a plain np.max would return NaN for the
+            # whole trap and silently void the scalar.
+            def _safe_max(arr: np.ndarray) -> float:
+                finite = arr[np.isfinite(arr)]
+                return float(np.max(finite)) if finite.size else float('nan')
+
             if hasattr(trap, 'protrusion_data') and trap.protrusion_data:
                 for k, v in trap.protrusion_data.items():
                     if 'time' not in k.lower() and isinstance(v, np.ndarray) and len(v) > 0:
-                        row_data[f"Prot_{k}"] = np.max(v)
+                        row_data[f"Prot_{k}"] = _safe_max(v)
 
             if hasattr(trap, 'uptake_data') and trap.uptake_data:
                 for k, v in trap.uptake_data.items():
                     if 'time' not in k.lower() and isinstance(v, np.ndarray) and len(v) > 0:
-                        row_data[f"Uptake_{k}"] = np.max(v)
+                        row_data[f"Uptake_{k}"] = _safe_max(v)
 
             rows.append(row_data)
 

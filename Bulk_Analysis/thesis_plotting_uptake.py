@@ -26,6 +26,20 @@ Three top-level figures called from `master_bulk_thesis.py`:
 A single `register_uptake_plots` runner is exposed so `master_bulk_thesis`
 can call one function to produce all three figures with matched
 error-swallowing behaviour, mirroring `register_by_fate_actin_plots`.
+
+Beyond the figures, this module also owns the uptake fit-quality
+criterion and the summary table built from it:
+
+    flag_runaway_fits / apply_runaway_gate / select_uptake_cohort
+        Identify and remove mono-exponential fits with no identifiable
+        plateau.  These pass the R2 gate comfortably, so the R2 flag
+        alone is not sufficient.  The rule lives here because it is
+        needed by the table below and by four scatter figures above.
+
+    build_uptake_kinetics_table / write_uptake_kinetics_table
+        The Chapter 3 amplitude and timescale table, with both pulse
+        arms passed through identical gates and the gate counts carried
+        into the footnotes.
 """
 
 import logging
@@ -95,6 +109,250 @@ def _condition_color(key: str, treatment: str = 'WT') -> str:
                 }.get(key, '#808080')
 
 
+# --------------------------------------------------------------------- #
+# Runaway uptake fits: definition, thresholds, cohort selection.
+#
+# A mono-exponential A * (1 - exp(-t / tau)) fitted to a trace that is
+# still rising linearly at the end of the acquisition has no
+# identifiable plateau.  The optimiser walks A and tau off together
+# along a degenerate valley and stops wherever the tolerance is met, so
+# the returned A and tau are arbitrary: they describe the initial slope
+# A / tau and nothing else.  Those fits pass the R2 gate comfortably
+# (R2 = 0.90 to 0.98 in this dataset) because a straight line through
+# rising data fits well.  The R2 gate cannot catch them.
+#
+# In this dataset they are unmistakable: non-runaway fits top out at
+# tau = 5.7e3 s, runaways start at tau = 2.2e5 s, with nothing in
+# between.  Any threshold in that gap gives identical results.
+#
+# These live here, next to the figures that consume them, because the
+# same criterion is needed by the uptake-kinetics table and by four
+# separate scatter figures in this module.
+# --------------------------------------------------------------------- #
+RUNAWAY_TAU_S: float = 20_000.0
+RUNAWAY_A: float = 100.0
+
+# The rule used by every uptake figure and by the kinetics table.
+# This is the single point of control: change this line and the whole
+# chapter moves together.  'tau_only' is the default because the joint
+# rule requires both conditions and therefore retains a 5 ms body fit
+# with A = 71.6 and tau = 3.4e5 s, a timescale two thousand times the
+# acquisition length.  See `flag_runaway_fits` for the alternatives.
+DEFAULT_RUNAWAY_RULE: str = 'tau_only'
+
+# The fate cohort used by every uptake figure and by the kinetics table.
+# Figures whose subject *is* fate (intact versus ruptured) override this
+# explicitly; nothing else should.
+ANALYSIS_FATE_STATES: Tuple[str, ...] = ('intact',)
+
+# Column-name stem per region, matching mechanics_results_all_traps.csv.
+REGION_PREFIX: Dict[str, str] = {
+    'Body':       'Uptake_Body_VolNorm',
+    'Protrusion': 'Uptake_Prot_VolNorm',
+}
+
+# Aliases so callers can use the short region keys already used by the
+# plotting code ('Prot') or the printed names ('Protrusion').
+REGION_ALIAS: Dict[str, str] = {
+    'Body': 'Body', 'body': 'Body',
+    'Prot': 'Protrusion', 'prot': 'Protrusion',
+    'Protrusion': 'Protrusion', 'protrusion': 'Protrusion',
+}
+
+VALID_RUNAWAY_RULES: Tuple[str, ...] = ('joint', 'tau_only', 'none')
+
+# Reverse lookup so a function holding only an R2 flag column name can
+# still find the region it belongs to and apply the runaway gate.
+_FLAG_TO_REGION: Dict[str, str] = {
+    f'{prefix}_R2_Flag': canonical
+    for canonical, prefix in REGION_PREFIX.items()
+}
+
+# Pulse arms, in the order they appear in the thesis table.
+PULSE_ORDER: Tuple[str, ...] = ('100us', '5ms')
+PULSE_LATEX: Dict[str, str] = {
+    '100us': r'\SI{100}{\micro\second}',
+    '5ms':   r'\SI{5}{\milli\second}',
+}
+
+# Descriptors summarised per region: (column suffix, printed name, dp).
+UPTAKE_DESCRIPTORS: Tuple[Tuple[str, str, int], ...] = (
+    ('A',   'A',       2),
+    ('tau', 'tau (s)', 1),
+)
+
+
+def _resolve_region(region: str) -> str:
+    """Map any accepted spelling of a region onto its canonical key."""
+    try:
+        return REGION_ALIAS[region]
+    except KeyError:
+        raise ValueError(
+            f"Unknown region {region!r}; expected one of "
+            f"{tuple(sorted(set(REGION_ALIAS)))}.") from None
+
+
+def flag_runaway_fits(df: pd.DataFrame,
+                      region: str,
+                      rule: str = DEFAULT_RUNAWAY_RULE) -> pd.Series:
+    """
+    Return a boolean Series, True where the uptake fit for `region` is
+    a runaway under `rule`.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Any subset of mechanics_results_all_traps.  Only the two
+        columns for `region` are read.
+    region : str
+        'Body' or 'Prot'/'Protrusion' (see REGION_ALIAS).
+    rule : {'joint', 'tau_only', 'none'}
+        'joint'     A >= RUNAWAY_A AND tau > RUNAWAY_TAU_S.  This is the
+                    Chapter 3 convention.  Because it requires both
+                    conditions it retains one 5 ms body fit with
+                    A = 71.6, tau = 3.4e5 s.
+        'tau_only'  tau > RUNAWAY_TAU_S.  Stricter, and the defensible
+                    choice: a timescale of 3.4e5 s measured across a
+                    ~110 s acquisition is not a measurement.
+        'none'      No exclusion.  Diagnostic use only.
+
+    The returned Series is indexed exactly like `df`, so it can be used
+    directly as a mask: ``df[~flag_runaway_fits(df, 'Body')]``.
+    """
+    if rule not in VALID_RUNAWAY_RULES:
+        raise ValueError(f"Unknown runaway rule {rule!r}; expected one of "
+                         f"{VALID_RUNAWAY_RULES}.")
+    prefix = REGION_PREFIX[_resolve_region(region)]
+
+    # 'none' short-circuits to an all-False Series of the right length
+    # and index, so downstream code needs no special case.
+    if rule == 'none':
+        return pd.Series(False, index=df.index)
+
+    # Missing fits are NaN.  Comparing NaN with a number is always
+    # False, which is the behaviour we want: a cell with no fit is not a
+    # runaway, it is simply absent, and the R2 gate has already removed
+    # it.  fillna(False) then makes that explicit rather than leaving a
+    # nullable boolean that breaks `~mask` indexing.
+    amplitude = pd.to_numeric(df[f'{prefix}_A'], errors='coerce')
+    timescale = pd.to_numeric(df[f'{prefix}_tau'], errors='coerce')
+
+    slow = (timescale > RUNAWAY_TAU_S).fillna(False)
+    if rule == 'tau_only':
+        return slow
+
+    large = (amplitude >= RUNAWAY_A).fillna(False)
+    return large & slow
+
+
+def apply_runaway_gate(df: pd.DataFrame,
+                       region: str,
+                       rule: str = DEFAULT_RUNAWAY_RULE) -> pd.DataFrame:
+    """
+    Convenience wrapper: return `df` with the runaway rows for `region`
+    removed.  Provided so the scatter figures in this module can drop
+    runaways with a single call rather than each re-deriving the rule.
+    """
+    return df.loc[~flag_runaway_fits(df, region, rule=rule)]
+
+
+def select_uptake_cohort(df: pd.DataFrame,
+                         region: str,
+                         duration_label: str,
+                         treatment: str = 'WT',
+                         fate_states: Tuple[str, ...] = (
+                             ANALYSIS_FATE_STATES),
+                         rule: str = DEFAULT_RUNAWAY_RULE
+                         ) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """
+    Build the analysis cohort for one region and one pulse arm, and
+    report the bookkeeping alongside it.
+
+    The three gates are applied in a fixed order so the counts nest:
+
+        1. Membership   treatment, EP condition, pulse arm, fate states
+        2. R2 gate      Uptake_<region>_VolNorm_R2_Flag is True
+        3. Runaway      per `rule`
+
+    Returns
+    -------
+    (cohort, counts)
+        `cohort` is the retained subset of `df`.
+        `counts` has keys 'candidates', 'gate_pass', 'runaway',
+        'retained', which is everything a table footnote needs.
+    """
+    prefix = REGION_PREFIX[_resolve_region(region)]
+
+    # --- Gate 1: membership -------------------------------------------
+    membership = (
+        (df['Treatment'] == treatment)
+        & (df['Condition_Type'] == 'EP')
+        & (df['Duration_label'] == duration_label)
+        & df['Fate_Status'].isin(list(fate_states))
+    )
+    candidates = df.loc[membership]
+
+    # --- Gate 2: per-region R2 flag -----------------------------------
+    # fillna(False) makes a missing flag equivalent to a failed one, so
+    # a cell with no fit can never slip through.
+    gate = candidates[f'{prefix}_R2_Flag'].fillna(False).astype(bool)
+    gate_pass = candidates.loc[gate]
+
+    # --- Gate 3: runaway exclusion ------------------------------------
+    runaway = flag_runaway_fits(gate_pass, region, rule=rule)
+    retained = gate_pass.loc[~runaway]
+
+    counts = {
+        'candidates': int(len(candidates)),
+        'gate_pass':  int(len(gate_pass)),
+        'runaway':    int(runaway.sum()),
+        'retained':   int(len(retained)),
+    }
+    return retained, counts
+
+
+def cliffs_delta(a, b) -> float:
+    """
+    Cliff's delta, the non-parametric effect size that pairs with
+    Mann-Whitney U.
+
+    Every value in `a` is compared with every value in `b`.  Delta is
+    the fraction of pairs where a > b minus the fraction where a < b,
+    so it runs from -1 (every a below every b) through 0 (complete
+    overlap) to +1 (every a above every b).  Ties contribute nothing.
+
+    Returns NaN if either group is empty, so a missing cohort produces
+    a blank cell rather than a crash.
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    if a.size == 0 or b.size == 0:
+        return float('nan')
+
+    # Broadcasting: a[:, None] is a column and b[None, :] is a row, so
+    # the comparison builds an (len(a) x len(b)) boolean matrix of every
+    # pairing at once.  Clearer and faster than a double loop.
+    greater = np.sum(a[:, None] > b[None, :])
+    less = np.sum(a[:, None] < b[None, :])
+    return float((greater - less) / (a.size * b.size))
+
+
+def median_iqr(values) -> Tuple[float, float, float, int]:
+    """
+    Return (median, 25th percentile, 75th percentile, n), dropping
+    non-finite entries first.  Chapter 3 reports an IQR with every
+    median, so these four numbers always travel together.
+    """
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return (float('nan'), float('nan'), float('nan'), 0)
+    return (float(np.median(v)),
+            float(np.percentile(v, 25)),
+            float(np.percentile(v, 75)),
+            int(v.size))
+
+
 # ===================================================================== #
 # 1. Mean uptake trace (body + protrusion, two panels)                  #
 # ===================================================================== #
@@ -106,6 +364,12 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
                                        min_frac_contributing: float = 0.25,
                                        require_mi_flag: bool = False,
                                        require_prepulse_flag: bool = False,
+                                       fate_states: Tuple[str, ...] = (
+                                           ANALYSIS_FATE_STATES),
+                                       subtract_baseline: bool = False,
+                                       require_uptake_flag: bool = True,
+                                       runaway_rule: str = (
+                                           DEFAULT_RUNAWAY_RULE),
                                        filename_suffix: str = ''
                                        ) -> None:
     """
@@ -114,15 +378,40 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
 
     Alignment: t = 0 at the pulse frame (`meta.pulse_frame`).  Traces
     are shifted so that the pulse sits at t = 0, and only the
-    post-pulse portion (t >= 0) is plotted — the pre-pulse baseline
-    is already subtracted upstream by the fitter, so the pre-pulse
-    curve carries no biological information.
+    post-pulse portion (t >= 0) is plotted.
 
-    Cohort: EP cells only (ASP has no pulse — omitted here; the
-    ASP "no-pulse" control belongs in a separate figure).  Cells kept
-    are `treatment` cells (default 'WT') with EP intact or
-    ruptured_post fate; ruptured cells contribute to the mean up
-    until the frame they exit.
+    Baseline: `bulk_file_handling` now builds `*_VolNorm` as
+    (I(t) - F0) / V(t), so the column arrives already baseline-
+    corrected and `subtract_baseline` defaults to False.  Setting it
+    True subtracts a second baseline, which is close to zero and
+    therefore near-harmless, but it is redundant and off by default.
+
+    Cohort: EP cells only (ASP has no pulse; the ASP "no-pulse" control
+    belongs in a separate figure).  Three gates, in order:
+
+        1. Row level     `treatment`, EP, `Fate_Status` in `fate_states`,
+                         plus the optional MI / pre-pulse mechanics flags.
+        2. Per region    `Uptake_<region>_VolNorm_R2_Flag`, applied only
+                         when `require_uptake_flag` is True.
+        3. Per region    runaway exclusion per `runaway_rule`.
+
+    Gates 2 and 3 are per region, matching `select_uptake_cohort`, so a
+    cell that passes the body fit and fails the protrusion fit appears
+    in the left panel and not the right.  The two panels therefore carry
+    different n, which is reported in each legend.
+
+    To reproduce the cohort behind the uptake-kinetics table, call with
+    `fate_states=('intact',)`, `require_uptake_flag=True` and the same
+    `runaway_rule` used to build the table.
+
+    Residual mismatch with the table: even on identical cells, the
+    plotted curve is a pointwise median across traces and its plateau is
+    not the median of the per-cell fitted amplitudes.  Cells with
+    different tau are averaged at each timepoint, which smears the shape
+    into something that is not itself a mono-exponential.  Late-time
+    values also come only from cells tracked that long, after the
+    `min_frac_contributing` trim.  The two will agree in magnitude and
+    ordering, not to the decimal place, and captions should say so.
 
     Aggregation: each trap's post-pulse trace is interpolated onto a
     shared time grid running from 0 to the 95th percentile of
@@ -143,9 +432,9 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
     mask = (
         (mechanics_df['Treatment'] == treatment)
         & (mechanics_df['Condition_Type'] == 'EP')
-        & mechanics_df['Fate_Status'].isin(['intact', 'ruptured_post'])
+        & mechanics_df['Fate_Status'].isin(list(fate_states))
     )
-    filter_labels = ['EP', 'intact|ruptured_post']
+    filter_labels = ['EP', '|'.join(fate_states)]
     if require_mi_flag:
         mask = mask & mechanics_df['MI_Whole_R2_Flag'].fillna(False).astype(bool)
         filter_labels.append('MI_Whole_R2_Flag')
@@ -154,13 +443,44 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
         filter_labels.append('PrePulse_Visco_R2_Flag')
     ok = mechanics_df.loc[mask]
     filter_desc = ' + '.join(filter_labels)
-    accepted = set(zip(ok['Experiment_Folder'], ok['Trap_ID']))
-    if not accepted:
+    if ok.empty:
         logger.warning("Mean uptake trace skipped: no accepted EP cells for "
                        f"treatment={treatment} (filters=[{filter_desc}]).")
         return
+
+    # ---- Per-region gates (uptake R2, runaway) -----------------------
+    # These are per region, not per row: a cell may pass the body fit
+    # and fail the protrusion fit.  Building one accepted set per panel
+    # mirrors `select_uptake_cohort`, which is what the kinetics table
+    # uses, so the figure and the table can be made to agree on cells.
+    region_gate_desc = []
+    accepted_by_region: Dict[str, set] = {}
+    for region_key, canonical in (('Body', 'Body'), ('Prot', 'Protrusion')):
+        sub = ok
+        if require_uptake_flag:
+            flag_col = f'{REGION_PREFIX[canonical]}_R2_Flag'
+            sub = sub[sub[flag_col].fillna(False).astype(bool)]
+        if runaway_rule != 'none':
+            sub = apply_runaway_gate(sub, canonical, rule=runaway_rule)
+        accepted_by_region[region_key] = set(
+            zip(sub['Experiment_Folder'], sub['Trap_ID']))
+        region_gate_desc.append(f"{region_key} n={len(sub)}")
+
+    if require_uptake_flag:
+        filter_labels.append('Uptake_R2_Flag')
+    if runaway_rule != 'none':
+        filter_labels.append(f'runaway:{runaway_rule}')
+    filter_desc = ' + '.join(filter_labels)
+
+    # Union across regions: a trap is worth opening if either panel
+    # wants it.  Per-panel membership is rechecked inside the loop.
+    accepted = accepted_by_region['Body'] | accepted_by_region['Prot']
+    if not accepted:
+        logger.warning("Mean uptake trace skipped: no cells survive the "
+                       f"per-region gates (filters=[{filter_desc}]).")
+        return
     logger.info(f"  Mean uptake trace cohort ({treatment}): "
-                f"n={len(accepted)}  filters=[{filter_desc}]")
+                f"{', '.join(region_gate_desc)}  filters=[{filter_desc}]")
 
     # ---- Collect per-cell traces per condition ----------------------
     # Only EP buckets are relevant here — pulse alignment requires a pulse.
@@ -212,18 +532,43 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
             for region, col in region_col.items():
                 if col not in ud:
                     continue
+                # Per-region gate: a trap can be accepted for the body
+                # panel and rejected for the protrusion panel.
+                if key not in accepted_by_region[region]:
+                    continue
                 y = np.asarray(ud[col], dtype=float)
                 if len(y) != len(t_pulse_aligned):
                     continue
-                # Restrict to post-pulse (t >= 0) — the pre-pulse
-                # baseline carries no biological signal here.
+
+                # `*_VolNorm` now arrives from `bulk_file_handling` as
+                # (I(t) - F0) / V(t), already baseline-corrected, so this
+                # block is off by default.  When enabled it subtracts a
+                # second, near-zero residual baseline using the same
+                # definition as `bulk_mechanics.fit_uptake_kinetics`.
+                baseline = 0.0
+                if subtract_baseline:
+                    pre_m = (np.isfinite(t_pulse_aligned)
+                             & np.isfinite(y)
+                             & (t_pulse_aligned <= 0))
+                    if pre_m.sum() >= 2:
+                        baseline = float(np.nanmedian(y[pre_m]))
+                    else:
+                        # Too few pre-pulse frames for a stable median.
+                        # Leave the trace uncorrected rather than
+                        # subtracting a single noisy frame, and say so.
+                        logger.debug(
+                            f"    {key} {region}: fewer than 2 pre-pulse "
+                            "frames; trace left uncorrected.")
+
+                # Restrict to post-pulse (t >= 0).  The pre-pulse
+                # segment defines the baseline above and is not plotted.
                 m = (np.isfinite(t_pulse_aligned)
                      & np.isfinite(y)
                      & (t_pulse_aligned >= 0))
                 if m.sum() < 5:
                     continue
                 t_ok = t_pulse_aligned[m]
-                y_ok = y[m]
+                y_ok = y[m] - baseline
                 traces[cond_key][region].append((t_ok, y_ok))
                 all_post_ends.append(float(t_ok[-1]))  # most positive
 
@@ -296,13 +641,289 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
         ax.spines[['top', 'right']].set_visible(False)
         ax.legend(frameon=False, loc='best', fontsize=9)
 
-    axes[0].set_ylabel(r"Uptake (a.u. / $\mathrm{\mu m}^{3}$)")
+    if subtract_baseline:
+        axes[0].set_ylabel(
+            r"Uptake above baseline (a.u. / $\mathrm{\mu m}^{3}$)")
+        baseline_note = "baseline-subtracted"
+    else:
+        axes[0].set_ylabel(r"Uptake (a.u. / $\mathrm{\mu m}^{3}$)")
+        baseline_note = "absolute, baseline retained"
     fig.suptitle(f"{treatment} — mean volume-normalised uptake, "
-                 f"pulse-aligned (median $\\pm$ IQR)  [{filter_desc}]",
+                 f"pulse-aligned ({baseline_note}; median $\\pm$ IQR)  "
+                 f"[{filter_desc}]",
                  y=1.02, fontweight='bold')
     fig.tight_layout()
     out = (Path(output_dir)
            / f"Thesis_Uptake_Mean_Trace_BodyProt_{treatment}{filename_suffix}.pdf")
+    utils.save_plot_pdf(out)
+    plt.close(fig)
+    logger.info(f"  Saved: {out.name}")
+
+
+# ===================================================================== #
+# 1b. Supplementary: mean uptake trace split by fit-quality subset      #
+# ===================================================================== #
+def plot_thesis_mean_uptake_by_fit_subset(grouped_data: Dict,
+                                          mechanics_df: pd.DataFrame,
+                                          output_dir: Path,
+                                          treatment: str = 'WT',
+                                          n_time_bins: int = 200,
+                                          min_frac_contributing: float = 0.25,
+                                          fate_states: Tuple[str, ...] = (
+                                              ANALYSIS_FATE_STATES),
+                                          runaway_rule: str = (
+                                              DEFAULT_RUNAWAY_RULE),
+                                          subtract_baseline: bool = False,
+                                          duration_labels: Tuple[str, ...] = (
+                                              '100us', '5ms'),
+                                          filename_suffix: str = ''
+                                          ) -> None:
+    """
+    Supplementary companion to `plot_thesis_mean_uptake_body_prot`.
+
+    The main-text mean trace is gated to the cohort behind the
+    uptake-kinetics table, which means cells are dropped from it.  This
+    figure shows every cell in the row-level cohort, split into the
+    three fit-quality subsets so nothing is silently removed and a
+    reader can see exactly what the gates took out and why:
+
+        analysed    passes the per-region uptake R2 gate and is not a
+                    runaway.  This is the main-text and table cohort.
+        runaway     passes the R2 gate but has no identifiable plateau
+                    under `runaway_rule`.  These are the cells whose
+                    traces are still rising linearly at the end of
+                    acquisition, which is why their fitted A and tau
+                    are meaningless and why they are excluded from any
+                    summary of A or tau.
+        R2 failed   does not pass the per-region uptake R2 gate.
+
+    Layout: one row per pulse arm in `duration_labels`, two columns
+    (body, protrusion).  Within a panel the three subsets share the
+    pulse arm's colour and are distinguished by line style, with n in
+    the legend.  Median and IQR band throughout, matching the main
+    figure so the two are read the same way.
+
+    The R2-failed subset is drawn without an IQR band: those traces
+    have no common shape, so a band across them would suggest a
+    coherent population that is not there.
+    """
+    if mechanics_df is None or mechanics_df.empty:
+        logger.warning("Uptake fit-subset trace skipped: empty mechanics_df.")
+        return
+    if runaway_rule not in VALID_RUNAWAY_RULES:
+        raise ValueError(f"Unknown runaway rule {runaway_rule!r}; expected "
+                         f"one of {VALID_RUNAWAY_RULES}.")
+
+    # ---- Row-level cohort --------------------------------------------
+    mask = (
+        (mechanics_df['Treatment'] == treatment)
+        & (mechanics_df['Condition_Type'] == 'EP')
+        & mechanics_df['Fate_Status'].isin(list(fate_states))
+    )
+    ok = mechanics_df.loc[mask]
+    if ok.empty:
+        logger.warning("Uptake fit-subset trace skipped: no accepted EP "
+                       f"cells for treatment={treatment}.")
+        return
+
+    # ---- Assign every cell to exactly one subset, per region ---------
+    # Keys are (duration_label, region, subset) -> set of trap keys.
+    # Building the assignment up front keeps the trace loop simple and
+    # guarantees the three subsets partition the cohort with no overlap.
+    SUBSETS = ('analysed', 'runaway', 'r2_failed')
+    SUBSET_LABEL = {
+        'analysed':  'Analysed',
+        'runaway':   'Runaway',
+        'r2_failed': r'R$^{2}$ failed',
+    }
+    SUBSET_STYLE = {
+        'analysed':  dict(linestyle='-',  linewidth=1.8, band=True),
+        'runaway':   dict(linestyle='--', linewidth=1.5, band=True),
+        'r2_failed': dict(linestyle=':',  linewidth=1.2, band=False),
+    }
+
+    membership: Dict[Tuple[str, str, str], set] = {}
+    for duration in duration_labels:
+        arm = ok[ok['Duration_label'] == duration]
+        for region_key, canonical in (('Body', 'Body'),
+                                      ('Prot', 'Protrusion')):
+            flag_col = f'{REGION_PREFIX[canonical]}_R2_Flag'
+            passed = arm[flag_col].fillna(False).astype(bool)
+
+            gate_pass = arm[passed]
+            r2_failed = arm[~passed]
+            runaway_mask = flag_runaway_fits(gate_pass, canonical,
+                                             rule=runaway_rule)
+
+            for subset, frame in (
+                ('analysed',  gate_pass[~runaway_mask]),
+                ('runaway',   gate_pass[runaway_mask]),
+                ('r2_failed', r2_failed),
+            ):
+                membership[(duration, region_key, subset)] = set(
+                    zip(frame['Experiment_Folder'], frame['Trap_ID']))
+
+    # Union of everything we might need, so traps are opened once.
+    all_keys = set().union(*membership.values()) if membership else set()
+    if not all_keys:
+        logger.warning("Uptake fit-subset trace skipped: no cells assigned.")
+        return
+
+    # ---- Collect traces ----------------------------------------------
+    region_col = {'Body': 'Body_VolNorm', 'Prot': 'Protrusion_VolNorm'}
+    traces: Dict[Tuple[str, str, str], list] = {k: [] for k in membership}
+    all_post_ends: list = []
+
+    row_lookup = {
+        (r['Experiment_Folder'], r['Trap_ID']): r
+        for _, r in ok.iterrows()
+    }
+
+    for _gk, traps in grouped_data.items():
+        if not traps:
+            continue
+        for trap in traps:
+            meta = trap.metadata
+            if meta.treatment != treatment:
+                continue
+            key = (meta.full_path.name, trap.trap_id)
+            if key not in all_keys:
+                continue
+
+            row = row_lookup.get(key)
+            if row is None:
+                continue
+            duration = row.get('Duration_label')
+            if duration not in duration_labels:
+                continue
+
+            ud = getattr(trap, 'uptake_data', {}) or {}
+            if 'Time_s' not in ud:
+                continue
+            t_raw = np.asarray(ud['Time_s'], dtype=float)
+            if len(t_raw) < 5:
+                continue
+
+            pf = getattr(meta, 'pulse_frame', None)
+            if pf is None or not (0 <= int(pf) < len(t_raw)):
+                continue
+            t_pulse_aligned = t_raw - t_raw[int(pf)]
+
+            for region, col in region_col.items():
+                if col not in ud:
+                    continue
+                y = np.asarray(ud[col], dtype=float)
+                if len(y) != len(t_pulse_aligned):
+                    continue
+
+                # Which subset does this cell belong to for this region?
+                subset = next(
+                    (s for s in SUBSETS
+                     if key in membership[(duration, region, s)]), None)
+                if subset is None:
+                    continue
+
+                # Same baseline definition as the main figure and the
+                # fitter: median of frames at or before the pulse.
+                baseline = 0.0
+                if subtract_baseline:
+                    pre_m = (np.isfinite(t_pulse_aligned)
+                             & np.isfinite(y)
+                             & (t_pulse_aligned <= 0))
+                    if pre_m.sum() >= 2:
+                        baseline = float(np.nanmedian(y[pre_m]))
+
+                m = (np.isfinite(t_pulse_aligned)
+                     & np.isfinite(y)
+                     & (t_pulse_aligned >= 0))
+                if m.sum() < 5:
+                    continue
+                t_ok = t_pulse_aligned[m]
+                traces[(duration, region, subset)].append(
+                    (t_ok, y[m] - baseline))
+                all_post_ends.append(float(t_ok[-1]))
+
+    if not all_post_ends:
+        logger.warning("Uptake fit-subset trace skipped: no traces collected.")
+        return
+
+    # ---- Shared time grid --------------------------------------------
+    t_max = float(np.percentile(all_post_ends, 95))
+    if t_max <= 0:
+        logger.warning("Uptake fit-subset trace skipped: time grid collapsed.")
+        return
+    t_grid = np.linspace(0.0, t_max, n_time_bins)
+
+    # ---- Plot ---------------------------------------------------------
+    utils.set_paper_style()
+    n_rows = len(duration_labels)
+    fig, axes = plt.subplots(n_rows, 2,
+                             figsize=(10, 4.2 * n_rows),
+                             sharex=True, squeeze=False)
+    region_titles = {'Body': 'Cell body', 'Prot': 'Protrusion'}
+
+    for r_idx, duration in enumerate(duration_labels):
+        color = _condition_color(duration, treatment)
+        for c_idx, region in enumerate(('Body', 'Prot')):
+            ax = axes[r_idx][c_idx]
+
+            for subset in SUBSETS:
+                trace_list = traces[(duration, region, subset)]
+                if not trace_list:
+                    continue
+                style = SUBSET_STYLE[subset]
+
+                Y = np.full((len(trace_list), n_time_bins), np.nan)
+                for i, (t, y) in enumerate(trace_list):
+                    order = np.argsort(t)
+                    f = interp1d(t[order], y[order], bounds_error=False,
+                                 fill_value=np.nan, assume_sorted=True)
+                    Y[i, :] = f(t_grid)
+
+                n_contributing = np.sum(~np.isnan(Y), axis=0)
+                keep = n_contributing >= max(
+                    1, int(min_frac_contributing * len(trace_list)))
+                if not keep.any():
+                    continue
+
+                with np.errstate(invalid='ignore'), \
+                     __import__('warnings').catch_warnings():
+                    __import__('warnings').filterwarnings(
+                        'ignore', r'All-NaN slice encountered')
+                    med = np.nanmedian(Y, axis=0)
+                    q25 = np.nanpercentile(Y, 25, axis=0)
+                    q75 = np.nanpercentile(Y, 75, axis=0)
+
+                t_plot = t_grid[keep]
+                if style['band']:
+                    ax.fill_between(t_plot, q25[keep], q75[keep],
+                                    color=color, alpha=0.15, linewidth=0)
+                ax.plot(t_plot, med[keep], color=color,
+                        linestyle=style['linestyle'],
+                        linewidth=style['linewidth'],
+                        label=f"{SUBSET_LABEL[subset]} (n={len(trace_list)})")
+
+            ax.set_title(f"{CONDITION_LABEL.get(duration, duration)} — "
+                         f"{region_titles[region]}")
+            ax.set_xlim(left=0.0)
+            ax.spines[['top', 'right']].set_visible(False)
+            ax.legend(frameon=False, loc='best', fontsize=8)
+            if r_idx == n_rows - 1:
+                ax.set_xlabel("Time since pulse (s)")
+        axes[r_idx][0].set_ylabel(
+            r"Uptake above baseline (a.u. / $\mathrm{\mu m}^{3}$)"
+            if subtract_baseline
+            else r"Uptake (a.u. / $\mathrm{\mu m}^{3}$)")
+
+    fate_text = '|'.join(fate_states)
+    fig.suptitle(f"{treatment} — uptake traces by fit-quality subset "
+                 f"(median $\\pm$ IQR; runaway rule: {runaway_rule})  "
+                 f"[EP + {fate_text}]",
+                 y=1.00, fontweight='bold')
+    fig.tight_layout()
+    out = (Path(output_dir)
+           / f"Thesis_Uptake_Mean_Trace_ByFitSubset_{treatment}"
+             f"{filename_suffix}.pdf")
     utils.save_plot_pdf(out)
     plt.close(fig)
     logger.info(f"  Saved: {out.name}")
@@ -316,6 +937,8 @@ def plot_thesis_uptake_amplitude_per_trap(mechanics_df: pd.DataFrame,
                                             treatment: str = 'WT',
                                             require_mi_flag: bool = False,
                                             require_prepulse_flag: bool = False,
+                                            runaway_rule: str = (
+                                                DEFAULT_RUNAWAY_RULE),
                                             filename_suffix: str = ''
                                             ) -> None:
     """
@@ -380,6 +1003,12 @@ def plot_thesis_uptake_amplitude_per_trap(mechanics_df: pd.DataFrame,
         a_col, flag_col, ylab = region_spec[region]
         keep = df[flag_col].fillna(False).astype(bool) & df[a_col].notna()
         sub = df[keep].copy()
+                # Analysis cohort: the per-region R2 flag alone is not
+                # enough, because runaway fits pass it comfortably.  Apply
+                # the same runaway rule the kinetics table uses so this
+                # panel describes the same cells.
+        if runaway_rule != 'none':
+            sub = apply_runaway_gate(sub, region, rule=runaway_rule)
         if sub.empty:
             ax.text(0.5, 0.5, "No cells pass R² ≥ 0.85",
                     ha='center', va='center', transform=ax.transAxes,
@@ -452,7 +1081,9 @@ def plot_thesis_uptake_amplitude_per_trap(mechanics_df: pd.DataFrame,
 # ===================================================================== #
 def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                                         output_dir: Path,
-                                        treatment: str = 'WT'
+                                        treatment: str = 'WT',
+                                        runaway_rule: str = (
+                                            DEFAULT_RUNAWAY_RULE)
                                         ) -> None:
     """
     3x2 matrix of scatter plots — pre-pulse viscoelastic parameters
@@ -526,6 +1157,11 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                 sub = sub[sub['Condition_Type'] == 'EP']
             if yflag is not None:
                 sub = sub[sub[yflag].fillna(False).astype(bool)]
+                # Same runaway rule as the kinetics table: an
+                # unidentifiable fit contributes a meaningless A to rho.
+                if runaway_rule != 'none' and yflag in _FLAG_TO_REGION:
+                    sub = apply_runaway_gate(
+                        sub, _FLAG_TO_REGION[yflag], rule=runaway_rule)
             sub = sub[[mcol, ycol, 'Cell_Type', 'Fate_Status',
                        'Condition_Type', 'Duration_label']].dropna()
 
@@ -602,7 +1238,9 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
 # ===================================================================== #
 def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                                         output_dir: Path,
-                                        treatment: str = 'WT'
+                                        treatment: str = 'WT',
+                                        runaway_rule: str = (
+                                            DEFAULT_RUNAWAY_RULE)
                                         ) -> None:
     """
     2x2 matrix of scatter plots — whole-trace MI descriptors vs
@@ -685,6 +1323,11 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                 sub = sub[sub['Condition_Type'] == 'EP']
             if yflag is not None:
                 sub = sub[sub[yflag].fillna(False).astype(bool)]
+                # Same runaway rule as the kinetics table: an
+                # unidentifiable fit contributes a meaningless A to rho.
+                if runaway_rule != 'none' and yflag in _FLAG_TO_REGION:
+                    sub = apply_runaway_gate(
+                        sub, _FLAG_TO_REGION[yflag], rule=runaway_rule)
             if row_extra is not None:
                 col_name, val = row_extra
                 sub = sub[sub[col_name] == val]
@@ -761,97 +1404,74 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
 # ===================================================================== #
 def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
                                         output_dir: Path,
-                                        treatment: str = 'WT'
+                                        treatment: str = 'WT',
+                                        runaway_rule: str = (
+                                            DEFAULT_RUNAWAY_RULE)
                                         ) -> None:
     """
-    Two-panel scatter of uptake plateau A vs a pre-pulse geometric
-    descriptor. Body panel (left): body-region uptake plateau A vs
-    pre-pulse cell body volume. Protrusion panel (right):
-    protrusion-region uptake plateau A vs max pre-pulse protrusion
-    length.
+    Two-panel scatter of uptake plateau A vs pre-pulse maximum
+    protrusion length.  Panels: body (left), protrusion (right).
 
-    The body panel asks whether cell size at loading predicts the
-    post-pulse body uptake plateau (Section 1.2.11). The protrusion
-    panel asks whether a longer pre-pulse protrusion, which sits
-    further inside the concentrated intra-channel field, predicts a
-    larger post-pulse protrusion uptake plateau.
+    The question is whether a bigger pre-pulse protrusion (which
+    reflects both cell deformability and how far the tip reached
+    into the microfluidic channel before the pulse) predicts a
+    larger post-pulse uptake plateau.  Because this correlation
+    involves only quantities from the uptake fit and the
+    protrusion-length descriptor (no viscoelastic or MI fit needed),
+    no mechanics R² filter is applied — the cohort is defined only
+    by the uptake R² flag per region.
 
-    Cohort, pooled across pulse duration (5 ms and 100 us are not
-    split into separate panels or separate statistics):
-        - EP cells of `treatment` with intact fate only.
-          Ruptured_post cells are excluded: their protrusion and
-          uptake trajectories are truncated by rupture, so the
-          fitted geometry and uptake plateau do not describe the
-          same intact membrane-cortex composite as the rest of the
-          cohort.
-        - Per-panel: `Uptake_{region}_VolNorm_R2_Flag == True` for
-          the region shown in that panel. A cell that passed the
+    Cohort:
+        - EP cells of `treatment` with intact / ruptured_post fate.
+        - Additionally per-panel: `Uptake_{region}_VolNorm_R2_Flag == True`
+          for the region shown in that panel.  A cell that passed the
           body fit but failed the protrusion fit contributes to the
           body panel only.
-        - Per-panel: `Uptake_{region}_VolNorm_A < 100` AND
-          `Uptake_{region}_VolNorm_tau <= 20000` (s) jointly exclude the
-          runaway mono-exponential fits described in Section 1.2.10.
-          These are an identifiability failure of the fit: a near-linear
-          rise over the recording window is equally well described by
-          a small amplitude/moderate tau or a large amplitude/tau in
-          the hundreds-of-thousands-to-millions-of-seconds range, so
-          either branch can surface. The amplitude ceiling alone does
-          not catch every case: a small number of fits land with a
-          "sensible"-looking A (< 100) but a tau of order 1e5-1e6 s,
-          i.e. days, which is just as unresolved given a recording
-          window on the order of ~350 s post-pulse. The 20000 s
-          ceiling sits in a clean gap in the pooled EP-intact data
-          (resolved fits top out under ~13000 s; the leaking fits sit
-          at 2.6-3.4e5 s), so no genuinely resolved fit is cut. No
-          per-cell value from either failure branch belongs in a
-          correlation.
 
     X-axis: log for uptake amplitude (multi-decade spread).
-    Y-axis: linear (body volume in µm³, protrusion length in µm).
+    Y-axis: linear for protrusion length (5–35 µm, no decade spread).
     Colour: condition (5ms / 100us) from the WT ramp.
+    Marker: fate (intact = filled, ruptured_post = open).
 
-    Spearman rho + p annotated per panel across all pooled points.
+    Spearman rho + p annotated per panel across all points.
     """
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("Uptake-vs-protlength skipped: empty mechanics_df.")
         return
 
-    RUNAWAY_A_THRESHOLD = 100.0
-    RUNAWAY_TAU_THRESHOLD_S = 20000.0
-
     df = mechanics_df[
         (mechanics_df['Treatment'] == treatment)
         & (mechanics_df['Condition_Type'] == 'EP')
-        & (mechanics_df['Fate_Status'] == 'intact')
+        & mechanics_df['Fate_Status'].isin(['intact', 'ruptured_post'])
     ].copy()
     if df.empty:
-        logger.warning("Uptake-vs-protlength skipped: no intact EP cells "
-                       f"for treatment={treatment}.")
+        logger.warning("Uptake-vs-protlength skipped: no EP cells for "
+                       f"treatment={treatment}.")
         return
 
     region_spec = {
-        'Body': ('Uptake_Body_VolNorm_A', 'Uptake_Body_VolNorm_tau',
-                 'Uptake_Body_VolNorm_R2_Flag',
-                 'Body uptake plateau', 'Cell_Body_Volume_PrePulse_um3',
-                 r"Body volume ($\mathrm{\mu m}^{3}$, pre-pulse)"),
-        'Prot': ('Uptake_Prot_VolNorm_A', 'Uptake_Prot_VolNorm_tau',
-                 'Uptake_Prot_VolNorm_R2_Flag',
-                 'Protrusion uptake plateau', 'Max_Prot_length_PrePulse_um',
-                 r"Max protrusion length ($\mathrm{\mu m}$)"),
+        'Body': ('Uptake_Body_VolNorm_A', 'Uptake_Body_VolNorm_R2_Flag',
+                 'Body uptake plateau'),
+        'Prot': ('Uptake_Prot_VolNorm_A', 'Uptake_Prot_VolNorm_R2_Flag',
+                 'Protrusion uptake plateau'),
     }
+    prot_len_col = 'Max_Prot_length_PrePulse_um'
 
     utils.set_paper_style()
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5), sharey=True)
 
     for ax, region in zip(axes, ('Body', 'Prot')):
-        a_col, tau_col, flag_col, xlab, y_col, ylab = region_spec[region]
+        a_col, flag_col, xlab = region_spec[region]
         keep = (df[flag_col].fillna(False).astype(bool)
                 & df[a_col].notna()
-                & (df[a_col] < RUNAWAY_A_THRESHOLD)
-                & df[tau_col].notna()
-                & (df[tau_col] <= RUNAWAY_TAU_THRESHOLD_S)
-                & df[y_col].notna())
+                & df[prot_len_col].notna())
         sub = df[keep].copy()
+                # Analysis cohort: the per-region R2 flag alone is not
+                # enough, because runaway fits pass it comfortably.  Apply
+                # the same runaway rule the kinetics table uses so this
+                # panel describes the same cells.
+        if runaway_rule != 'none':
+            sub = apply_runaway_gate(sub, region, rule=runaway_rule)
         if sub.empty:
             ax.text(0.5, 0.5, "No cells pass R² ≥ 0.85",
                     ha='center', va='center', transform=ax.transAxes,
@@ -862,19 +1482,28 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
         sub['Cond_Key'] = sub.apply(_condition_key, axis=1)
 
         for cond_key in CONDITION_ORDER:
-            pts = sub[sub['Cond_Key'] == cond_key]
-            if pts.empty:
-                continue
-            x = pts[a_col].to_numpy(dtype=float)
-            y = pts[y_col].to_numpy(dtype=float)
-            ax.scatter(x, y, s=40, alpha=0.75, marker='o',
-                       facecolor=_condition_color(cond_key, treatment),
-                       edgecolor='white', linewidths=0.5,
-                       label=f"{CONDITION_LABEL[cond_key]} (n={len(pts)})")
+            for fate, marker_kwargs in (
+                ('intact',
+                 dict(facecolor=_condition_color(cond_key, treatment),
+                      edgecolor='white', linewidths=0.5)),
+                ('ruptured_post',
+                 dict(facecolor='none',
+                      edgecolor=_condition_color(cond_key, treatment),
+                      linewidths=1.4)),
+            ):
+                pts = sub[(sub['Cond_Key'] == cond_key)
+                          & (sub['Fate_Status'] == fate)]
+                if pts.empty:
+                    continue
+                x = pts[a_col].to_numpy(dtype=float)
+                y = pts[prot_len_col].to_numpy(dtype=float)
+                ax.scatter(x, y, s=40, alpha=0.75, marker='o',
+                           label=f"{CONDITION_LABEL[cond_key]} ({fate})",
+                           **marker_kwargs)
 
-        # Spearman across all pooled points (both durations together).
+        # Spearman across all points.
         x_all = sub[a_col].to_numpy(dtype=float)
-        y_all = sub[y_col].to_numpy(dtype=float)
+        y_all = sub[prot_len_col].to_numpy(dtype=float)
         m = np.isfinite(x_all) & np.isfinite(y_all)
         if m.sum() >= 3:
             rho, p = stats.spearmanr(x_all[m], y_all[m])
@@ -888,9 +1517,10 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
 
         ax.set_xlabel(xlab + r"  (a.u. / $\mathrm{\mu m}^{3}$)")
         ax.set_xscale('log')
-        ax.set_ylabel(ylab)
         ax.set_title(f"{region}  (n = {len(sub)})")
         ax.spines[['top', 'right']].set_visible(False)
+
+    axes[0].set_ylabel(r"Max protrusion length ($\mathrm{\mu m}$)")
 
     # Shared legend below.
     handles, labels = axes[0].get_legend_handles_labels()
@@ -898,8 +1528,8 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
         fig.legend(handles, labels, loc='lower center', ncol=2,
                    bbox_to_anchor=(0.5, -0.08), frameon=False, fontsize=9)
 
-    fig.suptitle(f"{treatment} — uptake plateau A vs pre-pulse geometry "
-                 "(intact cells only)",
+    fig.suptitle(f"{treatment} — uptake plateau A vs max pre-pulse "
+                 "protrusion length",
                  y=1.02, fontweight='bold')
     fig.tight_layout()
     out = Path(output_dir) / f"Thesis_Uptake_vs_ProtLength_{treatment}.pdf"
@@ -1207,6 +1837,271 @@ def plot_thesis_uptake_bestfit_multipanel(grouped_data: Dict,
 # ===================================================================== #
 # Runner                                                                 #
 # ===================================================================== #
+# ===================================================================== #
+# 6. Uptake-kinetics summary table (not a figure)                       #
+# ===================================================================== #
+def build_uptake_kinetics_table(mechanics_df: pd.DataFrame,
+                                treatment: str = 'WT',
+                                fate_states: Tuple[str, ...] = (
+                                    ANALYSIS_FATE_STATES),
+                                rule: str = DEFAULT_RUNAWAY_RULE,
+                                regions: Tuple[str, ...] = ('Body',
+                                                            'Protrusion')
+                                ) -> pd.DataFrame:
+    """
+    Build the Chapter 3 uptake-kinetics table as a tidy DataFrame, one
+    row per (region, descriptor).
+
+    This function exists because the published version of that table
+    was assembled by hand, which allowed the two pulse arms to drift
+    apart: the 100 us arm had its runaway fits removed while the 5 ms
+    arm kept its own, and the two were then compared with a
+    Mann-Whitney U test.  Here both arms pass through the identical
+    membership, R2 and runaway gates, and the gate counts are carried
+    in the output so the footnotes cannot disagree with the body.
+
+    Parameters
+    ----------
+    mechanics_df : DataFrame
+        The full mechanics_results_all_traps table.
+    treatment : str
+        'WT' or 'CytD'.
+    fate_states : tuple of str
+        Which Fate_Status values to admit.  The published table used
+        ('intact',).  Pass ('intact', 'ruptured_post') to match the
+        default mean-trace figure instead.
+    rule : {'joint', 'tau_only', 'none'}
+        Runaway exclusion, applied identically to both arms.
+    regions : tuple of str
+        Subset of ('Body', 'Protrusion').
+
+    Returns
+    -------
+    DataFrame with, per row: Region, Descriptor, Rule, Fate_States;
+    median / q25 / q75 / n per pulse arm; p_MannWhitney; Cliffs_delta;
+    and candidates / gate_pass / runaway per pulse arm.
+    """
+    if rule not in VALID_RUNAWAY_RULES:
+        raise ValueError(f"Unknown runaway rule {rule!r}; expected one of "
+                         f"{VALID_RUNAWAY_RULES}.")
+
+    fate_text = '|'.join(fate_states)
+    rows = []
+
+    for region in regions:
+        canonical = _resolve_region(region)
+        prefix = REGION_PREFIX[canonical]
+
+        # Build both arms once, then reuse them for every descriptor.
+        # Rebuilding per descriptor is exactly how the arms drifted
+        # apart in the published table.
+        cohorts: Dict[str, pd.DataFrame] = {}
+        bookkeeping: Dict[str, Dict[str, int]] = {}
+        for arm in PULSE_ORDER:
+            cohort, counts = select_uptake_cohort(
+                mechanics_df, canonical, arm,
+                treatment=treatment, fate_states=fate_states, rule=rule)
+            cohorts[arm] = cohort
+            bookkeeping[arm] = counts
+            logger.info(
+                f"  {canonical:11s} {arm:6s}: candidates "
+                f"{counts['candidates']}, R2 pass {counts['gate_pass']}, "
+                f"runaway {counts['runaway']}, retained {counts['retained']}")
+
+        for suffix, printed_name, _dp in UPTAKE_DESCRIPTORS:
+            row: Dict[str, object] = {
+                'Region':      canonical,
+                'Descriptor':  printed_name,
+                'Rule':        rule,
+                'Fate_States': fate_text,
+            }
+
+            values: Dict[str, np.ndarray] = {}
+            for arm in PULSE_ORDER:
+                v = pd.to_numeric(cohorts[arm][f'{prefix}_{suffix}'],
+                                  errors='coerce')
+                v = v[np.isfinite(v)].to_numpy(dtype=float)
+                values[arm] = v
+
+                med, q25, q75, n = median_iqr(v)
+                row[f'{arm}_median'] = med
+                row[f'{arm}_q25'] = q25
+                row[f'{arm}_q75'] = q75
+                row[f'{arm}_n'] = n
+                row[f'{arm}_candidates'] = bookkeeping[arm]['candidates']
+                row[f'{arm}_gate_pass'] = bookkeeping[arm]['gate_pass']
+                row[f'{arm}_runaway'] = bookkeeping[arm]['runaway']
+
+            a, b = values[PULSE_ORDER[0]], values[PULSE_ORDER[1]]
+
+            # Mann-Whitney needs at least one observation per group.
+            # Below that, report NaN rather than inventing a p-value.
+            if a.size > 0 and b.size > 0:
+                p_value = float(
+                    stats.mannwhitneyu(a, b, alternative='two-sided').pvalue)
+            else:
+                p_value = float('nan')
+
+            row['p_MannWhitney'] = p_value
+            row['Cliffs_delta'] = cliffs_delta(a, b)
+            rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _format_table_cell(median: float, q25: float, q75: float,
+                       n: int, decimals: int) -> str:
+    """Render one arm's entry as ``$median$ [$q25$--$q75$], $n$``."""
+    if n == 0 or not np.isfinite(median):
+        return r'---'
+    return (f"${median:.{decimals}f}$ "
+            f"[${q25:.{decimals}f}$--${q75:.{decimals}f}$], ${n}$")
+
+
+def format_uptake_kinetics_latex(table: pd.DataFrame,
+                                 label: str = 'tab: ch3 uptake kinetics'
+                                 ) -> str:
+    """
+    Render the tidy table as a LaTeX tabular in the Chapter 3 style.
+
+    Footnotes are generated from the bookkeeping columns rather than
+    typed by hand, so the retention counts can never disagree with the
+    numbers above them.
+    """
+    if table.empty:
+        return '% No uptake-kinetics rows to render.\n'
+
+    rule = str(table['Rule'].iloc[0])
+    fate_text = str(table['Fate_States'].iloc[0])
+    decimals_for = {name: dp for _s, name, dp in UPTAKE_DESCRIPTORS}
+
+    lines = [
+        r'\begin{table}[tb]',
+        r'    \centering',
+        r'    \caption{Post-pulse dye-uptake amplitude $A$ and timescale '
+        r'$\tau$ by pulse protocol and region. Values are medians with '
+        r'IQR; $p$ from Mann--Whitney $U$ test, \SI{100}{\micro\second} '
+        r"versus \SI{5}{\milli\second}; $\delta$ is Cliff's delta. The "
+        r'same $R^{2}$ gate and runaway-exclusion rule are applied to '
+        r'both pulse arms.}',
+        f'    \\label{{{label}}}',
+        r'    \begin{tabular}{lcccc}',
+        r'        \hline',
+        r'        Descriptor & ' + PULSE_LATEX['100us'] + r' [IQR], $n$ & '
+        + PULSE_LATEX['5ms'] + r' [IQR], $n$ & $p$ & $\delta$ \\',
+        r'        \hline',
+    ]
+
+    for _, row in table.iterrows():
+        descriptor = str(row['Descriptor'])
+        decimals = decimals_for.get(descriptor, 2)
+        if descriptor.startswith('tau'):
+            printed = r'$\tau$ (\si{\second})'
+        else:
+            printed = f'${descriptor}$'
+        printed = f"{row['Region']} {printed}"
+
+        cell_a = _format_table_cell(row['100us_median'], row['100us_q25'],
+                                    row['100us_q75'], int(row['100us_n']),
+                                    decimals)
+        cell_b = _format_table_cell(row['5ms_median'], row['5ms_q25'],
+                                    row['5ms_q75'], int(row['5ms_n']),
+                                    decimals)
+
+        p_value = row['p_MannWhitney']
+        p_text = '---' if not np.isfinite(p_value) else f'${p_value:.2f}$'
+        delta = row['Cliffs_delta']
+        d_text = '---' if not np.isfinite(delta) else f'${delta:+.2f}$'
+
+        lines.append(f'        {printed} & {cell_a} & {cell_b} & '
+                     f'{p_text} & {d_text} \\\\')
+
+    lines.append(r'        \hline')
+
+    # Footnote 1: R2 retention, read straight off the bookkeeping.
+    retention_bits = []
+    for region in table['Region'].unique():
+        sub = table[table['Region'] == region].iloc[0]
+        for arm in PULSE_ORDER:
+            retention_bits.append(
+                f"{PULSE_LATEX[arm]} {int(sub[f'{arm}_gate_pass'])}/"
+                f"{int(sub[f'{arm}_candidates'])} {region.lower()}")
+    lines.append(
+        r'        \multicolumn{5}{l}{\footnotesize $R^{2}$ gate retention: '
+        + '; '.join(retention_bits) + r'.} \\')
+
+    # Footnote 2: runaway exclusions per arm and region.
+    runaway_bits = []
+    for region in table['Region'].unique():
+        sub = table[table['Region'] == region].iloc[0]
+        for arm in PULSE_ORDER:
+            runaway_bits.append(
+                f"{PULSE_LATEX[arm]} {region.lower()} "
+                f"{int(sub[f'{arm}_runaway'])}")
+    lines.append(
+        r'        \multicolumn{5}{l}{\footnotesize Runaway fits excluded '
+        r'(rule: \texttt{' + rule.replace('_', r'\_') + r'}): '
+        + '; '.join(runaway_bits) + r'.} \\')
+
+    # Footnote 3: cohort definition, so the figure pairing is explicit.
+    lines.append(
+        r'        \multicolumn{5}{l}{\footnotesize Cohort: EP cells with '
+        r'\texttt{Fate\_Status} $\in$ \{' + fate_text.replace('_', r'\_')
+        + r'\}.} \\')
+
+    lines += [r'    \end{tabular}', r'\end{table}', '']
+    return '\n'.join(lines)
+
+
+def write_uptake_kinetics_table(mechanics_df: pd.DataFrame,
+                                output_dir: Path,
+                                treatment: str = 'WT',
+                                fate_states: Tuple[str, ...] = (
+                                    ANALYSIS_FATE_STATES),
+                                rule: str = DEFAULT_RUNAWAY_RULE,
+                                filename_stem: Optional[str] = None
+                                ) -> pd.DataFrame:
+    """
+    Build the table, write both the tidy CSV and the LaTeX source, and
+    return the tidy DataFrame.
+
+    Two files are written so nothing has to be retyped into the thesis:
+
+        <stem>.csv   every number, including the bookkeeping columns
+        <stem>.tex   the formatted tabular, ready to \\input
+
+    The default stem records the rule and the fate cohort, so running
+    under a different rule produces a differently named pair of files
+    rather than silently overwriting the last one.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if filename_stem is None:
+        fate_tag = '_'.join(fate_states)
+        filename_stem = (f'Thesis_Uptake_Kinetics_{treatment}'
+                         f'_{rule}_{fate_tag}')
+
+    logger.info(f"Uptake kinetics table ({treatment}, rule={rule}, "
+                f"fate={'|'.join(fate_states)}):")
+
+    table = build_uptake_kinetics_table(
+        mechanics_df, treatment=treatment,
+        fate_states=fate_states, rule=rule)
+
+    csv_path = output_dir / f'{filename_stem}.csv'
+    tex_path = output_dir / f'{filename_stem}.tex'
+    table.to_csv(csv_path, index=False)
+    tex_path.write_text(format_uptake_kinetics_latex(table), encoding='utf-8')
+
+    logger.info(f"  Saved: {csv_path.name}")
+    logger.info(f"  Saved: {tex_path.name}")
+    return table
+
+
+# ===================================================================== #
+# Runner                                                                #
+# ===================================================================== #
 def register_uptake_plots(grouped_data: Dict,
                             mechanics_df: pd.DataFrame,
                             output_dir: Path,
@@ -1234,28 +2129,28 @@ def register_uptake_plots(grouped_data: Dict,
         # isn't skewed by dropping cells whose mechanics fit happens to
         # be poor.  Strict: MI + PrePulse cohort, matching the
         # correlation figures.
-        _try(f"Mean uptake trace — all EP ({treatment})",
+        # --- Mean trace ------------------------------------------------
+        # Analysis cohort throughout: intact, per-region uptake R2 gate,
+        # runaway exclusion under DEFAULT_RUNAWAY_RULE.  Same cells as
+        # the kinetics table below, so the two always agree on cohort.
+        _try(f"Mean uptake trace ({treatment})",
              plot_thesis_mean_uptake_body_prot,
              grouped_data, mechanics_df, output_dir, treatment=treatment,
-             require_mi_flag=False, require_prepulse_flag=False,
              filename_suffix='')
-        _try(f"Mean uptake trace — MI + PrePulse cohort ({treatment})",
-             plot_thesis_mean_uptake_body_prot,
-             grouped_data, mechanics_df, output_dir, treatment=treatment,
-             require_mi_flag=True, require_prepulse_flag=True,
-             filename_suffix='_MI_PrePulse_Pass')
 
-        # --- Amplitude vs Trap ID: two variants -----------------------
-        _try(f"Uptake amplitude per trap — all EP ({treatment})",
-             plot_thesis_uptake_amplitude_per_trap,
-             mechanics_df, output_dir, treatment=treatment,
-             require_mi_flag=False, require_prepulse_flag=False,
+        # Supplementary: every cell in the intact cohort, split into
+        # analysed / runaway / R2-failed, so the gates above are visible
+        # rather than silent.
+        _try(f"Uptake trace by fit subset ({treatment})",
+             plot_thesis_mean_uptake_by_fit_subset,
+             grouped_data, mechanics_df, output_dir, treatment=treatment,
              filename_suffix='')
-        _try(f"Uptake amplitude per trap — MI + PrePulse cohort ({treatment})",
+
+        # --- Amplitude vs Trap ID -------------------------------------
+        _try(f"Uptake amplitude per trap ({treatment})",
              plot_thesis_uptake_amplitude_per_trap,
              mechanics_df, output_dir, treatment=treatment,
-             require_mi_flag=True, require_prepulse_flag=True,
-             filename_suffix='_MI_PrePulse_Pass')
+             filename_suffix='')
 
         # --- Correlations: three figures ------------------------------
         # PrePulse-visco parameters → PrePulse R² gate, uptake amplitude only.
@@ -1272,14 +2167,15 @@ def register_uptake_plots(grouped_data: Dict,
              plot_thesis_uptake_vs_prot_length,
              mechanics_df, output_dir, treatment=treatment)
 
-        # --- Best-fit multipanel: two variants ------------------------
-        _try(f"Uptake best-fit multipanel — MI cohort ({treatment})",
+        # --- Best-fit multipanel --------------------------------------
+        _try(f"Uptake best-fit multipanel ({treatment})",
              plot_thesis_uptake_bestfit_multipanel,
              grouped_data, mechanics_df, output_dir, treatment=treatment,
              require_mi_flag=True, require_prepulse_flag=False,
              filename_suffix='')
-        _try(f"Uptake best-fit multipanel — MI + PrePulse cohort ({treatment})",
-             plot_thesis_uptake_bestfit_multipanel,
-             grouped_data, mechanics_df, output_dir, treatment=treatment,
-             require_mi_flag=True, require_prepulse_flag=True,
-             filename_suffix='_MI_PrePulse_Pass')
+
+        # --- Uptake-kinetics table ------------------------------------
+        # Same cohort and same runaway rule as every figure above.
+        _try(f"Uptake kinetics table ({treatment})",
+             write_uptake_kinetics_table,
+             mechanics_df, output_dir, treatment=treatment)
