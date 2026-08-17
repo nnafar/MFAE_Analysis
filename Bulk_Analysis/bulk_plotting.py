@@ -347,7 +347,8 @@ def _sp_render_panel(ax,
                      date_colours: Dict[int, str],
                      chip_markers: Dict[str, str],
                      log_axis: bool,
-                     rng: np.random.Generator) -> None:
+                     rng: np.random.Generator,
+                     mean_markersize: float = _SP_REPLICATE_MARKER_SIZE,) -> None:
     """
     Render a single SuperPlot panel on `ax`:
       - one small semi-transparent marker per cell (colour=Date, shape=Chip)
@@ -370,7 +371,7 @@ def _sp_render_panel(ax,
             marker = chip_markers.get(row["Chip_ID"], "o")
             x = x_idx + rng.uniform(-_SP_JITTER_WIDTH, _SP_JITTER_WIDTH)
             ax.scatter(x, row[col],
-                       s=_SP_CELL_MARKER_SIZE, marker=marker,
+                       s=mean_markersize, marker=marker,
                        facecolor=colour, edgecolor="none",
                        alpha=_SP_CELL_ALPHA, zorder=2)
             all_values.append(row[col])
@@ -392,7 +393,7 @@ def _sp_render_panel(ax,
             colour = date_colours.get(int(date), "#7f7f7f")
             marker = chip_markers.get(chip, "o")
             ax.scatter(x_idx + x_off, rep_mean,
-                       s=_SP_REPLICATE_MARKER_SIZE, marker=marker,
+                       s=mean_markersize, marker=marker,
                        facecolor=colour, edgecolor="black",
                        linewidth=1.6, alpha=1.0, zorder=4)
 
@@ -471,16 +472,22 @@ def _sp_build_legend_handles(df: pd.DataFrame,
                                      label=display_label))
     return handles
 
-
-def render_visco_parameter_superplot(df: pd.DataFrame,
-                                     panels: List[Tuple[str, str, str]],
-                                     output_pdf: Path,
-                                     category_col: str = "Treatment",
-                                     categories: Optional[List[str]] = None,
-                                     figsize: Tuple[float, float] = (16, 10),
-                                     grid_shape: Tuple[int, int] = (2, 3),
-                                     bracket_pairs: Optional[List[Tuple[int, int]]] = None,
-                                     ) -> None:
+def render_visco_parameter_superplot(
+    df: pd.DataFrame,
+    panels: List[Tuple[str, str, str]],
+    output_pdf: Path,
+    category_col: str = "Treatment",
+    categories: Optional[List[str]] = None,
+    figsize: Tuple[float, float] = (16, 10),
+    grid_shape: Tuple[int, int] = (2, 3),
+    bracket_pairs: Optional[List[Tuple[int, int]]] = None,
+    title_fontsize: Optional[float] = None,
+    label_fontsize: Optional[float] = None,
+    tick_fontsize: Optional[float] = None,
+    legend_fontsize: Optional[float] = None,
+    bracket_fontsize: Optional[float] = None,
+    mean_markersize: float = _SP_REPLICATE_MARKER_SIZE,
+) -> None:
     """
     Draw a SuperPlot grid (default 2x3 with the sixth slot for the legend).
 
@@ -508,6 +515,13 @@ def render_visco_parameter_superplot(df: pd.DataFrame,
         Pass an empty list to suppress all brackets.
     """
     apply_thesis_rcparams()
+
+    # Resolve font sizes with default fallbacks
+    t_font = title_fontsize if title_fontsize is not None else FONT_AXIS_TITLE
+    l_font = label_fontsize if label_fontsize is not None else FONT_AXIS_LABEL
+    tk_font = tick_fontsize if tick_fontsize is not None else FONT_TICK
+    leg_font = legend_fontsize if legend_fontsize is not None else FONT_LEGEND
+    b_font = bracket_fontsize if bracket_fontsize is not None else FONT_BRACKET
 
     df = df.copy()
     if "Chip_ID" not in df.columns:
@@ -545,36 +559,63 @@ def render_visco_parameter_superplot(df: pd.DataFrame,
             continue
 
         log_axis = (panel_df[col] > 0).all()
-        _sp_render_panel(ax, panel_df, col, categories,
-                         date_colours, chip_markers, log_axis, rng)
-        ax.set_title(title)
-        ax.set_ylabel(ylabel)
-        ax.set_xlabel("")
+        _sp_render_panel(
+            ax,
+            panel_df,
+            col,
+            categories,
+            date_colours,
+            chip_markers,
+            log_axis,
+            rng,
+            mean_markersize=mean_markersize,
+        )
 
-        # X-tick rotation only when labels are long enough to collide.
+        # Apply configurable title, label, and tick font sizes
+        ax.set_title(title, fontsize=t_font)
+        ax.set_ylabel(ylabel, fontsize=l_font)
+        ax.set_xlabel("")
+        ax.tick_params(axis="both", labelsize=tk_font)
+
+        # X-tick rotation only when labels are long enough to collide
         max_label_len = max((len(str(c)) for c in categories), default=0)
         if max_label_len > 8:
-            ax.tick_params(axis='x', rotation=30)
+            ax.tick_params(axis="x", rotation=30, labelsize=tk_font)
             for lbl in ax.get_xticklabels():
-                lbl.set_ha('right')
+                lbl.set_ha("right")
 
-        # Brackets for the specified pairs. Cell-level MWU for the label
-        # (Chapter 3 main-text convention); experiment-level MWU logged.
-        for (idx_a, idx_b) in bracket_pairs:
+        # Brackets for the specified pairs
+        for idx_a, idx_b in bracket_pairs:
             if idx_a >= len(categories) or idx_b >= len(categories):
                 continue
             cat_a = categories[idx_a]
             cat_b = categories[idx_b]
-            a = panel_df.loc[panel_df["Category"] == cat_a, col].dropna().values
-            b = panel_df.loc[panel_df["Category"] == cat_b, col].dropna().values
+            a = (
+                panel_df.loc[panel_df["Category"] == cat_a, col]
+                .dropna()
+                .values
+            )
+            b = (
+                panel_df.loc[panel_df["Category"] == cat_b, col]
+                .dropna()
+                .values
+            )
             if len(a) < 2 or len(b) < 2:
                 continue
             stars, label, lw, delta = _build_stat_label(a, b)
 
-            rep_a = (panel_df[panel_df["Category"] == cat_a]
-                     .groupby(["Date", "Chip_ID"])[col].mean().values)
-            rep_b = (panel_df[panel_df["Category"] == cat_b]
-                     .groupby(["Date", "Chip_ID"])[col].mean().values)
+            rep_a = (
+                panel_df[panel_df["Category"] == cat_a]
+                .groupby(["Date", "Chip_ID"])[col]
+                .mean()
+                .values
+            )
+            rep_b = (
+                panel_df[panel_df["Category"] == cat_b]
+                .groupby(["Date", "Chip_ID"])[col]
+                .mean()
+                .values
+            )
             p_exp, n_exp_a, n_exp_b = _sp_experiment_level_mw(rep_a, rep_b)
 
             logger.info(
@@ -585,8 +626,9 @@ def render_visco_parameter_superplot(df: pd.DataFrame,
 
             if label is not None:
                 y_top = float(np.nanmax(np.concatenate([a, b])))
-                _add_bracket(ax, idx_a, idx_b, y_top, label,
-                             lw=lw, fontsize=FONT_BRACKET)
+                _add_bracket(
+                    ax, idx_a, idx_b, y_top, label, lw=lw, fontsize=b_font
+                )
 
     # Legend in the last unused slot
     if n_panels < len(axes):
@@ -594,13 +636,18 @@ def render_visco_parameter_superplot(df: pd.DataFrame,
         legend_ax.set_visible(True)
         legend_ax.axis("off")
         chips_present = sorted(df["Chip_ID"].unique())
-        handles = _sp_build_legend_handles(df, chips_present,
-                                           date_colours, date_labels,
-                                           chip_markers)
-        legend_ax.legend(handles=handles, loc="center", frameon=False,
-                         fontsize=FONT_LEGEND, handletextpad=0.8,
-                         labelspacing=0.7,
-                         title_fontsize=FONT_LEGEND_HEADER)
+        handles = _sp_build_legend_handles(
+            df, chips_present, date_colours, date_labels, chip_markers
+        )
+        legend_ax.legend(
+            handles=handles,
+            loc="center",
+            frameon=False,
+            fontsize=leg_font,
+            handletextpad=0.8,
+            labelspacing=0.7,
+            title_fontsize=leg_font,
+        )
 
     plt.tight_layout()
     utils.save_plot_pdf(output_pdf, dpi=SAVE_DPI)
@@ -719,49 +766,49 @@ def _safe_max(arr: np.ndarray, default: float = 0.0) -> float:
     except (ValueError, TypeError):
         return default
 
-
 def _mw_stars(vals_a: np.ndarray, vals_b: np.ndarray) -> Tuple[str, float]:
-    if len(vals_a) < 5 or len(vals_b) < 5:
+    """Calculate two-sided Mann-Whitney U test p-value and significance stars."""
+    if len(vals_a) < 2 or len(vals_b) < 2:
         return "ns", 1.0
     try:
         _, p = mannwhitneyu(vals_a, vals_b, alternative='two-sided')
         stars = ("***" if p < 0.001 else
                  ("**" if p < 0.01  else
                   ("*"  if p < 0.05  else "ns")))
-        return stars, p
+        return stars, float(p)
     except Exception:
         return "ns", 1.0
 
-
 def _cliffs_delta(vals_a: np.ndarray, vals_b: np.ndarray) -> float:
+    """Calculate non-parametric Cliff's Delta effect size."""
     n_a, n_b = len(vals_a), len(vals_b)
     if n_a == 0 or n_b == 0:
         return 0.0
 
-    a_col = vals_a[:, np.newaxis]   
-    b_row = vals_b[np.newaxis, :]   
+    a_col = np.asarray(vals_a)[:, np.newaxis]   
+    b_row = np.asarray(vals_b)[np.newaxis, :]   
     dominance = np.sign(a_col - b_row)   
     return float(dominance.sum() / (n_a * n_b))
 
-
 def _delta_linewidth(delta: float) -> float:
+    """Scale bracket line thickness by Cliff's Delta thresholds (Romano et al.)."""
     abs_d = abs(delta)
-    if abs_d < 0.147:
-        return 1.5
-    if abs_d < 0.330:
-        return 2.5
-    if abs_d < 0.474:
+    if abs_d < 0.147:   # Negligible
+        return 1.2
+    if abs_d < 0.330:   # Small
+        return 2.2
+    if abs_d < 0.474:   # Medium
         return 3.5
-    return 4.8
+    return 4.8          # Large
 
-
-def _add_bracket(ax, x1: float, x2: float, y_top: float, label: str,
+def _add_bracket(ax, x1: float, x2: float, y_top: float, label: Optional[str],
                  lw: float = 0.9, color: str = 'black',
                  fontsize: Optional[float] = None, inset: float = 0.13) -> None:
+    """Draw a complete statistical significance bracket with vertical ticks and label."""
     if label is None:
         return
     if fontsize is None:
-        fontsize = 9  
+        fontsize = globals().get('FONT_BRACKET', 10)
 
     x1_drawn = x1 + inset if x2 > x1 else x1 - inset
     x2_drawn = x2 - inset if x2 > x1 else x2 + inset
@@ -769,10 +816,11 @@ def _add_bracket(ax, x1: float, x2: float, y_top: float, label: str,
     y_lo, y_hi = ax.get_ylim()
 
     if ax.get_yscale() == 'log':
-        log_lo, log_hi = np.log10(y_lo), np.log10(y_hi)
+        y_top_safe = max(y_top, 1e-9)
+        log_lo, log_hi = np.log10(max(y_lo, 1e-9)), np.log10(max(y_hi, 1e-9))
         log_range = log_hi - log_lo
-        y_line = 10 ** (np.log10(y_top) + log_range * 0.08)
-        y_text = 10 ** (np.log10(y_top) + log_range * 0.13)
+        y_line = 10 ** (np.log10(y_top_safe) + log_range * 0.08)
+        y_text = 10 ** (np.log10(y_top_safe) + log_range * 0.13)
         needed_top = 10 ** (np.log10(y_text) + log_range * 0.08)
     else:
         y_range = y_hi - y_lo
@@ -780,22 +828,26 @@ def _add_bracket(ax, x1: float, x2: float, y_top: float, label: str,
         y_text  = y_top + y_range * 0.13
         needed_top = y_text + y_range * 0.08
 
-    ax.plot([x1_drawn, x2_drawn], [y_line, y_line], lw=lw, color=color)
+    # Draws tick-down legs to anchor y_top alongside the horizontal bar
+    ax.plot([x1_drawn, x1_drawn, x2_drawn, x2_drawn],
+            [y_top, y_line, y_line, y_top],
+            lw=lw, color=color)
+    
     ax.text((x1 + x2) / 2, y_text, label,
             ha='center', va='bottom', fontsize=fontsize, color=color)
 
     if needed_top > y_hi:
         ax.set_ylim(y_lo, needed_top)
 
-
-def _build_stat_label(vals_a: np.ndarray, vals_b: np.ndarray
+def _build_stat_label(vals_a: np.ndarray, vals_b: np.ndarray, show_p_val: bool = False
                       ) -> Tuple[str, Optional[str], float, float]:
-    stars, _ = _mw_stars(vals_a, vals_b)
+    """Build statistical annotation string, bracket line weight, and effect size."""
+    stars, p_val = _mw_stars(vals_a, vals_b)
     delta = _cliffs_delta(vals_a, vals_b)
-    if stars == "ns":
-        return stars, None, 0.8, delta
+    
+    label = None if stars == "ns" else (f"p={p_val:.3g}" if show_p_val else stars)
     lw = _delta_linewidth(delta)
-    return stars, stars, lw, delta
+    return stars, label, lw, delta
 
 
 def plot_per_trap_protrusion_distribution(grouped_data, output_dir: Path):
@@ -1514,8 +1566,15 @@ def plot_asp_best_fit_multipanel(
         utils.save_plot_pdf(output_dir / f"ASP_BestFit_Panel_{cat_label_short}.pdf", dpi=PANEL_DPI)
         plt.close()
 
-
-def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
+def plot_asp_parameter_boxplots(
+    mechanics_df: pd.DataFrame,
+    output_dir: Path,
+    title_fontsize: Optional[float] = None,
+    label_fontsize: Optional[float] = None,
+    tick_fontsize: Optional[float] = None,
+    legend_fontsize: Optional[float] = None,
+    bracket_fontsize: Optional[float] = None,
+) -> None:
     """
     ASP-only viscoelastic parameter SuperPlot (WT vs CytD) plus the
     stacked-bar model-selection frequency chart.
@@ -1534,10 +1593,10 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     logger.info("Generating: ASP Parameter SuperPlot...")
 
     df = mechanics_df[
-        (mechanics_df['Condition_Type'] == 'ASP') &
-        mechanics_df['Best_Model'].notna() &
-        mechanics_df['E_Pa'].notna() &
-        (mechanics_df['Visco_R2_Flag'] == True)
+        (mechanics_df["Condition_Type"] == "ASP")
+        & mechanics_df["Best_Model"].notna()
+        & mechanics_df["E_Pa"].notna()
+        & (mechanics_df["Visco_R2_Flag"] == True)
     ].copy()
 
     if df.empty:
@@ -1562,13 +1621,20 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     # than it is wide and matches the stacked height of Figure 1.6A+B.
     # The 3.35 in height is the one number to adjust if the two columns of
     # the LaTeX figure do not come out level.
+    # Increased height_in from 3.35 -> 6.5 to give 3 vertical rows adequate height
     render_visco_parameter_superplot(
         df=df,
         panels=asp_visco_panels,
         output_pdf=output_dir / "Thesis_ASP_Visco_Parameter_Boxplots.pdf",
         category_col='Treatment',
-        figsize=utils.canvas_size_for(0.49, height_in=3.35),
+        figsize=utils.canvas_size_for(0.85, height_in=6.50),
         grid_shape=(3, 2),
+        title_fontsize=title_fontsize,
+        label_fontsize=label_fontsize,
+        tick_fontsize=tick_fontsize,
+        legend_fontsize=legend_fontsize,
+        bracket_fontsize=bracket_fontsize,
+        mean_markersize=60.0,
     )
 
     # ---- Model-selection frequency (unchanged) -----------------------------
@@ -1578,26 +1644,47 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     df['Category'] = df['Category'].map(label_map)
     sorted_cats = [label_map[c] for c in sorted_cats_full]
 
-    model_counts = (df.groupby(['Category', 'Best_Model'])
-                    .size()
-                    .unstack(fill_value=0)
-                    .reindex(sorted_cats, fill_value=0))
-    cols_present = [c for c in ["Kelvin-Voigt", "Jeffreys", "Burgers"] if c in model_counts.columns]
+    model_counts = (
+        df.groupby(["Category", "Best_Model"])
+        .size()
+        .unstack(fill_value=0)
+        .reindex(sorted_cats, fill_value=0)
+    )
+    cols_present = [
+        c
+        for c in ["Kelvin-Voigt", "Jeffreys", "Burgers"]
+        if c in model_counts.columns
+    ]
 
-    # Drawn at printed size for a 0.49\textwidth subfigure. The width no
-    # longer depends on how many categories are present: letting the canvas
-    # grow with the data made the printed font size depend on the data too.
+    fig, ax = plt.subplots(
+        # figsize=utils.canvas_size_for(1.0, height_in=2.50)
+    )
     model_counts[cols_present].plot(
-        kind='bar', stacked=True,
-        figsize=utils.canvas_size_for(0.49, height_in=1.75),
-        color=[VISCO_MODEL_PALETTE[c] for c in cols_present])
-    plt.ylabel("Number of Traps")
-    plt.xlabel("")
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_ASP_Visco_Model_Selection_Frequency.pdf", dpi=SAVE_DPI)
-    plt.close()
+        kind="bar",
+        stacked=True,
+        ax=ax,
+        color=[VISCO_MODEL_PALETTE[c] for c in cols_present],
+    )
 
+    if label_fontsize is not None:
+        ax.set_ylabel("Number of Traps", fontsize=label_fontsize)
+    else:
+        ax.set_ylabel("Number of Traps")
+
+    tk_font = tick_fontsize if tick_fontsize is not None else FONT_TICK
+    ax.tick_params(axis="both", labelsize=tk_font)
+
+    if legend_fontsize is not None:
+        ax.legend(fontsize=legend_fontsize)
+
+    ax.set_xlabel("")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    utils.save_plot_pdf(
+        output_dir / "Thesis_ASP_Visco_Model_Selection_Frequency.pdf",
+        dpi=SAVE_DPI,
+    )
+    plt.close()
 
 def plot_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     """

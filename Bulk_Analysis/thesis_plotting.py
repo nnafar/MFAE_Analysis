@@ -418,7 +418,11 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
 
 def plot_thesis_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     logger.info("Generating Thesis Plot: ASP Viscoelastic Parameters...")
-    bp.plot_asp_parameter_boxplots(mechanics_df, output_dir)
+    bp.plot_asp_parameter_boxplots(mechanics_df, output_dir, title_fontsize = 10,
+    label_fontsize =   10,
+    tick_fontsize  =   10,
+    legend_fontsize =  10,
+    bracket_fontsize = 10)
 
 def plot_thesis_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     logger.info("Generating Thesis Plot: ASP Actin F0 Boxplots...")
