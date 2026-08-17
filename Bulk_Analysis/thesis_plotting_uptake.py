@@ -132,6 +132,22 @@ def _condition_color(key: str, treatment: str = 'WT') -> str:
 RUNAWAY_TAU_S: float = 20_000.0
 RUNAWAY_A: float = 100.0
 
+# --------------------------------------------------------------------- #
+# Reference-time readout.
+#
+# The fitted amplitude A is an extrapolated plateau, and for most cells
+# the fitted tau is comparable to the acquisition length, so A is a
+# projection past the last frame rather than a measurement.  The
+# reference-time readout sidesteps that: it reports the volume-normalised
+# uptake actually recorded at a fixed time after the pulse.
+#
+# 100 s is chosen because it is the shortest post-pulse record in the
+# dataset, so every retained cell reaches it without extrapolation.
+# Cells whose record stops short are dropped, never extrapolated; the
+# count of such cells is carried into the table footnote.
+# --------------------------------------------------------------------- #
+REFERENCE_TIME_S: float = 100.0
+
 # The rule used by every uptake figure and by the kinetics table.
 # This is the single point of control: change this line and the whole
 # chapter moves together.  'tau_only' is the default because the joint
@@ -309,6 +325,138 @@ def select_uptake_cohort(df: pd.DataFrame,
         'retained':   int(len(retained)),
     }
     return retained, counts
+
+
+def measure_uptake_at_reference_time(grouped_data: Dict,
+                                     mechanics_df: pd.DataFrame,
+                                     region: str,
+                                     duration_label: str,
+                                     treatment: str = 'WT',
+                                     fate_states: Tuple[str, ...] = (
+                                         ANALYSIS_FATE_STATES),
+                                     rule: str = DEFAULT_RUNAWAY_RULE,
+                                     reference_time_s: float = (
+                                         REFERENCE_TIME_S)
+                                     ) -> Tuple[np.ndarray, Dict[str, int]]:
+    """
+    Return the volume-normalised uptake measured at a fixed time after
+    the pulse, for one region and one pulse arm.
+
+    This is the model-independent counterpart to the fitted amplitude
+    A.  Where A is an asymptote the fit projects, this is the height the
+    trace had actually reached at `reference_time_s`, read off the data.
+
+    Cohort
+    ------
+    Identical to `select_uptake_cohort`, so the reference-time rows and
+    the fitted rows in the kinetics table describe the same cells apart
+    from the short-record drop described below.  Reusing that function
+    rather than re-deriving the gates here is deliberate: re-derivation
+    is how the two pulse arms drifted apart in the published table.
+
+    Short records
+    -------------
+    A cell whose post-pulse record ends before `reference_time_s` is
+    dropped, not extrapolated.  `np.interp` would otherwise return the
+    last recorded value for any time past the end of the record, which
+    looks like a measurement and is not one.
+
+    Parameters
+    ----------
+    grouped_data : dict or DiskBackedDict
+        The pipeline trace store: {group_key: [TrapData, ...]}.  Needed
+        because the traces themselves are not in mechanics_df.  Only
+        `.items()` is used, so both a plain dict and the pipeline's
+        DiskBackedDict work.
+    mechanics_df : DataFrame
+        The full mechanics_results_all_traps table.
+    region : str
+        'Body' or 'Prot'/'Protrusion' (see REGION_ALIAS).
+    duration_label : str
+        '100us' or '5ms'.
+    reference_time_s : float
+        Time after the pulse at which to read the trace.
+
+    Returns
+    -------
+    (values, counts)
+        `values` is a 1-D float array, one entry per retained cell.
+        `counts` carries the `select_uptake_cohort` bookkeeping plus
+        two extra keys: 'no_trace' (cell in the cohort but no usable
+        post-pulse trace in the pickle) and 'short_record' (record ends
+        before `reference_time_s`).
+    """
+    canonical = _resolve_region(region)
+
+    # Column holding the volume-normalised trace for this region.
+    # These arrive from `bulk_file_handling` already baseline-corrected
+    # as (I(t) - F0) / V(t), so no further subtraction is applied here.
+    data_col = {'Body': 'Body_VolNorm',
+                'Protrusion': 'Protrusion_VolNorm'}[canonical]
+
+    cohort, counts = select_uptake_cohort(
+        mechanics_df, canonical, duration_label,
+        treatment=treatment, fate_states=fate_states, rule=rule)
+
+    counts = dict(counts)          # copy, so we do not mutate the caller's
+    counts['no_trace'] = 0
+    counts['short_record'] = 0
+
+    if cohort.empty or grouped_data is None:
+        return np.array([], dtype=float), counts
+
+    # The cohort is identified by (Experiment_Folder, Trap_ID), which is
+    # the same pair as (meta.full_path.name, trap.trap_id) in the pickle.
+    wanted = set(zip(cohort['Experiment_Folder'], cohort['Trap_ID']))
+    found: Dict[Tuple[str, int], float] = {}
+
+    # `.items()` rather than `.values()`: in the pipeline grouped_data is a
+    # DiskBackedDict, which loads each group's pickle on demand and exposes
+    # items(), keys() and __getitem__ but not values().
+    for _group_key, traps in grouped_data.items():
+        if not traps:
+            continue
+        for trap in traps:
+            meta = trap.metadata
+            key = (meta.full_path.name, trap.trap_id)
+            if key not in wanted or key in found:
+                continue
+
+            ud = getattr(trap, 'uptake_data', {}) or {}
+            if 'Time_s' not in ud or data_col not in ud:
+                continue
+            t_raw = np.asarray(ud['Time_s'], dtype=float)
+            y_raw = np.asarray(ud[data_col], dtype=float)
+            if len(t_raw) < 5 or len(y_raw) != len(t_raw):
+                continue
+
+            # Pulse alignment: t = 0 at the pulse frame, matching every
+            # other post-pulse readout in this module.
+            pf = getattr(meta, 'pulse_frame', None)
+            if pf is None or not (0 <= int(pf) < len(t_raw)):
+                continue
+            t_aligned = t_raw - t_raw[int(pf)]
+
+            m = (np.isfinite(t_aligned) & np.isfinite(y_raw)
+                 & (t_aligned >= 0))
+            if m.sum() < 5:
+                continue
+
+            t_post = t_aligned[m]
+            y_post = y_raw[m]
+            order = np.argsort(t_post)     # np.interp needs sorted x
+            t_post, y_post = t_post[order], y_post[order]
+
+            # Refuse to read past the end of the record.
+            if t_post[-1] < reference_time_s:
+                counts['short_record'] += 1
+                continue
+
+            found[key] = float(np.interp(reference_time_s, t_post, y_post))
+
+    counts['no_trace'] = int(len(wanted) - len(found)
+                             - counts['short_record'])
+    return np.asarray(list(found.values()), dtype=float), counts
 
 
 def cliffs_delta(a, b) -> float:
@@ -1846,7 +1994,9 @@ def build_uptake_kinetics_table(mechanics_df: pd.DataFrame,
                                     ANALYSIS_FATE_STATES),
                                 rule: str = DEFAULT_RUNAWAY_RULE,
                                 regions: Tuple[str, ...] = ('Body',
-                                                            'Protrusion')
+                                                            'Protrusion'),
+                                grouped_data: Optional[Dict] = None,
+                                reference_time_s: float = REFERENCE_TIME_S
                                 ) -> pd.DataFrame:
     """
     Build the Chapter 3 uptake-kinetics table as a tidy DataFrame, one
@@ -1874,6 +2024,13 @@ def build_uptake_kinetics_table(mechanics_df: pd.DataFrame,
         Runaway exclusion, applied identically to both arms.
     regions : tuple of str
         Subset of ('Body', 'Protrusion').
+    grouped_data : dict, optional
+        The pipeline pickle.  When supplied, one extra row per region
+        reports the uptake measured directly at `reference_time_s`,
+        which needs the traces and cannot be derived from mechanics_df.
+        When None, only the fitted descriptors are reported.
+    reference_time_s : float
+        Time after the pulse for that direct readout.
 
     Returns
     -------
@@ -1946,6 +2103,50 @@ def build_uptake_kinetics_table(mechanics_df: pd.DataFrame,
             row['Cliffs_delta'] = cliffs_delta(a, b)
             rows.append(row)
 
+        # --- Reference-time row ---------------------------------------
+        # Skipped when the pickle was not passed, so callers that only
+        # have the CSV still get a valid (shorter) table rather than an
+        # error.
+        if grouped_data is not None:
+            ref_row: Dict[str, object] = {
+                'Region':          canonical,
+                'Descriptor':      'I_ref',
+                'Rule':            rule,
+                'Fate_States':     fate_text,
+                'Reference_Time_s': float(reference_time_s),
+            }
+            ref_values: Dict[str, np.ndarray] = {}
+            for arm in PULSE_ORDER:
+                v, ref_counts = measure_uptake_at_reference_time(
+                    grouped_data, mechanics_df, canonical, arm,
+                    treatment=treatment, fate_states=fate_states,
+                    rule=rule, reference_time_s=reference_time_s)
+                ref_values[arm] = v
+
+                med, q25, q75, n = median_iqr(v)
+                ref_row[f'{arm}_median'] = med
+                ref_row[f'{arm}_q25'] = q25
+                ref_row[f'{arm}_q75'] = q75
+                ref_row[f'{arm}_n'] = n
+                ref_row[f'{arm}_candidates'] = ref_counts['candidates']
+                ref_row[f'{arm}_gate_pass'] = ref_counts['gate_pass']
+                ref_row[f'{arm}_runaway'] = ref_counts['runaway']
+                ref_row[f'{arm}_short_record'] = ref_counts['short_record']
+                ref_row[f'{arm}_no_trace'] = ref_counts['no_trace']
+                logger.info(
+                    f"  {canonical:11s} {arm:6s}: reference-time n {n}, "
+                    f"short record {ref_counts['short_record']}, "
+                    f"no trace {ref_counts['no_trace']}")
+
+            a, b = ref_values[PULSE_ORDER[0]], ref_values[PULSE_ORDER[1]]
+            if a.size > 0 and b.size > 0:
+                ref_row['p_MannWhitney'] = float(
+                    stats.mannwhitneyu(a, b, alternative='two-sided').pvalue)
+            else:
+                ref_row['p_MannWhitney'] = float('nan')
+            ref_row['Cliffs_delta'] = cliffs_delta(a, b)
+            rows.append(ref_row)
+
     return pd.DataFrame(rows)
 
 
@@ -1983,7 +2184,8 @@ def format_uptake_kinetics_latex(table: pd.DataFrame,
         r'IQR; $p$ from Mann--Whitney $U$ test, \SI{100}{\micro\second} '
         r"versus \SI{5}{\milli\second}; $\delta$ is Cliff's delta. The "
         r'same $R^{2}$ gate and runaway-exclusion rule are applied to '
-        r'both pulse arms.}',
+        r'both pulse arms. The reference-time row is read directly off '
+        r'each trace and involves no extrapolation.}',
         f'    \\label{{{label}}}',
         r'    \begin{tabular}{lcccc}',
         r'        \hline',
@@ -1997,6 +2199,12 @@ def format_uptake_kinetics_latex(table: pd.DataFrame,
         decimals = decimals_for.get(descriptor, 2)
         if descriptor.startswith('tau'):
             printed = r'$\tau$ (\si{\second})'
+        elif descriptor == 'I_ref':
+            # Direct readout, not a fitted parameter.  Named separately
+            # so the reader is not tempted to read it as an asymptote.
+            t_ref = float(row.get('Reference_Time_s', REFERENCE_TIME_S))
+            printed = (r'uptake at \SI{' + f'{t_ref:g}'
+                       + r'}{\second}')
         else:
             printed = f'${descriptor}$'
         printed = f"{row['Region']} {printed}"
@@ -2043,6 +2251,25 @@ def format_uptake_kinetics_latex(table: pd.DataFrame,
         r'(rule: \texttt{' + rule.replace('_', r'\_') + r'}): '
         + '; '.join(runaway_bits) + r'.} \\')
 
+    # Footnote 2b: short records dropped from the reference-time rows.
+    # Only emitted when those rows are present, so a table built without
+    # the pickle carries no dangling footnote.
+    ref_rows = table[table['Descriptor'] == 'I_ref']
+    if not ref_rows.empty:
+        short_bits = []
+        for _, sub in ref_rows.iterrows():
+            for arm in PULSE_ORDER:
+                short_bits.append(
+                    f"{PULSE_LATEX[arm]} {str(sub['Region']).lower()} "
+                    f"{int(sub[f'{arm}_short_record'])}")
+        t_ref = float(ref_rows['Reference_Time_s'].iloc[0])
+        lines.append(
+            r'        \multicolumn{5}{l}{\footnotesize Cells whose '
+            r'post-pulse record ends before \SI{' + f'{t_ref:g}'
+            + r'}{\second} are excluded from the reference-time rows '
+            r'rather than extrapolated: ' + '; '.join(short_bits)
+            + r'.} \\')
+
     # Footnote 3: cohort definition, so the figure pairing is explicit.
     lines.append(
         r'        \multicolumn{5}{l}{\footnotesize Cohort: EP cells with '
@@ -2059,7 +2286,9 @@ def write_uptake_kinetics_table(mechanics_df: pd.DataFrame,
                                 fate_states: Tuple[str, ...] = (
                                     ANALYSIS_FATE_STATES),
                                 rule: str = DEFAULT_RUNAWAY_RULE,
-                                filename_stem: Optional[str] = None
+                                filename_stem: Optional[str] = None,
+                                grouped_data: Optional[Dict] = None,
+                                reference_time_s: float = REFERENCE_TIME_S
                                 ) -> pd.DataFrame:
     """
     Build the table, write both the tidy CSV and the LaTeX source, and
@@ -2087,7 +2316,9 @@ def write_uptake_kinetics_table(mechanics_df: pd.DataFrame,
 
     table = build_uptake_kinetics_table(
         mechanics_df, treatment=treatment,
-        fate_states=fate_states, rule=rule)
+        fate_states=fate_states, rule=rule,
+        grouped_data=grouped_data,
+        reference_time_s=reference_time_s)
 
     csv_path = output_dir / f'{filename_stem}.csv'
     tex_path = output_dir / f'{filename_stem}.tex'
@@ -2178,4 +2409,5 @@ def register_uptake_plots(grouped_data: Dict,
         # Same cohort and same runaway rule as every figure above.
         _try(f"Uptake kinetics table ({treatment})",
              write_uptake_kinetics_table,
-             mechanics_df, output_dir, treatment=treatment)
+             mechanics_df, output_dir, treatment=treatment,
+             grouped_data=grouped_data)

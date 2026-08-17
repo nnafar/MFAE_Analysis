@@ -249,7 +249,11 @@ def plot_asp_protrusion_dynamics(grouped_data: Dict,
     if combined_lt_data:
         # Reference styling: matches plot_thesis_combined_prepulse_trace_by_fate.
         bp.apply_thesis_rcparams()
-        fig, ax = plt.subplots(figsize=(7.2, 4.6))
+        # Drawn at printed size for a 0.49\\textwidth subfigure. The 1.60 in
+        # height sets the top of the left-hand column of Figure 1.6; panel C
+        # is height-matched to it plus panel B.
+        fig, ax = plt.subplots(
+            figsize=utils.canvas_size_for(0.49, height_in=1.60))
 
         _stripped = {k: k.replace("_ASP", "") for k in combined_lt_data.keys()}
         _legend_map = bp._reduce_labels(sorted(_stripped.values()))
@@ -284,7 +288,6 @@ def plot_asp_protrusion_dynamics(grouped_data: Dict,
 
         ax.set_xlabel("Time from aspiration onset (s)")
         ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
-        ax.set_title("ASP protrusion mechanics (WT vs CytD)")
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.legend(frameon=False, loc='lower right')

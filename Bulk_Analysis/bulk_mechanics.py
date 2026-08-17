@@ -27,6 +27,11 @@ IDENTIFIABILITY_LATE_FRAC: float = 0.33
 IDENTIFIABILITY_FLOW_SNR: float = 1.5    
 IDENTIFIABILITY_PLATEAU_RATIO: float = 0.5  
 
+# Fixed seed for the multi-start optimiser used by fit_viscoelastic. Any
+# integer works; the point is that it never changes, so two runs on the same
+# data produce the same fits. See _multi_start_fit for why this matters.
+MULTISTART_SEED: int = 20250807
+
 def _fstar(width: float, height: float) -> float:
     dim_min = min(width, height)
     dim_max = max(width, height)
@@ -165,7 +170,46 @@ def _estimate_params(t: np.ndarray, l: np.ndarray,
     return E_guess, eta1_guess, eta2_guess
 
 def _multi_start_fit(func, t: np.ndarray, l: np.ndarray,
-                     bounds: Tuple, p0, n_starts: int = 7):
+                     bounds: Tuple, p0, n_starts: int = 24,
+                     seed: int = MULTISTART_SEED):
+    """
+    Multi-start curve fitting with a reproducible set of starting guesses.
+
+    `curve_fit` is a local optimiser: it walks downhill from wherever you
+    start it and stops at the first minimum it reaches. When the error
+    surface has more than one minimum, the answer depends on the starting
+    point. Trying many starts and keeping the best result is the standard
+    way round this.
+
+    Two properties matter for reproducibility:
+
+    1. The guesses come from a private generator created inside this
+       function with a fixed seed, rather than from numpy's global random
+       state. Nothing else in the program can advance it, so the same cell
+       receives the same guesses on every run.
+    2. The heuristic guess `p0` is tried first, so the physically motivated
+       starting point is always among the candidates.
+
+    Parameters
+    ----------
+    func : callable
+        Model function, called as func(t, *params).
+    t, l : np.ndarray
+        Time and protrusion length of the trace being fitted.
+    bounds : tuple
+        (lower, upper) sequences passed straight through to curve_fit.
+    p0 : sequence
+        Heuristic starting guess, tried first.
+    n_starts : int
+        Number of random starts in addition to p0. Raise this if the
+        seed-sweep audit shows cells changing their selected model.
+    seed : int
+        Seed for the private random generator.
+
+    Returns
+    -------
+    (best_params, best_r2), or (None, -inf) if every start failed.
+    """
     best_r2, best_p = -np.inf, None
     lower = np.array(bounds[0], dtype=float)
     upper = np.array(bounds[1], dtype=float)
@@ -173,11 +217,27 @@ def _multi_start_fit(func, t: np.ndarray, l: np.ndarray,
     safe_hi = np.clip(upper, 1e-9, 1e6)
     use_log = bool(np.all(lower > 0))
 
+    # default_rng builds a generator that belongs to this call alone. Seeding
+    # it here means the sequence of guesses is identical every run, whatever
+    # else ran beforehand.
+    rng = np.random.default_rng(seed)
+
+    # Build the whole candidate list up front, heuristic guess first.
+    starting_guesses = [np.asarray(p0, dtype=float)]
     for _ in range(n_starts):
         if use_log:
-            guess = np.exp(np.random.uniform(np.log(safe_lo), np.log(safe_hi)))
+            # Log-uniform sampling gives each decade equal weight, which
+            # suits parameters spanning several orders of magnitude such as
+            # eta1 over [1, 500000] Pa s.
+            starting_guesses.append(
+                np.exp(rng.uniform(np.log(safe_lo), np.log(safe_hi)))
+            )
         else:
-            guess = np.random.uniform(safe_lo, safe_hi)
+            # Plain uniform sampling, needed when a bound reaches zero or
+            # below and the logarithm is undefined.
+            starting_guesses.append(rng.uniform(safe_lo, safe_hi))
+
+    for guess in starting_guesses:
         try:
             popt, _ = curve_fit(func, t, l, p0=guess,
                                 bounds=bounds, maxfev=10_000)
@@ -185,6 +245,8 @@ def _multi_start_fit(func, t: np.ndarray, l: np.ndarray,
             if r2 > best_r2:
                 best_r2, best_p = r2, popt
         except Exception:
+            # A start that lands somewhere curve_fit cannot recover from is
+            # expected and harmless; move on to the next one.
             continue
 
     if best_p is None:
@@ -261,7 +323,7 @@ def _check_identifiability(t: np.ndarray, l: np.ndarray,
 def fit_viscoelastic(time: np.ndarray, length: np.ndarray,
                      r_eff: float, delta_p: float,
                      C: float = HALFSPACE_C,
-                     n_starts: int = 7,
+                     n_starts: int = 24,
                      min_points: int = 15) -> Dict:
     FAIL = {
         'best_model': None, 'best_params': None,

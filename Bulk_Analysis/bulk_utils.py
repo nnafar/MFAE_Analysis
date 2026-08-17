@@ -378,44 +378,194 @@ def get_group_linestyle(i: int):
     return MFA_LINESTYLES[i % len(MFA_LINESTYLES)]
 
 
-def set_paper_style(base_fontsize: int = 12, dpi: int = 300) -> None:
-    """
-    Publication-quality Matplotlib style, sized to stay legible when a
-    figure is placed on an A5 page.
+# =============================================================================
+# 2a. PRINT-SIZE STYLE SYSTEM
+# =============================================================================
+# Every thesis figure is drawn at the size it is printed at. LaTeX then
+# scales it by 1.0, so a font set to 7 pt here arrives on the page as 7 pt.
+#
+# The alternative (draw large, let \includegraphics shrink it) is what this
+# pipeline used to do, and it made the printed font size a function of the
+# canvas width and the \includegraphics fraction. Neither was recorded
+# anywhere, so printed text ranged from 1.9 pt to 11.4 pt across Chapter 3.
 
-    A5 is ~148 mm wide. With a typical LaTeX \\includegraphics scale of
-    0.8-0.95, the on-page width is roughly 120-140 mm; at that width a
-    tick label smaller than 8 pt starts to become uncomfortable to read.
-    We therefore set the base font size to 12 pt (axes labels), 14 pt
-    (titles), and 10 pt (legends/ticks), which keeps the text readable
-    after scaling and still leaves room for annotations.
+PLOT_STYLE = {
+    "font_family":          "Arial",
 
-    The default cycler combines the MFA blue-to-red colour palette with
-    the marker and linestyle cycles, so grouped line/scatter plots
-    differ by colour, symbol AND stroke pattern out of the box (colour-
-    blind fallback, greyscale legibility).
+    # Text block of the printed page: 12.75 cm = 5.02 in.
+    "page_textwidth_in":    5.02,
+
+    # Font sizes in points. These are printed sizes, not drawn sizes.
+    # 7.0 pt is \scriptsize in a 10 pt document.
+    "fontsize_title_pt":    7.0,
+    "fontsize_label_pt":    7.0,
+    "fontsize_tick_pt":     7.0,
+    "fontsize_legend_pt":   7.0,
+    "fontsize_annot_pt":    7.0,
+
+    # Line and marker weights in points, matched to 7 pt type on a small
+    # canvas. The previous values (1.5 / 2.0 / 6) were chosen for a canvas
+    # LaTeX later shrank, so at print size they read as heavy.
+    "axes_linewidth":       0.6,
+    "tick_linewidth":       0.6,
+    "tick_length":          2.0,
+    "trace_linewidth":      0.9,
+    "marker_size":          2.5,
+    "marker_edge_width":    0.6,
+
+    "dpi_raster":           600,
+}
+
+
+def _fs(role: str) -> float:
     """
+    Font size in points for a text role: title, label, tick, legend, annot.
+
+    Because figures are drawn at printed size there is no scaling step and
+    no conversion to do, so the number in PLOT_STYLE is used directly.
+    """
+    try:
+        return PLOT_STYLE[f"fontsize_{role}_pt"]
+    except KeyError:
+        raise KeyError(
+            f"Unknown text role {role!r}. Valid roles: title, label, tick, "
+            "legend, annot."
+        ) from None
+
+
+def canvas_width_for(include_frac: float) -> float:
+    r"""
+    Canvas width in inches for a figure LaTeX will include at
+    `include_frac` of the text width.
+
+    A subfigure written as
+
+        \includegraphics[width=\linewidth]{...}
+
+    inside a 0.49\textwidth minipage has include_frac = 0.49, giving a
+    canvas of 5.02 * 0.49 = 2.46 in.
+    """
+    if not 0.0 < include_frac <= 1.0:
+        raise ValueError(
+            f"include_frac must be in (0, 1], got {include_frac}. It is the "
+            "fraction of \\textwidth used in \\includegraphics, not a width "
+            "in inches."
+        )
+    return PLOT_STYLE["page_textwidth_in"] * include_frac
+
+
+def canvas_size_for(include_frac: float,
+                    height_in: Optional[float] = None,
+                    aspect: float = 0.65) -> Tuple[float, float]:
+    """
+    (width, height) in inches, ready for plt.subplots(figsize=...).
+
+    Pass `height_in` when the height is set by something external, such as
+    matching the height of a neighbouring subfigure. Otherwise the height
+    follows from `aspect`, which is height / width.
+    """
+    width = canvas_width_for(include_frac)
+    height = height_in if height_in is not None else width * aspect
+    return (width, height)
+
+
+def check_panel_area(figsize: Tuple[float, float],
+                     nrows: int,
+                     ncols: int,
+                     min_side_in: float = 0.85) -> bool:
+    """
+    Warn when a grid leaves each panel less room than 7 pt type can use.
+    Returns True when the grid passes.
+
+    This is the one failure mode the print-size system cannot absorb. The
+    font can no longer be shrunk to rescue a crowded figure, so a grid that
+    is too dense has to lose panels or gain width instead.
+    """
+    panel_w = figsize[0] / max(1, ncols)
+    panel_h = figsize[1] / max(1, nrows)
+    if panel_w < min_side_in or panel_h < min_side_in:
+        logger.warning(
+            f"Panel size {panel_w:.2f} x {panel_h:.2f} in falls below the "
+            f"{min_side_in} in guideline ({nrows}x{ncols} grid on a "
+            f"{figsize[0]:.2f} x {figsize[1]:.2f} in canvas). Axis labels "
+            "will probably collide; widen the figure or drop a panel."
+        )
+        return False
+    return True
+
+
+def set_paper_style(*_legacy_args, **_legacy_kwargs) -> None:
+    """
+    The single style entry point for every thesis figure.
+
+    Sets fonts, line weights and tick geometry from PLOT_STYLE. Figures are
+    drawn at printed size, so the point sizes set here are the ones that
+    land on the page.
+
+    Legacy positional and keyword arguments (base_fontsize, dpi) are
+    accepted and ignored so existing call sites keep working; those values
+    now live in PLOT_STYLE.
+
+    The default cycler combines the MFA blue-to-red palette with the marker
+    and linestyle cycles, so grouped plots differ by colour, symbol AND
+    stroke pattern out of the box (colour-blind fallback, greyscale
+    legibility).
+    """
+    if _legacy_args or _legacy_kwargs:
+        logger.debug(
+            "set_paper_style() received legacy arguments "
+            f"{_legacy_args} {_legacy_kwargs}; ignoring them in favour of "
+            "PLOT_STYLE."
+        )
+
     plt.rcdefaults()
     mpl.rcParams.update({
-        'font.family':      'sans-serif',
-        'font.sans-serif':  ['Arial', 'DejaVu Sans'],
-        'font.size':        base_fontsize,
-        'axes.labelsize':   base_fontsize,
-        'axes.titlesize':   base_fontsize + 2,
-        'axes.titleweight': 'bold',
-        'xtick.labelsize':  base_fontsize - 2,
-        'ytick.labelsize':  base_fontsize - 2,
-        'legend.fontsize':  base_fontsize - 2,
-        'legend.frameon':   True,
-        'figure.dpi':       dpi,
-        'savefig.dpi':      dpi,
-        'figure.facecolor': 'white',
+        'font.family':       'sans-serif',
+        'font.sans-serif':   [PLOT_STYLE['font_family'], 'DejaVu Sans'],
+
+        # Text. All one size: 7 pt = \scriptsize at a 10 pt base.
+        'font.size':         _fs('annot'),
+        'axes.labelsize':    _fs('label'),
+        'axes.titlesize':    _fs('title'),
+        'axes.titleweight':  'bold',
+        'xtick.labelsize':   _fs('tick'),
+        'ytick.labelsize':   _fs('tick'),
+        'legend.fontsize':   _fs('legend'),
+        'legend.title_fontsize': _fs('legend'),
+        'legend.frameon':    False,
+
+        # Rules and ticks. Matplotlib's defaults (0.8 pt spines, 3.5 pt
+        # ticks) are heavy on a 2.5 in canvas, so both come down.
+        'axes.linewidth':    PLOT_STYLE['axes_linewidth'],
+        'xtick.major.width': PLOT_STYLE['tick_linewidth'],
+        'ytick.major.width': PLOT_STYLE['tick_linewidth'],
+        'xtick.major.size':  PLOT_STYLE['tick_length'],
+        'ytick.major.size':  PLOT_STYLE['tick_length'],
+        'xtick.minor.width': PLOT_STYLE['tick_linewidth'] * 0.75,
+        'ytick.minor.width': PLOT_STYLE['tick_linewidth'] * 0.75,
+        'xtick.minor.size':  PLOT_STYLE['tick_length'] * 0.6,
+        'ytick.minor.size':  PLOT_STYLE['tick_length'] * 0.6,
+
+        # Data marks.
+        'lines.linewidth':   PLOT_STYLE['trace_linewidth'],
+        'lines.markersize':  PLOT_STYLE['marker_size'],
+        'lines.markeredgewidth': PLOT_STYLE['marker_edge_width'],
+
+        # Output. fonttype 42 embeds TrueType rather than Type 3, which
+        # keeps the text selectable and searchable in the final thesis PDF.
+        'pdf.fonttype':      42,
+        'ps.fonttype':       42,
+        'svg.fonttype':      'none',
+        'savefig.dpi':       PLOT_STYLE['dpi_raster'],
+        'savefig.bbox':      'standard',
+
+        'figure.facecolor':  'white',
         'axes.spines.top':   False,
         'axes.spines.right': False,
-        'grid.alpha':       0.4,
-        'grid.color':       MFA_COLORS['grid'],
-        'lines.linewidth':  2.0,
-        'lines.markersize': 6,
+        'grid.alpha':        0.4,
+        'grid.color':        MFA_COLORS['grid'],
+        'grid.linewidth':    PLOT_STYLE['axes_linewidth'],
+
         # Blue-to-red colour cycle paired with linestyle & marker cycles.
         # Six entries so grouped plots have distinct symbols out to n=6
         # before wrapping.
@@ -432,6 +582,7 @@ def set_paper_style(base_fontsize: int = 12, dpi: int = 300) -> None:
             + mpl.cycler(marker=list(MFA_MARKERS[:6]))
         ),
     })
+
 
 def get_time_colormap(n_steps: int) -> List[Tuple[float, float, float, float]]:
     """Returns a list of colors forming the full Blue -> Red gradient."""

@@ -129,9 +129,9 @@ ASP_TREATMENT_COLOUR: Dict[str, str] = {
 # trace figure in Chapter 3 pulls from these constants so line thickness,
 # marker frequency, and fill translucency are visually identical
 # figure-to-figure.
-TRACE_LINEWIDTH        = 1.8    # canonical MFA line weight
-TRACE_MARKERSIZE       = 5
-TRACE_MARKEREDGE_WIDTH = 1.2    # marker edge width for open (ruptured) markers
+TRACE_LINEWIDTH        = utils.PLOT_STYLE["trace_linewidth"]
+TRACE_MARKERSIZE       = utils.PLOT_STYLE["marker_size"]
+TRACE_MARKEREDGE_WIDTH = utils.PLOT_STYLE["marker_edge_width"]
 TRACE_MARKEVERY_FRAC   = 0.10   # one marker every 10% of the common grid
 TRACE_BAND_ALPHA       = 0.18
 TRACE_BASELINE_ALPHA   = 0.5    # No-pulse dimming when EP is co-plotted
@@ -190,31 +190,31 @@ def markevery_from(common_t) -> int:
     n = len(common_t)
     return max(1, int(n * TRACE_MARKEVERY_FRAC))
 
-# --- Font sizes for thesis-ready figures (A5 at ~0.98x) ---
-FONT_BASE          = 14
-FONT_AXIS_TITLE    = 16
-FONT_AXIS_LABEL    = 15
-FONT_TICK          = 13
-FONT_LEGEND        = 13
-FONT_LEGEND_HEADER = 14
-FONT_BRACKET       = 14
+# --- Font sizes for thesis-ready figures -----------------------------------
+# All 7 pt, which is \scriptsize in a 10 pt document. Figures are drawn at
+# printed size, so these are the sizes that land on the page. Sourced from
+# bulk_utils.PLOT_STYLE so there is one place to change them, and so this
+# module cannot drift away from utils.set_paper_style().
+FONT_BASE          = utils.PLOT_STYLE["fontsize_annot_pt"]
+FONT_AXIS_TITLE    = utils.PLOT_STYLE["fontsize_title_pt"]
+FONT_AXIS_LABEL    = utils.PLOT_STYLE["fontsize_label_pt"]
+FONT_TICK          = utils.PLOT_STYLE["fontsize_tick_pt"]
+FONT_LEGEND        = utils.PLOT_STYLE["fontsize_legend_pt"]
+FONT_LEGEND_HEADER = utils.PLOT_STYLE["fontsize_legend_pt"]
+FONT_BRACKET       = utils.PLOT_STYLE["fontsize_annot_pt"]
 
 
 def apply_thesis_rcparams() -> None:
     """
-    Apply the Chapter 3 font-size defaults. Call once at the start of any
-    plotting function that produces a thesis-ready figure.
+    Apply the Chapter 3 defaults. Call once at the start of any plotting
+    function that produces a thesis-ready figure.
+
+    This used to set its own font sizes, which competed with
+    utils.set_paper_style(): whichever ran last won, so the printed size of
+    a figure depended on the call order inside each plotting function. It
+    now delegates, so there is exactly one style definition in the pipeline.
     """
-    import matplotlib as mpl
-    mpl.rcParams.update({
-        "font.size":        FONT_BASE,
-        "axes.titlesize":   FONT_AXIS_TITLE,
-        "axes.labelsize":   FONT_AXIS_LABEL,
-        "xtick.labelsize":  FONT_TICK,
-        "ytick.labelsize":  FONT_TICK,
-        "legend.fontsize":  FONT_LEGEND,
-        "axes.titleweight": "bold",
-    })
+    utils.set_paper_style()
 
 
 def parse_chip_id(experiment_folder: str) -> str:
@@ -527,6 +527,7 @@ def render_visco_parameter_superplot(df: pd.DataFrame,
 
     date_colours, date_labels, chip_markers = _sp_build_style_maps(df)
 
+    utils.check_panel_area(figsize, grid_shape[0], grid_shape[1])
     fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=figsize)
     axes = np.asarray(axes).flatten()
     rng = np.random.default_rng(seed=42)
@@ -1546,18 +1547,28 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
     # ---- SuperPlot ---------------------------------------------------------
     # Panel spec matches the pre-pulse visco figure so the two are directly
     # side-by-side readable in the thesis.
+    # Titles are single-line: at 7 pt on a 1.1 in panel a second title
+    # line costs about a fifth of the panel height. The model
+    # qualifications that used to sit on line two ("Burgers only",
+    # "Jeffreys / Burgers") belong in the figure caption instead.
     asp_visco_panels: List[Tuple[str, str, str]] = [
-        ('E_Pa',      r'$E$ (Pa)',                'Parallel Spring Modulus'),
-        ('E1_Pa',     r'$E_{1}$ (Pa)',            'Burgers Maxwell Spring\n(Burgers only)'),
-        ('eta1_Pa_s', r'$\eta_{1}$ (Pa$\cdot$s)', 'Parallel Dashpot'),
-        ('eta2_Pa_s', r'$\eta_{2}$ (Pa$\cdot$s)', 'Flow Viscosity\n(Jeffreys / Burgers)'),
-        ('Tau_s',     r'$\tau$ (s)',              'Characteristic Time'),
+        ('E_Pa',      r'$E$ (Pa)',                'Parallel spring'),
+        ('E1_Pa',     r'$E_{1}$ (Pa)',            'Maxwell spring'),
+        ('eta1_Pa_s', r'$\eta_{1}$ (Pa$\cdot$s)', 'Parallel dashpot'),
+        ('eta2_Pa_s', r'$\eta_{2}$ (Pa$\cdot$s)', 'Flow viscosity'),
+        ('Tau_s',     r'$\tau$ (s)',              'Relaxation time'),
     ]
+    # 3 rows x 2 columns (5 parameters + legend) so the panel is taller
+    # than it is wide and matches the stacked height of Figure 1.6A+B.
+    # The 3.35 in height is the one number to adjust if the two columns of
+    # the LaTeX figure do not come out level.
     render_visco_parameter_superplot(
         df=df,
         panels=asp_visco_panels,
         output_pdf=output_dir / "Thesis_ASP_Visco_Parameter_Boxplots.pdf",
         category_col='Treatment',
+        figsize=utils.canvas_size_for(0.49, height_in=3.35),
+        grid_shape=(3, 2),
     )
 
     # ---- Model-selection frequency (unchanged) -----------------------------
@@ -1573,9 +1584,12 @@ def plot_asp_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) ->
                     .reindex(sorted_cats, fill_value=0))
     cols_present = [c for c in ["Kelvin-Voigt", "Jeffreys", "Burgers"] if c in model_counts.columns]
 
+    # Drawn at printed size for a 0.49\textwidth subfigure. The width no
+    # longer depends on how many categories are present: letting the canvas
+    # grow with the data made the printed font size depend on the data too.
     model_counts[cols_present].plot(
         kind='bar', stacked=True,
-        figsize=(max(6, len(sorted_cats) * 1.5), 5),
+        figsize=utils.canvas_size_for(0.49, height_in=1.75),
         color=[VISCO_MODEL_PALETTE[c] for c in cols_present])
     plt.ylabel("Number of Traps")
     plt.xlabel("")

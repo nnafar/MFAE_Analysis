@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 import bulk_file_handling as bfh
+import thesis_figure_data as tfd
 import bulk_mechanics     as bm
 import thesis_plotting    as tp  
 from thesis_plotting_uptake import register_uptake_plots
@@ -368,6 +369,16 @@ def main():
         attrition_df.to_csv(attrition_path, index=False)
         logger.info(f"Saved attrition tally: {attrition_path.name}  "
                     f"({len(attrition_df)} experiments)")
+
+    # ------------------------------------------------------------------
+    # Figure-data bundle: every value behind a Chapter 3 figure, written to
+    # CSV so figures can be redrawn without re-running the pipeline. The
+    # per-cell scalars already live in mechanics_results_all_traps.csv; this
+    # adds the time series, which previously existed only in memory.
+    # ------------------------------------------------------------------
+    _try("Figure Data Export",
+         tfd.export_all,
+         all_grouped_data, mechanics_df, attrition_df, results_dir)
 
     if mi_filtered_grouped_data.keys():
         # Cross-cohort pre-pulse figures land in prepulse_combined_dir;
