@@ -1637,7 +1637,7 @@ def plot_asp_parameter_boxplots(
         mean_markersize=60.0,
     )
 
-    # ---- Model-selection frequency (unchanged) -----------------------------
+    # ---- Model-selection frequency -----------------------------------------
     df['Category'] = df.apply(_asp_category_label_from_row, axis=1)
     sorted_cats_full = sorted(df['Category'].unique())
     label_map = _reduce_labels(sorted_cats_full)
@@ -1666,19 +1666,39 @@ def plot_asp_parameter_boxplots(
         color=[VISCO_MODEL_PALETTE[c] for c in cols_present],
     )
 
-    if label_fontsize is not None:
-        ax.set_ylabel("Number of Traps", fontsize=label_fontsize)
-    else:
-        ax.set_ylabel("Number of Traps")
+    # 1. Y-Axis Label
+    lbl_font = label_fontsize if label_fontsize is not None else getattr(utils, "FONT_LABEL", None)
+    ax.set_ylabel("Number of Traps", fontsize=lbl_font*1.6)
+    ax.set_xlabel("", fontsize=lbl_font*1.6)
 
+    # 2. Tick Labels
     tk_font = tick_fontsize if tick_fontsize is not None else FONT_TICK
-    ax.tick_params(axis="both", labelsize=tk_font)
+    ax.tick_params(axis="both", labelsize=tk_font*1.6)
+    # Align labels horizontally on the same baseline directly beneath ticks
+    plt.setp(
+        ax.get_xticklabels(),
+        rotation=0,
+        ha="center",
+        va="top",
+        fontsize=tk_font * 1.6,
+    )
+    # Pass fontsize directly to plt.xticks to prevent rotation from overriding tick size
+    plt.xticks(rotation=0, ha="center", fontsize=tk_font*1.6)
 
-    if legend_fontsize is not None:
-        ax.legend(fontsize=legend_fontsize)
+    # 3. Legend (Horizontal arrangement below the plot)
+    leg_kw = {"fontsize": legend_fontsize * 1.6} if legend_fontsize is not None else {}
+    ax.legend(
+        ncol=len(cols_present),        # Places entries side-by-side in one row
+        loc="upper center",            # Anchors top of legend box
+        bbox_to_anchor=(0.5, -0.05),   # Shifts legend below the x-axis labels
+        frameon=False,                 # Removes outer box border for a clean look
+        **leg_kw
+    )
 
-    ax.set_xlabel("")
-    plt.xticks(rotation=45, ha="right")
+    # 4. Title (if present)
+    if title_fontsize is not None:
+        ax.set_title(ax.get_title(), fontsize=title_fontsize)
+
     plt.tight_layout()
     utils.save_plot_pdf(
         output_dir / "Thesis_ASP_Visco_Model_Selection_Frequency.pdf",

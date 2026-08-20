@@ -358,7 +358,7 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
 
         for i, tid in enumerate(sorted_ids):
             ax = axes[i]
-            ax.set_title(f"Trap {tid}", fontsize=10, fontweight='bold')
+            ax.set_title(f"Trap {tid}", fontweight='bold')
 
             for trap in trap_groups[tid]:
                 pd_data = trap.protrusion_data
@@ -3343,7 +3343,6 @@ def _align_to_entry(t: np.ndarray, L: np.ndarray):
         return None, None
     entry_idx = int(np.argmax(positive))
     return t[entry_idx:] - t[entry_idx], L[entry_idx:]
- 
 
 def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                                                   mechanics_df: pd.DataFrame,
@@ -3584,7 +3583,6 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
     utils.save_plot_pdf(output_dir / "Thesis_Combined_PrePulse_Trace_by_Fate.pdf")
     plt.close()
     logger.info("Combined pre-pulse mean L(t) written (visco cohort, entry-aligned).")
-
 
 def plot_thesis_combined_wholetrace_trace_by_fate(grouped_data: Dict,
                                                     mechanics_df: pd.DataFrame,

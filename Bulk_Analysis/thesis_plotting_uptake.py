@@ -504,6 +504,13 @@ def median_iqr(values) -> Tuple[float, float, float, int]:
 # ===================================================================== #
 # 1. Mean uptake trace (body + protrusion, two panels)                  #
 # ===================================================================== #
+FONT_BASE          = utils.PLOT_STYLE["fontsize_annot_pt"]
+FONT_AXIS_TITLE    = utils.PLOT_STYLE["fontsize_title_pt"]
+FONT_AXIS_LABEL    = utils.PLOT_STYLE["fontsize_label_pt"]
+FONT_TICK          = utils.PLOT_STYLE["fontsize_tick_pt"]
+FONT_LEGEND        = utils.PLOT_STYLE["fontsize_legend_pt"]
+FONT_LEGEND_HEADER = utils.PLOT_STYLE["fontsize_legend_pt"]
+FONT_BRACKET       = utils.PLOT_STYLE["fontsize_annot_pt"]
 def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
                                        mechanics_df: pd.DataFrame,
                                        output_dir: Path,
@@ -518,7 +525,12 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
                                        require_uptake_flag: bool = True,
                                        runaway_rule: str = (
                                            DEFAULT_RUNAWAY_RULE),
-                                       filename_suffix: str = ''
+                                       filename_suffix: str = '',
+                                       # NEW: Added font size parameters
+                                       title_fontsize: Optional[float] = None,
+                                       label_fontsize: Optional[float] = None,
+                                       tick_fontsize: Optional[float] = None,
+                                       legend_fontsize: Optional[float] = None
                                        ) -> None:
     """
     Mean volume-normalised uptake vs time-since-pulse, body and
@@ -739,7 +751,14 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
 
     # ---- Plot -------------------------------------------------------
     utils.set_paper_style()
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), sharex=True)
+    
+    # NEW: Resolve font sizes from arguments or fallback to globals
+    t_font = title_fontsize if title_fontsize is not None else FONT_AXIS_TITLE
+    l_font = label_fontsize if label_fontsize is not None else FONT_AXIS_LABEL
+    tk_font = tick_fontsize if tick_fontsize is not None else FONT_TICK
+    leg_font = legend_fontsize if legend_fontsize is not None else FONT_LEGEND
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), sharey=True, sharex=True)
     region_titles = {'Body': 'Cell body', 'Prot': 'Protrusion'}
 
     for ax, region in zip(axes, ('Body', 'Prot')):
@@ -783,23 +802,26 @@ def plot_thesis_mean_uptake_body_prot(grouped_data: Dict,
             ax.plot(t_plot, med[keep], color=color, linewidth=1.8,
                     label=f"{CONDITION_LABEL[cond_key]} (n={len(trace_list)})")
 
-        ax.set_xlabel("Time since pulse (s)")
-        ax.set_title(region_titles[region])
+        # NEW: Inject resolved fonts into standard formatting functions
+        ax.set_xlabel("Time since pulse (s)", fontsize=l_font)
+        ax.set_title(region_titles[region], fontsize=t_font)
         ax.set_xlim(left=0.0)
         ax.spines[['top', 'right']].set_visible(False)
-        ax.legend(frameon=False, loc='best', fontsize=9)
+        ax.tick_params(axis='both', labelsize=tk_font)
+        ax.legend(frameon=False, loc='best', fontsize=leg_font)
 
     if subtract_baseline:
         axes[0].set_ylabel(
-            r"Uptake above baseline (a.u. / $\mathrm{\mu m}^{3}$)")
+            r"Uptake above baseline (a.u. / $\mathrm{\mu m}^{3}$)", fontsize=l_font)
         baseline_note = "baseline-subtracted"
     else:
-        axes[0].set_ylabel(r"Uptake (a.u. / $\mathrm{\mu m}^{3}$)")
+        axes[0].set_ylabel(r"Uptake (a.u. / $\mathrm{\mu m}^{3}$)", fontsize=l_font)
         baseline_note = "absolute, baseline retained"
-    fig.suptitle(f"{treatment} — mean volume-normalised uptake, "
-                 f"pulse-aligned ({baseline_note}; median $\\pm$ IQR)  "
-                 f"[{filter_desc}]",
-                 y=1.02, fontweight='bold')
+        
+    # fig.suptitle(f"{treatment} — mean volume-normalised uptake, "
+    #              f"pulse-aligned ({baseline_note}; median $\\pm$ IQR)  "
+    #              f"[{filter_desc}]",
+    #              y=1.02, fontweight='bold', fontsize=t_font)
     fig.tight_layout()
     out = (Path(output_dir)
            / f"Thesis_Uptake_Mean_Trace_BodyProt_{treatment}{filename_suffix}.pdf")
@@ -2365,9 +2387,14 @@ def register_uptake_plots(grouped_data: Dict,
         # runaway exclusion under DEFAULT_RUNAWAY_RULE.  Same cells as
         # the kinetics table below, so the two always agree on cohort.
         _try(f"Mean uptake trace ({treatment})",
-             plot_thesis_mean_uptake_body_prot,
-             grouped_data, mechanics_df, output_dir, treatment=treatment,
-             filename_suffix='')
+            plot_thesis_mean_uptake_body_prot,  # Uncalled function reference
+            grouped_data, mechanics_df, output_dir, 
+            treatment=treatment,
+            filename_suffix='',
+            title_fontsize=12,                  # Font arguments passed as keyword args
+            label_fontsize=12,
+            tick_fontsize=12,
+            legend_fontsize=12)
 
         # Supplementary: every cell in the intact cohort, split into
         # analysed / runaway / R2-failed, so the gates above are visible
