@@ -430,7 +430,11 @@ def plot_thesis_asp_actin_f0_boxplots(mechanics_df: pd.DataFrame, output_dir: Pa
 
 def plot_thesis_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame, output_dir: Path) -> None:
     logger.info("Generating Thesis Plot: Pre-Pulse Viscoelastic Parameters...")
-    bp.plot_prepulse_visco_parameter_boxplots(mechanics_df, output_dir)
+    bp.plot_prepulse_visco_parameter_boxplots(mechanics_df, output_dir,
+                                              title_fontsize  = 25,
+                                              label_fontsize  = 25,
+                                              tick_fontsize   = 25,
+                                              legend_fontsize = 25)
 
 def run_thesis_plots(grouped_data: Dict,
                      mechanics_df: pd.DataFrame,
@@ -3345,9 +3349,13 @@ def _align_to_entry(t: np.ndarray, L: np.ndarray):
     return t[entry_idx:] - t[entry_idx], L[entry_idx:]
 
 def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
-                                                  mechanics_df: pd.DataFrame,
-                                                  output_dir: Path,
-                                                  global_pre_dur: Optional[float] = None) -> None:
+                                                mechanics_df: pd.DataFrame,
+                                                output_dir: Path,
+                                                global_pre_dur: Optional[float] = None,
+                                                title_fontsize: Optional[float] = None,
+                                                label_fontsize: Optional[float] = None,
+                                                tick_fontsize: Optional[float] = None,
+                                                legend_fontsize: Optional[float] = None) -> None:
     """
     Mean L(t) trace for the pre-pulse window, split by pulse condition
     and fate.
@@ -3511,13 +3519,13 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
     # -----------------------------------------------------------------
     bp.apply_thesis_rcparams()
     fig, ax = plt.subplots(figsize=(7.2, 4.6))
- 
+
     if global_pre_dur is not None:
         ax.axvspan(0, float(global_pre_dur), color='0.92', alpha=0.5, zorder=0)
- 
+
     dur_key   = str(target_dur)
     ep_colour = bp.PULSE_TRACE_PALETTE.get(('EP', dur_key), bp.PULSE_100US_COLOUR)
- 
+
     nopulse_label   = bp.format_condition_label(condition_type='ASP')
     ep_intact_label = bp.format_condition_label(
         condition_type='EP', voltage_v=100, duration_label=dur_key,
@@ -3525,35 +3533,31 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
     ep_rupt_label   = bp.format_condition_label(
         condition_type='EP', voltage_v=100, duration_label=dur_key,
         fate_status='ruptured_post', with_fate=True)
- 
-    # (traces_key, colour, fate, is_baseline, label)
+
     plot_order = [
-        ('asp',      bp.NO_PULSE_COLOUR, 'baseline',      True,  nopulse_label),
-        ('intact',   ep_colour,          'intact',        False, ep_intact_label),
-        ('ruptured', ep_colour,          'ruptured_post', False, ep_rupt_label),
+        ('asp',      bp.NO_PULSE_COLOUR, 'baseline',       True,  nopulse_label),
+        ('intact',   ep_colour,          'intact',         False, ep_intact_label),
+        ('ruptured', ep_colour,          'ruptured_post',  False, ep_rupt_label),
     ]
- 
-    # Cohorts smaller than this are drawn as individual thin traces
-    # instead of a mean-with-band, since the SD band collapses to a
-    # meaningless width at n = 1 or 2.
+
     SMALL_COHORT_N = 3
- 
+
     for key, colour, fate, is_baseline, base_label in plot_order:
         trace_list = traces[key]
         n = len(trace_list)
         if n == 0:
             continue
- 
+
         lkw = bp.build_trace_line_kwargs(pulse_colour=colour,
-                                          fate=fate,
-                                          treatment=base_treatment,
-                                          is_baseline=is_baseline)
- 
+                                         fate=fate,
+                                         treatment=base_treatment,
+                                         is_baseline=is_baseline)
+
         if n < SMALL_COHORT_N:
             per_cell_kwargs = {
-                'color':     colour,
+                'color':    colour,
                 'linewidth': 0.9,
-                'alpha':     0.75,
+                'alpha':    0.75,
                 'linestyle': lkw.get('linestyle', '-'),
                 'marker':    '',
             }
@@ -3571,14 +3575,19 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
                     label=f"{base_label} (n={n})", **lkw)
             ax.fill_between(common_t, m - sd, m + sd,
                             color=colour, alpha=bp.TRACE_BAND_ALPHA, linewidth=0)
- 
-    ax.set_xlabel("Time from cell entry (s)")
-    ax.set_ylabel(r"Protrusion length $L(t)$ (µm)")
-    ax.set_title(r"Pre-pulse protrusion mechanics ($\Delta t_{\mathrm{pre}}$-matched)")
+
+    # Applied font sizes here:
+    ax.set_xlabel("Time from cell entry (s)", fontsize=label_fontsize)
+    ax.set_ylabel(r"Protrusion length $L(t)$ (µm)", fontsize=label_fontsize)
+    ax.set_title(r"Pre-pulse protrusion mechanics ($\Delta t_{\mathrm{pre}}$-matched)", fontsize=title_fontsize)
+    
+    # Tick labels and legend font sizes:
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+    
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.legend(frameon=False, loc='lower right')
- 
+    ax.legend(frameon=False, loc='lower right', fontsize=legend_fontsize)
+
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_Combined_PrePulse_Trace_by_Fate.pdf")
     plt.close()
@@ -3786,8 +3795,13 @@ def run_thesis_claim2_plots(grouped_data: Dict,
     _try("Fate wholetrace mi boxplots", plot_thesis_fate_wholetrace_mi_boxplots,
          mechanics_df, wt_dir)
 
-    _try("Combined prepulse trace by fate", plot_thesis_combined_prepulse_trace_by_fate,
-         grouped_data, mechanics_df, output_dir, global_pre_dur)
+    _try("Combined prepulse trace by fate", 
+         plot_thesis_combined_prepulse_trace_by_fate(grouped_data, mechanics_df, 
+                                                     output_dir, global_pre_dur,
+                                                     title_fontsize  =  15,
+                                                     label_fontsize  =  15,
+                                                     tick_fontsize   =  15,
+                                                     legend_fontsize =  15))
     _try("Combined wholetrace trace by fate", plot_thesis_combined_wholetrace_trace_by_fate,
          grouped_data, mechanics_df, wt_dir, global_whole_dur)
 

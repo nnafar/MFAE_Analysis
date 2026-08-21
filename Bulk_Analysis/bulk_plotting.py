@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
+import matplotlib.ticker as ticker
 import seaborn as sns
 from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
@@ -234,6 +235,7 @@ def format_condition_label(condition_type: str,
                            duration_label: Optional[str] = None,
                            fate_status: Optional[str] = None,
                            with_fate: bool = False,
+                           include_voltage: bool = True,
                            pre_post: bool = False) -> str:
     """
     Chapter 3 label convention:
@@ -261,9 +263,11 @@ def format_condition_label(condition_type: str,
         dur_disp = {"100us": "100 µs", "100µs": "100 µs",
                     "5ms": "5 ms"}.get(str(duration_label),
                                        str(duration_label) if duration_label else "")
-        volt_str = f"{int(voltage_v)} V" if voltage_v is not None else ""
-        parts = [p for p in (volt_str, dur_disp) if p]
-        base = ", ".join(parts) if parts else "EP"
+        
+        if include_voltage and voltage_v is not None:
+            base = f"{int(voltage_v)} V, {dur_disp}"
+        else:
+            base = f"{dur_disp}"
 
     if with_fate and fate_disp:
         return f"{base} ({fate_disp})"
@@ -480,12 +484,13 @@ def render_visco_parameter_superplot(
     categories: Optional[List[str]] = None,
     figsize: Tuple[float, float] = (16, 10),
     grid_shape: Tuple[int, int] = (2, 3),
+    rotation: float = 15,
     bracket_pairs: Optional[List[Tuple[int, int]]] = None,
-    title_fontsize: Optional[float] = None,
-    label_fontsize: Optional[float] = None,
-    tick_fontsize: Optional[float] = None,
-    legend_fontsize: Optional[float] = None,
-    bracket_fontsize: Optional[float] = None,
+    title_fontsize: Optional[float] = FONT_AXIS_TITLE,
+    label_fontsize: Optional[float] = FONT_AXIS_LABEL,
+    tick_fontsize: Optional[float] = FONT_TICK,
+    legend_fontsize: Optional[float] = FONT_LEGEND,
+    bracket_fontsize: Optional[float] = FONT_BRACKET,
     mean_markersize: float = _SP_REPLICATE_MARKER_SIZE,
 ) -> None:
     """
@@ -515,13 +520,6 @@ def render_visco_parameter_superplot(
         Pass an empty list to suppress all brackets.
     """
     apply_thesis_rcparams()
-
-    # Resolve font sizes with default fallbacks
-    t_font = title_fontsize if title_fontsize is not None else FONT_AXIS_TITLE
-    l_font = label_fontsize if label_fontsize is not None else FONT_AXIS_LABEL
-    tk_font = tick_fontsize if tick_fontsize is not None else FONT_TICK
-    leg_font = legend_fontsize if legend_fontsize is not None else FONT_LEGEND
-    b_font = bracket_fontsize if bracket_fontsize is not None else FONT_BRACKET
 
     df = df.copy()
     if "Chip_ID" not in df.columns:
@@ -572,17 +570,23 @@ def render_visco_parameter_superplot(
         )
 
         # Apply configurable title, label, and tick font sizes
-        ax.set_title(title, fontsize=t_font)
-        ax.set_ylabel(ylabel, fontsize=l_font)
+        ax.set_title(title, fontsize=title_fontsize)
+        ax.set_ylabel(ylabel, fontsize=label_fontsize)
         ax.set_xlabel("")
-        ax.tick_params(axis="both", labelsize=tk_font)
+        ax.tick_params(axis="both", labelsize=tick_fontsize)
+
+
+        # Optional: Turn off minor tick labels completely if they clutter the axis
+        ax.yaxis.set_major_formatter(ticker.LogFormatterMathtext())
+        ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+        # --------------------
 
         # X-tick rotation only when labels are long enough to collide
         max_label_len = max((len(str(c)) for c in categories), default=0)
         if max_label_len > 8:
-            ax.tick_params(axis="x", rotation=30, labelsize=tk_font)
+            ax.tick_params(axis="x", rotation=rotation, labelsize=tick_fontsize)
             for lbl in ax.get_xticklabels():
-                lbl.set_ha("right")
+                lbl.set_ha("center")
 
         # Brackets for the specified pairs
         for idx_a, idx_b in bracket_pairs:
@@ -627,7 +631,7 @@ def render_visco_parameter_superplot(
             if label is not None:
                 y_top = float(np.nanmax(np.concatenate([a, b])))
                 _add_bracket(
-                    ax, idx_a, idx_b, y_top, label, lw=lw, fontsize=b_font
+                    ax, idx_a, idx_b, y_top, label, lw=lw, fontsize=bracket_fontsize
                 )
 
     # Legend in the last unused slot
@@ -642,11 +646,12 @@ def render_visco_parameter_superplot(
         legend_ax.legend(
             handles=handles,
             loc="center",
+            ncol=2,
             frameon=False,
-            fontsize=leg_font,
+            fontsize=legend_fontsize,
             handletextpad=0.8,
             labelspacing=0.7,
-            title_fontsize=leg_font,
+            title_fontsize=legend_fontsize,
         )
 
     plt.tight_layout()
@@ -1672,18 +1677,17 @@ def plot_asp_parameter_boxplots(
     ax.set_xlabel("", fontsize=lbl_font*1.6)
 
     # 2. Tick Labels
-    tk_font = tick_fontsize if tick_fontsize is not None else FONT_TICK
-    ax.tick_params(axis="both", labelsize=tk_font*1.6)
+    ax.tick_params(axis="both", labelsize=tick_fontsize*1.6)
     # Align labels horizontally on the same baseline directly beneath ticks
     plt.setp(
         ax.get_xticklabels(),
         rotation=0,
         ha="center",
         va="top",
-        fontsize=tk_font * 1.6,
+        fontsize=tick_fontsize * 1.6,
     )
     # Pass fontsize directly to plt.xticks to prevent rotation from overriding tick size
-    plt.xticks(rotation=0, ha="center", fontsize=tk_font*1.6)
+    plt.xticks(rotation=0, ha="center", fontsize=tick_fontsize*1.6)
 
     # 3. Legend (Horizontal arrangement below the plot)
     leg_kw = {"fontsize": legend_fontsize * 1.6} if legend_fontsize is not None else {}
@@ -1774,6 +1778,7 @@ def _prepulse_new_category_label(row: pd.Series) -> str:
         duration_label=row.get('Duration_label'),
         fate_status=row.get('Fate_Status'),
         with_fate=True,
+        include_voltage=False
     )
 
 
@@ -1820,10 +1825,15 @@ def _prepulse_category_order(df: pd.DataFrame) -> List[str]:
             ordered.append(c)
     return ordered
 
-
-def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
-                                            output_dir: Path,
-                                            include_cytd: bool = False) -> None:
+def plot_prepulse_visco_parameter_boxplots(
+    mechanics_df: pd.DataFrame,
+    output_dir: Path,
+    include_cytd: bool = False,
+    title_fontsize: Optional[float] = None,
+    label_fontsize: Optional[float] = None,
+    tick_fontsize: Optional[float] = None,
+    legend_fontsize: Optional[float] = None,
+) -> None:
     r"""
     Pre-pulse viscoelastic parameter SuperPlot (Chapter 3 Claim 2).
 
@@ -1837,26 +1847,17 @@ def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
 
     Uses the matched-horizon PrePulse_* fits so cohorts enter the
     comparison with matched fit windows.
-
-    Parameters
-    ----------
-    mechanics_df : pd.DataFrame
-        Bulk mechanics dataframe with PrePulse_* columns populated.
-    output_dir : Path
-        Directory in which the PDF is saved.
-    include_cytd : bool, default False
-        If True, keeps the ASP CytD baseline (labelled 'No pulse (CytD)').
-        EP experiments are WT-only, so the default fair comparison is
-        against the WT baseline alone.
     """
     logger.info("Generating: Pre-Pulse Viscoelastic Parameter SuperPlot...")
 
+    # Filter for valid fit models, non-null modulus values, and passed R2 flags
     df = mechanics_df[
         mechanics_df['PrePulse_Best_Model'].notna() &
         mechanics_df['PrePulse_E_Pa'].notna() &
         (mechanics_df['PrePulse_Visco_R2_Flag'] == True)
     ].copy()
 
+    # Optionally exclude non-WT ASP baselines (e.g., CytD)
     if not include_cytd:
         df = df[~((df['Condition_Type'] == 'ASP') &
                   (df['Treatment'] != 'WT'))].copy()
@@ -1865,30 +1866,42 @@ def plot_prepulse_visco_parameter_boxplots(mechanics_df: pd.DataFrame,
         logger.info("  No cells pass pre-pulse viscoelastic filter — skipping.")
         return
 
+    # Assign custom labels and retrieve category ordering
     df['Category'] = df.apply(_prepulse_new_category_label, axis=1)
     categories = _prepulse_category_order(df)
 
+    # Define panel configurations: (column_name, y_axis_label, panel_title)
     panels = [
-        ('PrePulse_E_Pa',        r'$E$ (Pa)',
-         'Parallel Spring Modulus'),
-        ('PrePulse_E1_Pa',       r'$E_{1}$ (Pa)',
-         'Burgers Maxwell Spring\n(Burgers only)'),
-        ('PrePulse_eta1_Pa_s',   r'$\eta_{1}$ (Pa$\cdot$s)',
-         'Parallel Dashpot'),
-        ('PrePulse_eta2_Pa_s',   r'$\eta_{2}$ (Pa$\cdot$s)',
-         'Flow Viscosity\n(Jeffreys / Burgers)'),
-        ('PrePulse_Tau_s',       r'$\tau$ (s)',
-         'Characteristic Time'),
+        ('PrePulse_E_Pa',        r'$E$ (Pa)', 'Parallel Spring Modulus'),
+        ('PrePulse_E1_Pa',       r'$E_{1}$ (Pa)', 'Burgers Maxwell Spring\n(Burgers only)'),
+        ('PrePulse_eta1_Pa_s',   r'$\eta_{1}$ (Pa$\cdot$s)', 'Parallel Dashpot'),
+        ('PrePulse_eta2_Pa_s',   r'$\eta_{2}$ (Pa$\cdot$s)', 'Flow Viscosity\n(Jeffreys / Burgers)'),
+        ('PrePulse_Tau_s',       r'$\tau$ (s)', 'Characteristic Time'),
     ]
 
+    # --- ADD THIS FIX ---
+    # Force all panel columns to be numeric floats. 
+    # Invalid strings become np.nan, preventing the ufunc 'isnan' crash.
+    for col_name, _, _ in panels:
+        if col_name in df.columns:
+            df[col_name] = pd.to_numeric(df[col_name], errors='coerce')
+    # --------------------
+
+    # Forward the font arguments down to the rendering function:
     render_visco_parameter_superplot(
         df=df,
         panels=panels,
         output_pdf=output_dir / "Thesis_PrePulse_Visco_Parameter_Boxplots.pdf",
         category_col='Category',
         categories=categories,
+        title_fontsize=title_fontsize,
+        label_fontsize=label_fontsize,
+        tick_fontsize=tick_fontsize,
+        legend_fontsize=legend_fontsize,
+        bracket_fontsize = tick_fontsize,
+        grid_shape=(3,2),
+        rotation=10
     )
-
 
 def plot_model_independent_fits_multipanel(
         grouped_data: Dict, output_dir: Path, global_pre_dur: Optional[float] = None) -> None:
