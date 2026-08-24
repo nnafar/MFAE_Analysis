@@ -40,6 +40,22 @@ criterion and the summary table built from it:
         The Chapter 3 amplitude and timescale table, with both pulse
         arms passed through identical gates and the gate counts carried
         into the footnotes.
+
+    attach_uptake_reference_time_columns
+        Per-cell U(100 s), read directly off each trace rather than
+        fitted, joined onto a copy of mechanics_df as
+        Uptake_{Body,Prot}_VolNorm_U100. `plot_thesis_prepulse_
+        correlations` and `plot_thesis_mi_whole_correlations` both take
+        a `uptake_metric='A'|'U100'` argument that switches between the
+        fitted amplitude and these columns; `register_uptake_plots`
+        produces both variants of each figure.
+
+    build_uptake_correlation_sweep_table / write_uptake_correlation_
+    sweep_table
+        Spearman rho/p/n for every predictor-vs-uptake pair currently
+        quoted in §3.9, Discussion, and the two SI correlation tables,
+        against either uptake metric — the numbers to copy into the
+        chapter, rather than reading them off a figure-panel text box.
 """
 
 import logging
@@ -327,6 +343,119 @@ def select_uptake_cohort(df: pd.DataFrame,
     return retained, counts
 
 
+def _read_uptake_at_reference_time(grouped_data: Dict,
+                                   wanted: set,
+                                   data_col: str,
+                                   reference_time_s: float,
+                                   baseline_col: Optional[str] = None
+                                   ) -> Tuple[Dict[Tuple[str, int], float],
+                                              int]:
+    """
+    Shared trace-reading core for the reference-time readout.
+
+    Walks `grouped_data` once, and for every (Experiment_Folder, Trap_ID)
+    key in `wanted`, aligns its post-pulse trace to the pulse frame and
+    linearly interpolates the value at `reference_time_s`. A record that
+    ends before `reference_time_s` is dropped, not extrapolated.
+
+    Both `measure_uptake_at_reference_time` (cohort-filtered, returns a
+    flat array for the kinetics table) and `attach_uptake_reference_time_
+    columns` (unfiltered, returns a per-cell column for correlation
+    figures) call this, so the interpolation logic cannot drift between
+    the two.
+
+    Parameters
+    ----------
+    baseline_col : str, optional
+        If given, a per-cell scalar column (constant down the trace,
+        e.g. 'F0_Prot') is subtracted from the interpolated value. This
+        reads `data_col` as-is — e.g. the raw, non-volume-normalized
+        'Prot_Intensity' — and returns the pre-pulse-baseline-corrected
+        reading at `reference_time_s`, matching how the pipeline builds
+        '*_VolNorm' (subtract first, divide by volume second) but
+        stopping short of the division. This is what lets a caller
+        compare the baseline-corrected signal with and without the
+        volume-normalization step, to check whether a correlation with
+        the normalized signal is a real effect or an artifact of
+        dividing by a volume that is itself changing over the window
+        (see `attach_uptake_dilution_check_columns`).
+
+    Returns
+    -------
+    (found, short_record_count)
+        `found` maps each located key to its interpolated value.  Keys
+        in `wanted` that are missing from `found` either had no usable
+        trace in the pickle or ended before `reference_time_s`; the
+        latter count is returned separately so callers can report it.
+    """
+    found: Dict[Tuple[str, int], float] = {}
+    short_record = 0
+
+    if not wanted or grouped_data is None:
+        return found, short_record
+
+    # `.items()` rather than `.values()`: in the pipeline grouped_data is a
+    # DiskBackedDict, which loads each group's pickle on demand and exposes
+    # items(), keys() and __getitem__ but not values().
+    for _group_key, traps in grouped_data.items():
+        if not traps:
+            continue
+        for trap in traps:
+            meta = trap.metadata
+            key = (meta.full_path.name, trap.trap_id)
+            if key not in wanted or key in found:
+                continue
+
+            ud = getattr(trap, 'uptake_data', {}) or {}
+            if 'Time_s' not in ud or data_col not in ud:
+                continue
+            if baseline_col is not None and baseline_col not in ud:
+                continue
+            t_raw = np.asarray(ud['Time_s'], dtype=float)
+            y_raw = np.asarray(ud[data_col], dtype=float)
+            if len(t_raw) < 5 or len(y_raw) != len(t_raw):
+                continue
+
+            # Pulse alignment: t = 0 at the pulse frame, matching every
+            # other post-pulse readout in this module.
+            pf = getattr(meta, 'pulse_frame', None)
+            if pf is None or not (0 <= int(pf) < len(t_raw)):
+                continue
+            t_aligned = t_raw - t_raw[int(pf)]
+
+            m = (np.isfinite(t_aligned) & np.isfinite(y_raw)
+                 & (t_aligned >= 0))
+            if m.sum() < 5:
+                continue
+
+            t_post = t_aligned[m]
+            y_post = y_raw[m]
+            order = np.argsort(t_post)     # np.interp needs sorted x
+            t_post, y_post = t_post[order], y_post[order]
+
+            # Refuse to read past the end of the record.
+            if t_post[-1] < reference_time_s:
+                short_record += 1
+                continue
+
+            value = float(np.interp(reference_time_s, t_post, y_post))
+
+            if baseline_col is not None:
+                # F0 is a per-cell scalar broadcast down the whole
+                # column by the pipeline (bulk_file_handling.py); take
+                # the first finite entry, matching how
+                # _recompute_volumes_and_norms reads it.
+                f0_arr = np.asarray(ud[baseline_col], dtype=float)
+                f0_finite = f0_arr[np.isfinite(f0_arr)]
+                if f0_finite.size == 0:
+                    continue
+                value -= float(f0_finite[0])
+
+            found[key] = value
+
+    return found, short_record
+
+
 def measure_uptake_at_reference_time(grouped_data: Dict,
                                      mechanics_df: pd.DataFrame,
                                      region: str,
@@ -408,55 +537,194 @@ def measure_uptake_at_reference_time(grouped_data: Dict,
     # The cohort is identified by (Experiment_Folder, Trap_ID), which is
     # the same pair as (meta.full_path.name, trap.trap_id) in the pickle.
     wanted = set(zip(cohort['Experiment_Folder'], cohort['Trap_ID']))
-    found: Dict[Tuple[str, int], float] = {}
+    found, short_record = _read_uptake_at_reference_time(
+        grouped_data, wanted, data_col, reference_time_s)
 
-    # `.items()` rather than `.values()`: in the pipeline grouped_data is a
-    # DiskBackedDict, which loads each group's pickle on demand and exposes
-    # items(), keys() and __getitem__ but not values().
-    for _group_key, traps in grouped_data.items():
-        if not traps:
-            continue
-        for trap in traps:
-            meta = trap.metadata
-            key = (meta.full_path.name, trap.trap_id)
-            if key not in wanted or key in found:
-                continue
-
-            ud = getattr(trap, 'uptake_data', {}) or {}
-            if 'Time_s' not in ud or data_col not in ud:
-                continue
-            t_raw = np.asarray(ud['Time_s'], dtype=float)
-            y_raw = np.asarray(ud[data_col], dtype=float)
-            if len(t_raw) < 5 or len(y_raw) != len(t_raw):
-                continue
-
-            # Pulse alignment: t = 0 at the pulse frame, matching every
-            # other post-pulse readout in this module.
-            pf = getattr(meta, 'pulse_frame', None)
-            if pf is None or not (0 <= int(pf) < len(t_raw)):
-                continue
-            t_aligned = t_raw - t_raw[int(pf)]
-
-            m = (np.isfinite(t_aligned) & np.isfinite(y_raw)
-                 & (t_aligned >= 0))
-            if m.sum() < 5:
-                continue
-
-            t_post = t_aligned[m]
-            y_post = y_raw[m]
-            order = np.argsort(t_post)     # np.interp needs sorted x
-            t_post, y_post = t_post[order], y_post[order]
-
-            # Refuse to read past the end of the record.
-            if t_post[-1] < reference_time_s:
-                counts['short_record'] += 1
-                continue
-
-            found[key] = float(np.interp(reference_time_s, t_post, y_post))
-
-    counts['no_trace'] = int(len(wanted) - len(found)
-                             - counts['short_record'])
+    counts['short_record'] = short_record
+    counts['no_trace'] = int(len(wanted) - len(found) - short_record)
     return np.asarray(list(found.values()), dtype=float), counts
+
+
+def attach_uptake_reference_time_columns(grouped_data: Dict,
+                                         mechanics_df: pd.DataFrame,
+                                         reference_time_s: float = (
+                                             REFERENCE_TIME_S)
+                                         ) -> pd.DataFrame:
+    """
+    Add the per-cell reference-time uptake as two new columns on a copy
+    of `mechanics_df`:
+
+        Uptake_Body_VolNorm_U100
+        Uptake_Prot_VolNorm_U100
+
+    `measure_uptake_at_reference_time` returns a flat array for one
+    region/pulse-arm/cohort combination and discards the
+    (Experiment_Folder, Trap_ID) key needed to join the value back onto
+    a specific row. This function keeps the key, so U(100 s) can sit
+    next to the fitted amplitude A as an ordinary mechanics_df column
+    and be used in a correlation figure the same way A is.
+
+    No R2 or runaway gate is applied here. U(t) is read directly off the
+    trace rather than fitted, so a fit-quality gate does not apply to
+    it; the runaway rule specifically flags degenerate mono-exponential
+    fits, which is a separate failure mode. A cell is left as NaN in
+    both new columns only when its post-pulse record ends before
+    `reference_time_s` (dropped, never extrapolated) or when it has no
+    usable trace in the pickle at all. Downstream cohort gates (EP-only,
+    fate, the fitted-parameter's own R2 flag) still apply to whichever
+    other column a caller correlates this against.
+
+    Parameters
+    ----------
+    grouped_data : dict or DiskBackedDict
+        The pipeline trace store; only `.items()` is used.
+    mechanics_df : DataFrame
+        The full mechanics_results_all_traps table.
+    reference_time_s : float
+        Time after the pulse at which to read the trace. Defaults to
+        the module-wide `REFERENCE_TIME_S`, so a figure built with this
+        function's default and the kinetics table always describe the
+        same instant unless a caller deliberately overrides both.
+
+    Returns
+    -------
+    DataFrame
+        A copy of `mechanics_df` with the two new columns appended.
+        `mechanics_df` itself is not modified.
+    """
+    df = mechanics_df.copy()
+    region_to_col = {'Body': 'Uptake_Body_VolNorm_U100',
+                     'Protrusion': 'Uptake_Prot_VolNorm_U100'}
+    for out_col in region_to_col.values():
+        df[out_col] = np.nan
+
+    if grouped_data is None or df.empty:
+        return df
+
+    # Only EP cells carry a pulse frame and a post-pulse dye trace; ASP
+    # cells have neither, so there is nothing to look up for them.
+    ep_mask = (df['Condition_Type'] == 'EP')
+    wanted = set(zip(df.loc[ep_mask, 'Experiment_Folder'],
+                     df.loc[ep_mask, 'Trap_ID']))
+
+    for region, out_col in region_to_col.items():
+        data_col = {'Body': 'Body_VolNorm',
+                    'Protrusion': 'Protrusion_VolNorm'}[region]
+        found, _short_record = _read_uptake_at_reference_time(
+            grouped_data, wanted, data_col, reference_time_s)
+        key_series = list(zip(df['Experiment_Folder'], df['Trap_ID']))
+        df[out_col] = [found.get(k, np.nan) for k in key_series]
+
+    return df
+
+
+def attach_uptake_dilution_check_columns(grouped_data: Dict,
+                                         mechanics_df: pd.DataFrame,
+                                         reference_time_s: float = (
+                                             REFERENCE_TIME_S)
+                                         ) -> pd.DataFrame:
+    """
+    Add four columns to a copy of `mechanics_df`, needed to check whether
+    a correlation with $U(100\\text{s})$ reflects a real change in dye
+    concentration or is an artifact of dividing by a protrusion volume
+    that is itself growing over the same window.
+
+        Uptake_Prot_VolAtRef_um3      protrusion volume at reference_time_s
+        Uptake_Body_VolAtRef_um3      body volume at reference_time_s
+        Uptake_Prot_RawCorrected      baseline-corrected, NOT volume-
+                                       normalized, dye signal at
+                                       reference_time_s (protrusion)
+        Uptake_Body_RawCorrected      same, body region
+
+    Why this check matters
+    -----------------------
+    $U(100\\text{s})$ is $(I(t) - I_0) / V(t)$: a concentration, not a
+    total amount. The protrusion volume model used throughout the
+    pipeline is a cylinder of fixed radius plus a cap
+    (`bulk_file_handling._recompute_volumes_and_norms`), so volume grows
+    linearly with protrusion length. If dye enters at roughly a fixed
+    rate wherever pores are (concentrated at the tip, per the field
+    simulations), a protrusion that has grown more by the time we read
+    $U(100\\text{s})$ has more volume for that same amount of dye to
+    dilute into — a lower reading with no change in how much dye
+    actually got in, let alone in membrane permeability. A correlation
+    between whole-trace creep and $U(100\\text{s})$ could be this
+    dilution effect rather than any real link between mechanics and
+    permeabilization.
+
+    Two comparisons settle it once these columns are joined onto
+    mechanics_df and run through `build_uptake_correlation_sweep_table`
+    or an ad-hoc `spearmanr`:
+
+    1. Protrusion volume at reference time vs. $U(100\\text{s})$
+       (protrusion). A significant negative correlation here means
+       dilution is live.
+    2. Whole-trace slope vs. `Uptake_Prot_RawCorrected` (the same
+       baseline-corrected signal, but without the $1/V$ division). If
+       the negative correlation reported against the volume-normalized
+       signal disappears or reverses once volume is no longer in the
+       denominator, the original correlation was the dilution artifact,
+       not a biological effect.
+
+    No R2 or runaway gate is applied — these are direct trace readings,
+    not fits. A cell is left NaN in a column only when its post-pulse
+    record ends before `reference_time_s` or has no usable trace.
+
+    Parameters
+    ----------
+    grouped_data : dict or DiskBackedDict
+        The pipeline trace store; only `.items()` is used.
+    mechanics_df : DataFrame
+        The full mechanics_results_all_traps table.
+    reference_time_s : float
+        Time after the pulse at which to read every quantity. Defaults
+        to REFERENCE_TIME_S so this lines up with the U100 columns from
+        `attach_uptake_reference_time_columns` at the same instant.
+
+    Returns
+    -------
+    DataFrame
+        A copy of `mechanics_df` with the four columns appended.
+    """
+    df = mechanics_df.copy()
+    out_cols = ('Uptake_Prot_VolAtRef_um3', 'Uptake_Body_VolAtRef_um3',
+               'Uptake_Prot_RawCorrected', 'Uptake_Body_RawCorrected')
+    for out_col in out_cols:
+        df[out_col] = np.nan
+
+    if grouped_data is None or df.empty:
+        return df
+
+    ep_mask = (df['Condition_Type'] == 'EP')
+    wanted = set(zip(df.loc[ep_mask, 'Experiment_Folder'],
+                     df.loc[ep_mask, 'Trap_ID']))
+    key_series = list(zip(df['Experiment_Folder'], df['Trap_ID']))
+
+    # Volume at the reference time: plain reads, no baseline to subtract.
+    vol_spec = {
+        'Uptake_Prot_VolAtRef_um3': 'Volume_Prot_um3',
+        'Uptake_Body_VolAtRef_um3': 'Volume_Body_um3',
+    }
+    for out_col, data_col in vol_spec.items():
+        found, _short = _read_uptake_at_reference_time(
+            grouped_data, wanted, data_col, reference_time_s)
+        df[out_col] = [found.get(k, np.nan) for k in key_series]
+
+    # Raw, baseline-corrected but NOT volume-divided signal: same
+    # baseline-subtraction the pipeline applies before dividing by V(t)
+    # (bulk_file_handling._recompute_volumes_and_norms), stopping short
+    # of that division.
+    raw_spec = {
+        'Uptake_Prot_RawCorrected': ('Prot_Intensity', 'F0_Prot'),
+        'Uptake_Body_RawCorrected': ('Body_Intensity', 'F0_Body'),
+    }
+    for out_col, (data_col, baseline_col) in raw_spec.items():
+        found, _short = _read_uptake_at_reference_time(
+            grouped_data, wanted, data_col, reference_time_s,
+            baseline_col=baseline_col)
+        df[out_col] = [found.get(k, np.nan) for k in key_series]
+
+    return df
 
 
 def cliffs_delta(a, b) -> float:
@@ -1109,7 +1377,9 @@ def plot_thesis_uptake_amplitude_per_trap(mechanics_df: pd.DataFrame,
                                             require_prepulse_flag: bool = False,
                                             runaway_rule: str = (
                                                 DEFAULT_RUNAWAY_RULE),
-                                            filename_suffix: str = ''
+                                            filename_suffix: str = '',
+                                            fate_states: Tuple[str, ...] = (
+                                                ANALYSIS_FATE_STATES)
                                             ) -> None:
     """
     Two-panel scatter of the fitted uptake plateau A vs Trap_ID.
@@ -1121,8 +1391,16 @@ def plot_thesis_uptake_amplitude_per_trap(mechanics_df: pd.DataFrame,
     and `require_prepulse_flag` are applied before the per-region
     uptake-R² gate.
 
+    Cohort: EP cells restricted to `Fate_Status` in `fate_states`
+    (default: intact only, since the plotted amplitude is a post-pulse
+    quantity). ASP cells carry no rupture concept and are unaffected by
+    this filter — their `Fate_Status` defaults to 'intact' at the
+    pipeline level. Pass `fate_states=('intact', 'ruptured_post')` to
+    restore the pooled cohort.
+
     Colour: condition (ASP / 5ms / 100us) from the WT ramp.
-    Marker: fate (intact = filled circle, ruptured_post = open circle).
+    Marker: fate (intact = filled circle, ruptured_post = open circle;
+    only relevant when `fate_states` includes both).
 
     A Spearman rho + p across all cells in each panel is annotated
     top-left; per-condition rho values are omitted to keep the panel
@@ -1132,9 +1410,13 @@ def plot_thesis_uptake_amplitude_per_trap(mechanics_df: pd.DataFrame,
         logger.warning("Uptake-A per-trap skipped: empty mechanics_df.")
         return
 
-    df = mechanics_df[mechanics_df['Treatment'] == treatment].copy()
+    df = mechanics_df[
+        (mechanics_df['Treatment'] == treatment)
+        & mechanics_df['Fate_Status'].isin(list(fate_states))
+    ].copy()
     if df.empty:
-        logger.warning(f"Uptake-A per-trap skipped: no {treatment} rows.")
+        logger.warning(f"Uptake-A per-trap skipped: no {treatment} rows "
+                       f"pass fate_states={fate_states}.")
         return
 
     # ---- Additional cohort gates -------------------------------------
@@ -1253,11 +1535,14 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                                         output_dir: Path,
                                         treatment: str = 'WT',
                                         runaway_rule: str = (
-                                            DEFAULT_RUNAWAY_RULE)
+                                            DEFAULT_RUNAWAY_RULE),
+                                        uptake_metric: str = 'A',
+                                        fate_states: Tuple[str, ...] = (
+                                            ANALYSIS_FATE_STATES)
                                         ) -> None:
     """
     3x2 matrix of scatter plots — pre-pulse viscoelastic parameters
-    vs uptake plateaus.  Uptake ↔ protrusion length is covered by a
+    vs uptake.  Uptake ↔ protrusion length is covered by a
     separate dedicated figure (`plot_thesis_uptake_vs_prot_length`),
     where the mechanics filter isn't required.
 
@@ -1266,21 +1551,43 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
         PrePulse_eta1_Pa_s      short-time viscosity
         PrePulse_Tau_s          relaxation time
 
-    Columns:
-        Uptake_Body_VolNorm_A   body plateau (EP cells only)
-        Uptake_Prot_VolNorm_A   protrusion plateau (EP cells only)
+    Columns (region), metric selected by `uptake_metric`:
+        'A'     Uptake_Body_VolNorm_A / Uptake_Prot_VolNorm_A
+                the fitted plateau (extrapolated; see
+                sec: ch3-supp uptake extrapolation).
+        'U100'  Uptake_Body_VolNorm_U100 / Uptake_Prot_VolNorm_U100
+                uptake read directly off the trace at the reference
+                time (REFERENCE_TIME_S); requires `mechanics_df` to
+                already carry these columns
+                (`attach_uptake_reference_time_columns`).
 
     Cohort:
+        - `Fate_Status` restricted to `fate_states` (default: intact
+          only). The mechanics side of this figure is pre-pulse and
+          unaffected by rupture, but the uptake side is post-pulse, so
+          a ruptured cell would pair a valid pre-pulse mechanical
+          reading with an unreliable outcome. Excluding it keeps every
+          row of the figure describing the same cells.
         - Mechanics y-axis always requires PrePulse_Visco_R2_Flag == True.
-        - Uptake x-axis additionally requires the matching
-          Uptake_{region}_VolNorm_R2_Flag == True and Condition_Type == 'EP'.
+        - Uptake x-axis requires Condition_Type == 'EP'. For the 'A'
+          metric it additionally requires the matching
+          Uptake_{region}_VolNorm_R2_Flag == True and passes the
+          runaway gate, since A is a fitted asymptote and an
+          unidentifiable fit is meaningless. For 'U100' neither gate
+          applies: it is a direct reading, not a fit, so a cell is
+          excluded only by having no value (short record or no trace;
+          see `attach_uptake_reference_time_columns`).
           (ASP cells have no pulse to drive PI uptake, so any signal
           there would be rupture — a categorical, not a continuous,
           readout.)
 
-    X-axis is log for both uptake amplitude columns (multi-decade
-    spread).  Spearman rho + p annotated per panel.
+    X-axis is log for both uptake columns (multi-decade spread in both
+    metrics).  Spearman rho + p annotated per panel.
     """
+    if uptake_metric not in ('A', 'U100'):
+        raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
+                         f"{uptake_metric!r}.")
+
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("Pre-pulse correlations skipped: empty mechanics_df.")
         return
@@ -1288,6 +1595,12 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
     df = mechanics_df[mechanics_df['Treatment'] == treatment].copy()
     if df.empty:
         logger.warning(f"Pre-pulse correlations skipped: no {treatment} rows.")
+        return
+
+    df = df[df['Fate_Status'].isin(list(fate_states))].copy()
+    if df.empty:
+        logger.warning("Pre-pulse correlations skipped: no cells pass "
+                       f"fate_states={fate_states}.")
         return
 
     df = df[df['PrePulse_Visco_R2_Flag'].fillna(False).astype(bool)].copy()
@@ -1302,24 +1615,44 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
         ('PrePulse_Tau_s',     r"$\tau$ (s)",            True),
     ]
     # (col, label, R2_flag_col, cohort, x_log)
-    # x_log: True for the fitted uptake plateaus (multi-decade range,
-    # dominated by a handful of large-A cells on linear scale).  Kept
-    # linear for max protrusion length (5–35 um, no decade spread).
-    outcome_cols = [
-        ('Uptake_Body_VolNorm_A',
-         r"Body uptake $A$ (a.u./$\mathrm{\mu m}^{3}$)",
-         'Uptake_Body_VolNorm_R2_Flag', 'EP_only', True),
-        ('Uptake_Prot_VolNorm_A',
-         r"Protrusion uptake $A$ (a.u./$\mathrm{\mu m}^{3}$)",
-         'Uptake_Prot_VolNorm_R2_Flag', 'EP_only', True),
-    ]
+    # x_log: True for both uptake metrics (multi-decade range, dominated
+    # by a handful of large-uptake cells on linear scale).  Kept linear
+    # for max protrusion length (5–35 um, no decade spread).
+    # R2_flag_col is None for U100: a direct reading has no fit-quality
+    # gate to apply.
+    if uptake_metric == 'A':
+        outcome_cols = [
+            ('Uptake_Body_VolNorm_A',
+             r"Body uptake $A$ (a.u./$\mathrm{\mu m}^{3}$)",
+             'Uptake_Body_VolNorm_R2_Flag', 'EP_only', True),
+            ('Uptake_Prot_VolNorm_A',
+             r"Protrusion uptake $A$ (a.u./$\mathrm{\mu m}^{3}$)",
+             'Uptake_Prot_VolNorm_R2_Flag', 'EP_only', True),
+        ]
+    else:
+        for req_col in ('Uptake_Body_VolNorm_U100',
+                        'Uptake_Prot_VolNorm_U100'):
+            if req_col not in df.columns:
+                logger.warning(
+                    "Pre-pulse correlations (U100) skipped: mechanics_df "
+                    f"has no {req_col} column. Call "
+                    "attach_uptake_reference_time_columns() first.")
+                return
+        outcome_cols = [
+            ('Uptake_Body_VolNorm_U100',
+             r"Body uptake $U(100\mathrm{s})$ (a.u./$\mathrm{\mu m}^{3}$)",
+             None, 'EP_only', True),
+            ('Uptake_Prot_VolNorm_U100',
+             r"Protrusion uptake $U(100\mathrm{s})$ (a.u./$\mathrm{\mu m}^{3}$)",
+             None, 'EP_only', True),
+        ]
 
     utils.set_paper_style()
-    fig, axes = plt.subplots(len(mech_rows), len(outcome_cols),
-                             figsize=(8, 10), sharey='row')
+    fig, axes = plt.subplots(len(outcome_cols), len(mech_rows),
+                             figsize=(11, 7), sharex='row', sharey='col')
 
-    for i, (mcol, mlab, mlog) in enumerate(mech_rows):
-        for j, (ycol, ylab, yflag, cohort, xlog) in enumerate(outcome_cols):
+    for i, (ycol, ylab, yflag, cohort, xlog) in enumerate(outcome_cols):
+        for j, (mcol, mlab, mlog) in enumerate(mech_rows):
             ax = axes[i, j]
 
             sub = df.copy()
@@ -1339,7 +1672,7 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                 ax.text(0.5, 0.5, f"n = {len(sub)}",
                         ha='center', va='center', transform=ax.transAxes,
                         fontsize=10, color='gray')
-                if i == len(mech_rows) - 1:
+                if i == len(outcome_cols) - 1:
                     ax.set_xlabel(ylab)
                 if j == 0:
                     ax.set_ylabel(mlab)
@@ -1389,15 +1722,18 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                 ax.set_xscale('log')
             ax.spines[['top', 'right']].set_visible(False)
 
-            if i == len(mech_rows) - 1:
+            if i == len(outcome_cols) - 1:
                 ax.set_xlabel(ylab)
             if j == 0:
                 ax.set_ylabel(mlab)
 
     fig.suptitle(f"{treatment} — pre-pulse mechanics vs uptake and protrusion length",
-                 y=1.00, fontweight='bold')
+                 y=1.02, fontweight='bold')
     fig.tight_layout()
-    out = Path(output_dir) / f"Thesis_PrePulse_Mechanics_Correlations_{treatment}.pdf"
+    metric_suffix = '' if uptake_metric == 'A' else f'_{uptake_metric}'
+    out = (Path(output_dir)
+           / f"Thesis_PrePulse_Mechanics_Correlations_{treatment}"
+             f"{metric_suffix}.pdf")
     utils.save_plot_pdf(out)
     plt.close(fig)
     logger.info(f"  Saved: {out.name}")
@@ -1410,11 +1746,14 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                                         output_dir: Path,
                                         treatment: str = 'WT',
                                         runaway_rule: str = (
-                                            DEFAULT_RUNAWAY_RULE)
+                                            DEFAULT_RUNAWAY_RULE),
+                                        uptake_metric: str = 'A',
+                                        fate_states: Tuple[str, ...] = (
+                                            ANALYSIS_FATE_STATES)
                                         ) -> None:
     """
     2x2 matrix of scatter plots — whole-trace MI descriptors vs
-    uptake plateaus.  Analogue of `plot_thesis_prepulse_correlations`
+    uptake.  Analogue of `plot_thesis_prepulse_correlations`
     but with model-independent whole-trace parameters on the y-axis.
     Uptake ↔ protrusion length is covered by a separate figure
     (`plot_thesis_uptake_vs_prot_length`).
@@ -1427,14 +1766,30 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                                 cells where the power-law was the AICc
                                 winner (`MI_Whole_Best_Model == 'Power-Law'`)
 
-    Columns:
-        Uptake_Body_VolNorm_A   body plateau (EP cells only)
-        Uptake_Prot_VolNorm_A   protrusion plateau (EP cells only)
+    Columns (region), metric selected by `uptake_metric`:
+        'A'     Uptake_Body_VolNorm_A / Uptake_Prot_VolNorm_A
+                the fitted plateau (extrapolated; see
+                sec: ch3-supp uptake extrapolation).
+        'U100'  Uptake_Body_VolNorm_U100 / Uptake_Prot_VolNorm_U100
+                uptake read directly off the trace at the reference
+                time (REFERENCE_TIME_S); requires `mechanics_df` to
+                already carry these columns
+                (`attach_uptake_reference_time_columns`).
 
     Cohort:
+        - `Fate_Status` restricted to `fate_states` (default: intact
+          only). A ruptured protrusion has discharged its cytoplasm
+          into the channel, so its post-pulse length trajectory is not
+          measuring creep and does not belong in a creep-rate
+          predictor. This applies to the y-axis (the MI descriptor)
+          and, by construction, to the uptake side as well, since both
+          columns come from the same filtered `df`.
         - All rows require `MI_Whole_R2_Flag == True`.
-        - Uptake columns additionally require the matching
-          `Uptake_{region}_VolNorm_R2_Flag == True` and Condition_Type == 'EP'.
+        - Uptake columns require Condition_Type == 'EP'. For the 'A'
+          metric they additionally require the matching
+          `Uptake_{region}_VolNorm_R2_Flag == True` and pass the
+          runaway gate. For 'U100' neither applies — see the note in
+          `plot_thesis_prepulse_correlations`.
         - PL_a row further requires `MI_Whole_Best_Model == 'Power-Law'`.
 
     Note on the slope row:
@@ -1444,10 +1799,14 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
         rate is discussed in §3.8 of the thesis and gives a single
         comparable descriptor across the cohort.
 
-    X-axis: log for both uptake amplitude columns.
+    X-axis: log for both uptake columns.
 
     Spearman rho + p annotated per panel.
     """
+    if uptake_metric not in ('A', 'U100'):
+        raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
+                         f"{uptake_metric!r}.")
+
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("MI-whole correlations skipped: empty mechanics_df.")
         return
@@ -1455,6 +1814,12 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
     df = mechanics_df[mechanics_df['Treatment'] == treatment].copy()
     if df.empty:
         logger.warning(f"MI-whole correlations skipped: no {treatment} rows.")
+        return
+
+    df = df[df['Fate_Status'].isin(list(fate_states))].copy()
+    if df.empty:
+        logger.warning("MI-whole correlations skipped: no cells pass "
+                       f"fate_states={fate_states}.")
         return
 
     df = df[df['MI_Whole_R2_Flag'].fillna(False).astype(bool)].copy()
@@ -1471,14 +1836,32 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
          True,   # y-log — a spans decades
          ('MI_Whole_Best_Model', 'Power-Law')),
     ]
-    outcome_cols = [
-        ('Uptake_Body_VolNorm_A',
-         r"Body uptake $A$ (a.u./$\mathrm{\mu m}^{3}$)",
-         'Uptake_Body_VolNorm_R2_Flag', 'EP_only', True),
-        ('Uptake_Prot_VolNorm_A',
-         r"Protrusion uptake $A$ (a.u./$\mathrm{\mu m}^{3}$)",
-         'Uptake_Prot_VolNorm_R2_Flag', 'EP_only', True),
-    ]
+    if uptake_metric == 'A':
+        outcome_cols = [
+            ('Uptake_Body_VolNorm_A',
+             r"Body uptake $A$ (a.u./$\mathrm{\mu m}^{3}$)",
+             'Uptake_Body_VolNorm_R2_Flag', 'EP_only', True),
+            ('Uptake_Prot_VolNorm_A',
+             r"Protrusion uptake $A$ (a.u./$\mathrm{\mu m}^{3}$)",
+             'Uptake_Prot_VolNorm_R2_Flag', 'EP_only', True),
+        ]
+    else:
+        for req_col in ('Uptake_Body_VolNorm_U100',
+                        'Uptake_Prot_VolNorm_U100'):
+            if req_col not in df.columns:
+                logger.warning(
+                    "MI-whole correlations (U100) skipped: mechanics_df "
+                    f"has no {req_col} column. Call "
+                    "attach_uptake_reference_time_columns() first.")
+                return
+        outcome_cols = [
+            ('Uptake_Body_VolNorm_U100',
+             r"Body uptake $U(100\mathrm{s})$ (a.u./$\mathrm{\mu m}^{3}$)",
+             None, 'EP_only', True),
+            ('Uptake_Prot_VolNorm_U100',
+             r"Protrusion uptake $U(100\mathrm{s})$ (a.u./$\mathrm{\mu m}^{3}$)",
+             None, 'EP_only', True),
+        ]
 
     utils.set_paper_style()
     fig, axes = plt.subplots(len(mech_rows), len(outcome_cols),
@@ -1563,7 +1946,10 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                  "and protrusion length",
                  y=1.00, fontweight='bold')
     fig.tight_layout()
-    out = Path(output_dir) / f"Thesis_MI_Whole_Mechanics_Correlations_{treatment}.pdf"
+    metric_suffix = '' if uptake_metric == 'A' else f'_{uptake_metric}'
+    out = (Path(output_dir)
+           / f"Thesis_MI_Whole_Mechanics_Correlations_{treatment}"
+             f"{metric_suffix}.pdf")
     utils.save_plot_pdf(out)
     plt.close(fig)
     logger.info(f"  Saved: {out.name}")
@@ -1576,35 +1962,59 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
                                         output_dir: Path,
                                         treatment: str = 'WT',
                                         runaway_rule: str = (
-                                            DEFAULT_RUNAWAY_RULE)
+                                            DEFAULT_RUNAWAY_RULE),
+                                        uptake_metric: str = 'A',
+                                        fate_states: Tuple[str, ...] = (
+                                            ANALYSIS_FATE_STATES)
                                         ) -> None:
     """
-    Two-panel scatter of uptake plateau A vs pre-pulse maximum
-    protrusion length.  Panels: body (left), protrusion (right).
+    Two-panel scatter of uptake vs pre-pulse maximum protrusion length.
+    Panels: body (left), protrusion (right).
 
     The question is whether a bigger pre-pulse protrusion (which
     reflects both cell deformability and how far the tip reached
-    into the microfluidic channel before the pulse) predicts a
-    larger post-pulse uptake plateau.  Because this correlation
-    involves only quantities from the uptake fit and the
-    protrusion-length descriptor (no viscoelastic or MI fit needed),
-    no mechanics R² filter is applied — the cohort is defined only
-    by the uptake R² flag per region.
+    into the microfluidic channel before the pulse) predicts more
+    post-pulse uptake. Because this correlation involves only the
+    protrusion-length descriptor (measured before the pulse, so
+    unaffected by rupture) and uptake, no mechanics R² filter is
+    applied.
+
+    Columns (region), metric selected by `uptake_metric`:
+        'A'     Uptake_Body_VolNorm_A / Uptake_Prot_VolNorm_A
+                the fitted plateau (extrapolated; see
+                sec: ch3-supp uptake extrapolation).
+        'U100'  Uptake_Body_VolNorm_U100 / Uptake_Prot_VolNorm_U100
+                uptake read directly off the trace at the reference
+                time (REFERENCE_TIME_S); requires `mechanics_df` to
+                already carry these columns
+                (`attach_uptake_reference_time_columns`).
 
     Cohort:
-        - EP cells of `treatment` with intact / ruptured_post fate.
-        - Additionally per-panel: `Uptake_{region}_VolNorm_R2_Flag == True`
-          for the region shown in that panel.  A cell that passed the
-          body fit but failed the protrusion fit contributes to the
-          body panel only.
+        - EP cells of `treatment` with `Fate_Status` in `fate_states`
+          (default: intact only). The protrusion-length predictor is
+          measured before the pulse and would be unaffected by rupture
+          on its own, but the outcome plotted against it, uptake, is a
+          post-pulse quantity, so a ruptured cell still pairs a valid
+          predictor with an unreliable outcome. Pass
+          `fate_states=('intact', 'ruptured_post')` to restore the
+          pooled cohort.
+        - Additionally per-panel: for the 'A' metric, the matching
+          `Uptake_{region}_VolNorm_R2_Flag == True` and the runaway
+          gate. For 'U100', neither applies — see the note in
+          `plot_thesis_prepulse_correlations`.
 
-    X-axis: log for uptake amplitude (multi-decade spread).
+    X-axis: log for the 'A' metric (multi-decade spread), linear for
+    'U100' (already a bounded fold-change, no decade spread).
     Y-axis: linear for protrusion length (5–35 µm, no decade spread).
     Colour: condition (5ms / 100us) from the WT ramp.
     Marker: fate (intact = filled, ruptured_post = open).
 
     Spearman rho + p annotated per panel across all points.
     """
+    if uptake_metric not in ('A', 'U100'):
+        raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
+                         f"{uptake_metric!r}.")
+
     if mechanics_df is None or mechanics_df.empty:
         logger.warning("Uptake-vs-protlength skipped: empty mechanics_df.")
         return
@@ -1612,19 +2022,39 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
     df = mechanics_df[
         (mechanics_df['Treatment'] == treatment)
         & (mechanics_df['Condition_Type'] == 'EP')
-        & mechanics_df['Fate_Status'].isin(['intact', 'ruptured_post'])
+        & mechanics_df['Fate_Status'].isin(list(fate_states))
     ].copy()
     if df.empty:
         logger.warning("Uptake-vs-protlength skipped: no EP cells for "
                        f"treatment={treatment}.")
         return
 
-    region_spec = {
-        'Body': ('Uptake_Body_VolNorm_A', 'Uptake_Body_VolNorm_R2_Flag',
-                 'Body uptake plateau'),
-        'Prot': ('Uptake_Prot_VolNorm_A', 'Uptake_Prot_VolNorm_R2_Flag',
-                 'Protrusion uptake plateau'),
-    }
+    if uptake_metric == 'A':
+        region_spec = {
+            'Body': ('Uptake_Body_VolNorm_A', 'Uptake_Body_VolNorm_R2_Flag',
+                     'Body uptake plateau'),
+            'Prot': ('Uptake_Prot_VolNorm_A', 'Uptake_Prot_VolNorm_R2_Flag',
+                     'Protrusion uptake plateau'),
+        }
+        xlabel_unit = r"  (a.u. / $\mathrm{\mu m}^{3}$)"
+        x_log = True
+    else:
+        for req_col in ('Uptake_Body_VolNorm_U100',
+                        'Uptake_Prot_VolNorm_U100'):
+            if req_col not in df.columns:
+                logger.warning(
+                    "Uptake-vs-protlength (U100) skipped: mechanics_df "
+                    f"has no {req_col} column. Call "
+                    "attach_uptake_reference_time_columns() first.")
+                return
+        region_spec = {
+            'Body': ('Uptake_Body_VolNorm_U100', None,
+                     r"Body uptake $U(100\mathrm{s})$"),
+            'Prot': ('Uptake_Prot_VolNorm_U100', None,
+                     r"Protrusion uptake $U(100\mathrm{s})$"),
+        }
+        xlabel_unit = r"  (a.u. / $\mathrm{\mu m}^{3}$)"
+        x_log = False
     prot_len_col = 'Max_Prot_length_PrePulse_um'
 
     utils.set_paper_style()
@@ -1632,15 +2062,17 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
 
     for ax, region in zip(axes, ('Body', 'Prot')):
         a_col, flag_col, xlab = region_spec[region]
-        keep = (df[flag_col].fillna(False).astype(bool)
-                & df[a_col].notna()
-                & df[prot_len_col].notna())
+        keep = df[a_col].notna() & df[prot_len_col].notna()
+        if flag_col is not None:
+            keep = keep & df[flag_col].fillna(False).astype(bool)
         sub = df[keep].copy()
                 # Analysis cohort: the per-region R2 flag alone is not
                 # enough, because runaway fits pass it comfortably.  Apply
                 # the same runaway rule the kinetics table uses so this
-                # panel describes the same cells.
-        if runaway_rule != 'none':
+                # panel describes the same cells. Only meaningful for the
+                # 'A' metric — U100 is a direct reading, not a fit, so it
+                # has no runaway failure mode.
+        if uptake_metric == 'A' and runaway_rule != 'none':
             sub = apply_runaway_gate(sub, region, rule=runaway_rule)
         if sub.empty:
             ax.text(0.5, 0.5, "No cells pass R² ≥ 0.85",
@@ -1685,8 +2117,9 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
                     bbox=dict(boxstyle='round,pad=0.3',
                               fc='white', alpha=0.85, ec='gray'))
 
-        ax.set_xlabel(xlab + r"  (a.u. / $\mathrm{\mu m}^{3}$)")
-        ax.set_xscale('log')
+        ax.set_xlabel(xlab + xlabel_unit)
+        if x_log:
+            ax.set_xscale('log')
         ax.set_title(f"{region}  (n = {len(sub)})")
         ax.spines[['top', 'right']].set_visible(False)
 
@@ -1698,11 +2131,14 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
         fig.legend(handles, labels, loc='lower center', ncol=2,
                    bbox_to_anchor=(0.5, -0.08), frameon=False, fontsize=9)
 
-    fig.suptitle(f"{treatment} — uptake plateau A vs max pre-pulse "
+    metric_label = 'uptake plateau A' if uptake_metric == 'A' else 'U(100s)'
+    fig.suptitle(f"{treatment} — {metric_label} vs max pre-pulse "
                  "protrusion length",
                  y=1.02, fontweight='bold')
     fig.tight_layout()
-    out = Path(output_dir) / f"Thesis_Uptake_vs_ProtLength_{treatment}.pdf"
+    metric_suffix = '' if uptake_metric == 'A' else f'_{uptake_metric}'
+    out = (Path(output_dir)
+           / f"Thesis_Uptake_vs_ProtLength_{treatment}{metric_suffix}.pdf")
     utils.save_plot_pdf(out)
     plt.close(fig)
     logger.info(f"  Saved: {out.name}")
@@ -1718,7 +2154,10 @@ def plot_thesis_uptake_bestfit_multipanel(grouped_data: Dict,
                                             cols: int = 5,
                                             require_mi_flag: bool = True,
                                             require_prepulse_flag: bool = False,
-                                            filename_suffix: str = '') -> None:
+                                            filename_suffix: str = '',
+                                            fate_states: Tuple[str, ...] = (
+                                                ANALYSIS_FATE_STATES)
+                                            ) -> None:
     """
     Per-cell multipanel of post-pulse uptake with fit overlays.
 
@@ -1744,8 +2183,11 @@ def plot_thesis_uptake_bestfit_multipanel(grouped_data: Dict,
 
     Cohort filters
     --------------
-    Base cohort is EP cells of `treatment` with intact / ruptured_post
-    fate.  Additional optional gates:
+    Base cohort is EP cells of `treatment` with `Fate_Status` in
+    `fate_states` (default: intact only — uptake is a post-pulse
+    quantity, so a ruptured cell's trace does not belong in the
+    default cohort; pass `fate_states=('intact', 'ruptured_post')` to
+    inspect ruptured traces deliberately). Additional optional gates:
 
     require_mi_flag : bool, default True
         Restrict to cells with `MI_Whole_R2_Flag == True` — the same
@@ -1772,16 +2214,16 @@ def plot_thesis_uptake_bestfit_multipanel(grouped_data: Dict,
         return
 
     # ---- Cohort membership -------------------------------------------
-    # Base cohort: EP cells of the requested treatment, intact or
-    # ruptured_post.  Optional additional gates on the MI whole-trace
+    # Base cohort: EP cells of the requested treatment, fate restricted
+    # to `fate_states`. Optional additional gates on the MI whole-trace
     # and pre-pulse viscoelastic R² flags are applied per the caller's
     # `require_*` arguments.
     mask = (
         (mechanics_df['Treatment'] == treatment)
         & (mechanics_df['Condition_Type'] == 'EP')
-        & mechanics_df['Fate_Status'].isin(['intact', 'ruptured_post'])
+        & mechanics_df['Fate_Status'].isin(list(fate_states))
     )
-    filter_labels = ['EP', 'intact|ruptured_post']
+    filter_labels = ['EP', '|'.join(fate_states)]
     if require_mi_flag:
         mask = mask & mechanics_df['MI_Whole_R2_Flag'].fillna(False).astype(bool)
         filter_labels.append('MI_Whole_R2_Flag')
@@ -2353,6 +2795,264 @@ def write_uptake_kinetics_table(mechanics_df: pd.DataFrame,
 
 
 # ===================================================================== #
+# 7. Correlation-sweep table (not a figure)                            #
+# ===================================================================== #
+# Mirrors the six rows currently quoted by hand in tab: ch3 uptake
+# correlation sweep and tab: ch3-supp uptake prepulse mechanics
+# (§3.9, Discussion, and the two SI tables). Each row's Spearman rho/p/n
+# is presently read off a figure-panel text box; this puts the same
+# numbers in a CSV so they can be pasted into the chapter with a
+# traceable source, per the claim-grounding rule this project runs
+# under: no statistic goes into the text without a run of this function
+# behind it.
+#
+# Every row here reuses `select_uptake_cohort` for its uptake side, so
+# the row-by-row cohort matches whatever figure the row corresponds to;
+# rows do not redefine their own gating.
+CorrelationRow = Tuple[str, str, str, str]  # (predictor, x_col, y_col, region)
+
+def build_uptake_correlation_sweep_table(
+        mechanics_df: pd.DataFrame,
+        grouped_data: Optional[Dict] = None,
+        treatment: str = 'WT',
+        uptake_metric: str = 'A',
+        rule: str = DEFAULT_RUNAWAY_RULE,
+        fate_states: Tuple[str, ...] = ANALYSIS_FATE_STATES,
+        reference_time_s: float = REFERENCE_TIME_S,
+        include_dilution_check: bool = False) -> pd.DataFrame:
+    """
+    Spearman correlations for every predictor-vs-uptake pair currently
+    quoted in §3.9 / Discussion and the two SI correlation tables, for
+    one uptake metric at a time.
+
+    Parameters
+    ----------
+    uptake_metric : {'A', 'U100'}
+        'A' reproduces the numbers as fitted (extrapolated amplitude).
+        'U100' recomputes every row against the reference-time uptake
+        instead; this is the rerun requested for the whole-trace-slope
+        row in §3.9 and Discussion, and is offered for every other row
+        for consistency. If 'U100' and `mechanics_df` does not already
+        carry the reference-time columns, they are attached here from
+        `grouped_data` (which must then be supplied).
+    include_dilution_check : bool, default False
+        Add three rows that test whether the whole-trace-slope
+        correlation reflects a real change in dye concentration or is
+        an artifact of dividing by a protrusion volume that is itself
+        growing over the same window (see
+        `attach_uptake_dilution_check_columns` for the full argument).
+        Requires `grouped_data` if the dilution-check columns are not
+        already attached to `mechanics_df`.
+
+    Returns
+    -------
+    DataFrame with columns: Predictor, Region, Duration_label, rho, p,
+    n, Uptake_Metric — one row per predictor/region/arm combination,
+    ready to write out with `.to_csv()`.
+    """
+    if uptake_metric not in ('A', 'U100'):
+        raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
+                         f"{uptake_metric!r}.")
+
+    df = mechanics_df
+    if uptake_metric == 'U100':
+        has_cols = {'Uptake_Body_VolNorm_U100',
+                    'Uptake_Prot_VolNorm_U100'}.issubset(df.columns)
+        if not has_cols:
+            if grouped_data is None:
+                raise ValueError(
+                    "uptake_metric='U100' needs either mechanics_df with "
+                    "the reference-time columns already attached, or "
+                    "grouped_data to attach them from.")
+            df = attach_uptake_reference_time_columns(
+                grouped_data, df, reference_time_s=reference_time_s)
+
+    if include_dilution_check:
+        has_dilution_cols = {'Uptake_Prot_VolAtRef_um3',
+                             'Uptake_Prot_RawCorrected'}.issubset(df.columns)
+        if not has_dilution_cols:
+            if grouped_data is None:
+                raise ValueError(
+                    "include_dilution_check=True needs either "
+                    "mechanics_df with the dilution-check columns "
+                    "already attached, or grouped_data to attach them "
+                    "from.")
+            df = attach_uptake_dilution_check_columns(
+                grouped_data, df, reference_time_s=reference_time_s)
+
+    df = df[df['Treatment'] == treatment].copy()
+    y_suffix = 'A' if uptake_metric == 'A' else 'U100'
+    y_cols = {'Body': f'Uptake_Body_VolNorm_{y_suffix}',
+             'Protrusion': f'Uptake_Prot_VolNorm_{y_suffix}'}
+
+    def _uptake_cohort(region: str, arm: Optional[str]) -> pd.DataFrame:
+        """
+        EP cells for one region and pulse arm (or all arms pooled if
+        `arm` is None), gated to match the figure this row reproduces.
+
+        For the 'A' metric this is exactly `select_uptake_cohort`'s
+        cohort — reused rather than re-derived, so this table cannot
+        drift from the figures and the kinetics table the way the
+        hand-assembled version of this comparison once did (see
+        `build_uptake_kinetics_table`). For 'U100' there is no R2 or
+        runaway gate to apply (see `attach_uptake_reference_time_
+        columns`), so membership and fate are applied directly.
+        """
+        if arm is not None:
+            if uptake_metric == 'A':
+                sub, _counts = select_uptake_cohort(
+                    df, region, arm, treatment=treatment,
+                    fate_states=fate_states, rule=rule)
+            else:
+                sub = df[(df['Treatment'] == treatment)
+                         & (df['Condition_Type'] == 'EP')
+                         & (df['Duration_label'] == arm)
+                         & df['Fate_Status'].isin(list(fate_states))]
+            return sub
+
+        # Pooled across both arms: concatenate the per-arm cohorts so
+        # the same gate is applied to each arm before pooling, rather
+        # than gating the pooled frame (which would let a runaway fit
+        # in one arm survive on a passing R2 in the other).
+        parts = [_uptake_cohort(region, a) for a in PULSE_ORDER]
+        return pd.concat(parts, ignore_index=False) if parts else df.iloc[0:0]
+
+    def _spearman_row(predictor: str, xcol: str, ycol: str,
+                      region: str, duration_label,
+                      sub: pd.DataFrame) -> Dict[str, object]:
+        pair = sub[[xcol, ycol]].apply(pd.to_numeric,
+                                       errors='coerce').dropna()
+        if len(pair) >= 3:
+            rho, p = stats.spearmanr(pair[xcol], pair[ycol])
+        else:
+            rho, p = float('nan'), float('nan')
+        return {'Predictor': predictor, 'Region': region,
+               'Duration_label': duration_label if duration_label
+                                  else 'pooled',
+               'rho': rho, 'p': p, 'n': len(pair),
+               'Uptake_Metric': uptake_metric}
+
+    rows = []
+
+    # --- Geometric checks: body volume, protrusion length (pooled) ----
+    for region, xcol in (('Body', 'Cell_Body_Volume_PrePulse_um3'),
+                         ('Protrusion', 'Max_Prot_length_PrePulse_um')):
+        sub = _uptake_cohort(region, arm=None)
+        rows.append(_spearman_row(
+            'Body volume' if region == 'Body' else 'Protrusion length',
+            xcol, y_cols[region], region, None, sub))
+
+    # --- Whole-trace linear slope, by region and arm -------------------
+    for region in ('Body', 'Protrusion'):
+        for arm in PULSE_ORDER:
+            sub = _uptake_cohort(region, arm=arm)
+            sub = sub[sub['MI_Whole_R2_Flag'].fillna(False).astype(bool)]
+            rows.append(_spearman_row(
+                'Whole-trace slope m', 'MI_Whole_Linear_Slope',
+                y_cols[region], region, arm, sub))
+
+    # --- Trap ID, protrusion, 100us only -------------------------------
+    sub = _uptake_cohort('Protrusion', arm='100us')
+    rows.append(_spearman_row('Trap ID', 'Trap_ID',
+                              y_cols['Protrusion'], 'Protrusion',
+                              '100us', sub))
+
+    # --- Pre-pulse viscoelastic parameters, body, 100us only -----------
+    for pcol, plabel in (('PrePulse_E_Pa', 'Pre-pulse E'),
+                         ('PrePulse_E1_Pa', 'Pre-pulse E1'),
+                         ('PrePulse_eta1_Pa_s', 'Pre-pulse eta1'),
+                         ('PrePulse_eta2_Pa_s', 'Pre-pulse eta2'),
+                         ('PrePulse_Tau_s', 'Pre-pulse tau')):
+        sub = _uptake_cohort('Body', arm='100us')
+        sub = sub[sub['PrePulse_Visco_R2_Flag'].fillna(False).astype(bool)]
+        if pcol in sub.columns:
+            rows.append(_spearman_row(plabel, pcol, y_cols['Body'],
+                                      'Body', '100us', sub))
+
+    # --- Dilution check: is the whole-trace-slope correlation real, or
+    # an artifact of dividing by a volume that grows over the same
+    # window? Three rows, region x arm where the slope correlation was
+    # originally computed. See attach_uptake_dilution_check_columns for
+    # the full argument. ------------------------------------------------
+    if include_dilution_check:
+        vol_col = {'Body': 'Uptake_Body_VolAtRef_um3',
+                  'Protrusion': 'Uptake_Prot_VolAtRef_um3'}
+        raw_col = {'Body': 'Uptake_Body_RawCorrected',
+                  'Protrusion': 'Uptake_Prot_RawCorrected'}
+        for region in ('Body', 'Protrusion'):
+            for arm in PULSE_ORDER:
+                sub_vol = _uptake_cohort(region, arm=arm)
+                # Volume at reference time vs. the volume-normalized
+                # reading itself: a significant negative rho here means
+                # dilution is live.
+                rows.append(_spearman_row(
+                    f'Volume at t={reference_time_s:g}s',
+                    vol_col[region], y_cols[region], region, arm,
+                    sub_vol))
+
+                sub_slope = _uptake_cohort(region, arm=arm)
+                sub_slope = sub_slope[
+                    sub_slope['MI_Whole_R2_Flag'].fillna(False).astype(bool)]
+                # Slope vs. volume at reference time: should be strongly
+                # positive near-definitionally (more creep -> more
+                # volume by the time we read it), confirming the two
+                # are mechanically linked regardless of the dye.
+                rows.append(_spearman_row(
+                    'Whole-trace slope m vs volume',
+                    'MI_Whole_Linear_Slope', vol_col[region], region, arm,
+                    sub_slope))
+                # The decisive row: slope vs. the same baseline-corrected
+                # signal WITHOUT the 1/V division. If the negative
+                # correlation reported against the volume-normalized
+                # signal (see the "Whole-trace slope m" rows above)
+                # disappears or reverses here, that correlation was the
+                # dilution artifact, not a biological effect.
+                rows.append(_spearman_row(
+                    'Whole-trace slope m vs raw (non-normalized) uptake',
+                    'MI_Whole_Linear_Slope', raw_col[region], region, arm,
+                    sub_slope))
+
+    return pd.DataFrame(rows)
+
+
+def write_uptake_correlation_sweep_table(
+        mechanics_df: pd.DataFrame,
+        output_dir: Path,
+        grouped_data: Optional[Dict] = None,
+        treatment: str = 'WT',
+        uptake_metric: str = 'A',
+        rule: str = DEFAULT_RUNAWAY_RULE,
+        include_dilution_check: bool = False) -> pd.DataFrame:
+    """
+    Build the correlation-sweep table and write it to CSV. No LaTeX
+    formatter is provided (the table's rows go into three different
+    prose paragraphs and two different SI tables rather than one
+    tabular), so the CSV is the thing to read values off before typing
+    them into the chapter.
+
+    Pass `include_dilution_check=True` (with `grouped_data` supplied) to
+    add the three rows that test whether the whole-trace-slope
+    correlation is a real effect or an artifact of dividing by a
+    protrusion volume that grows over the same window — see
+    `attach_uptake_dilution_check_columns`. Off by default since it is
+    a diagnostic, not part of the standard sweep.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    table = build_uptake_correlation_sweep_table(
+        mechanics_df, grouped_data=grouped_data, treatment=treatment,
+        uptake_metric=uptake_metric, rule=rule,
+        include_dilution_check=include_dilution_check)
+    suffix = '_dilution_check' if include_dilution_check else ''
+    out = (output_dir
+          / f'Thesis_Uptake_Correlation_Sweep_{treatment}_{uptake_metric}'
+            f'{suffix}.csv')
+    table.to_csv(out, index=False)
+    logger.info(f"  Saved: {out.name}")
+    return table
+
+
+# ===================================================================== #
 # Runner                                                                #
 # ===================================================================== #
 def register_uptake_plots(grouped_data: Dict,
@@ -2375,6 +3075,13 @@ def register_uptake_plots(grouped_data: Dict,
         except Exception as e:
             logger.error(f"Uptake plot '{label}' failed: {e}",
                          exc_info=False)
+
+    # Reference-time uptake columns (U100), attached once here rather
+    # than inside each correlation figure, so every U100 caller below
+    # reads off the same values and a re-run under a different
+    # reference_time_s only requires changing this one line.
+    mechanics_df_u100 = attach_uptake_reference_time_columns(
+        grouped_data, mechanics_df)
 
     for treatment in treatments:
         # --- Mean trace: two variants ---------------------------------
@@ -2410,20 +3117,39 @@ def register_uptake_plots(grouped_data: Dict,
              mechanics_df, output_dir, treatment=treatment,
              filename_suffix='')
 
-        # --- Correlations: three figures ------------------------------
-        # PrePulse-visco parameters → PrePulse R² gate, uptake amplitude only.
-        # MI whole-trace descriptors → MI R² gate, uptake amplitude only.
-        # Uptake amplitude vs pre-pulse protrusion length: no mechanics
-        # gate (only uptake R² per region), on the natural EP cohort.
-        _try(f"Pre-pulse correlations ({treatment})",
+        # --- Correlations: three figures, each against both uptake
+        # metrics (A and U100) -------------------------------------------
+        # PrePulse-visco parameters → PrePulse R² gate; uptake gated by
+        #   its own R² + runaway rule for 'A', ungated for 'U100'.
+        # MI whole-trace descriptors → MI R² gate; uptake as above.
+        # Uptake vs pre-pulse protrusion length: no mechanics gate
+        #   (only uptake's own gate for 'A'), on the natural EP cohort.
+        # The 'A' calls use the original mechanics_df; the 'U100' calls
+        # use the copy with the reference-time columns attached above.
+        _try(f"Pre-pulse correlations, A ({treatment})",
              plot_thesis_prepulse_correlations,
-             mechanics_df, output_dir, treatment=treatment)
-        _try(f"MI whole-trace correlations ({treatment})",
+             mechanics_df, output_dir, treatment=treatment,
+             uptake_metric='A')
+        _try(f"Pre-pulse correlations, U100 ({treatment})",
+             plot_thesis_prepulse_correlations,
+             mechanics_df_u100, output_dir, treatment=treatment,
+             uptake_metric='U100')
+        _try(f"MI whole-trace correlations, A ({treatment})",
              plot_thesis_mi_whole_correlations,
-             mechanics_df, output_dir, treatment=treatment)
-        _try(f"Uptake vs protrusion length ({treatment})",
+             mechanics_df, output_dir, treatment=treatment,
+             uptake_metric='A')
+        _try(f"MI whole-trace correlations, U100 ({treatment})",
+             plot_thesis_mi_whole_correlations,
+             mechanics_df_u100, output_dir, treatment=treatment,
+             uptake_metric='U100')
+        _try(f"Uptake vs protrusion length, A ({treatment})",
              plot_thesis_uptake_vs_prot_length,
-             mechanics_df, output_dir, treatment=treatment)
+             mechanics_df, output_dir, treatment=treatment,
+             uptake_metric='A')
+        _try(f"Uptake vs protrusion length, U100 ({treatment})",
+             plot_thesis_uptake_vs_prot_length,
+             mechanics_df_u100, output_dir, treatment=treatment,
+             uptake_metric='U100')
 
         # --- Best-fit multipanel --------------------------------------
         _try(f"Uptake best-fit multipanel ({treatment})",
@@ -2438,3 +3164,27 @@ def register_uptake_plots(grouped_data: Dict,
              write_uptake_kinetics_table,
              mechanics_df, output_dir, treatment=treatment,
              grouped_data=grouped_data)
+
+        # --- Correlation-sweep table, both metrics ---------------------
+        # The CSV every §3.9 / Discussion Spearman number and the two
+        # SI correlation tables should be copied from, rather than read
+        # off a figure-panel text box by eye.
+        _try(f"Correlation sweep table, A ({treatment})",
+             write_uptake_correlation_sweep_table,
+             mechanics_df, output_dir, treatment=treatment,
+             uptake_metric='A')
+        _try(f"Correlation sweep table, U100 ({treatment})",
+             write_uptake_correlation_sweep_table,
+             mechanics_df_u100, output_dir, treatment=treatment,
+             uptake_metric='U100')
+
+        # --- Dilution check ----------------------------------------------
+        # Tests whether the whole-trace-slope vs U100 correlation is a
+        # real effect or an artifact of dividing by a protrusion volume
+        # that grows over the same window (see
+        # attach_uptake_dilution_check_columns for the full argument).
+        _try(f"Correlation sweep, dilution check ({treatment})",
+             write_uptake_correlation_sweep_table,
+             mechanics_df, output_dir, treatment=treatment,
+             uptake_metric='U100', grouped_data=grouped_data,
+             include_dilution_check=True)
