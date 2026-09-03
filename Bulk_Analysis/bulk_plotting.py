@@ -1464,7 +1464,14 @@ def _reduce_labels(labels: List[str], sep: str = '_') -> Dict[str, str]:
 
 def plot_asp_best_fit_multipanel(
         all_grouped_data: Dict, output_dir: Path,
-        r_eff: float, C: float = 1.0) -> None:
+        r_eff: float, C: float = 1.0,
+        # --- New Font Size Parameters ---
+        legend_size: int      = 14,
+        axis_label_size: int  = 14,
+        panel_title_size: int = 14,
+        annotation_size: int  = 14,
+        tick_label_size: int  = 14,
+        ) -> None:
     import bulk_mechanics as bm
 
     logger.info("Generating Plot: ASP Best-Fit Multipanel (reduced grouping)...")
@@ -1510,14 +1517,24 @@ def plot_asp_best_fit_multipanel(
             mlines.Line2D([], [], color=model_color['Jeffreys'], lw=2, label='Jeffreys'),
             mlines.Line2D([], [], color=model_color['Burgers'], lw=2, label='Burgers'),
         ]
-        fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, 1.0), ncol=4, frameon=False, fontsize=12)
+        
+        # Updated legend font size
+        fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, 1.0), ncol=4, frameon=False, fontsize=legend_size)
+        
         dur_note = f"  [window: {common_dur:.0f} s]" if common_dur else ""
-        fig.text(0.5, 0.01, f'Time from entry (s){dur_note}', ha='center', fontsize=14)
-        fig.text(0.01, 0.5, 'Protrusion Length (µm)', va='center', rotation='vertical', fontsize=14)
+        
+        # Updated figure-level axis label font sizes
+        fig.text(0.5, 0.01, f'Time from entry (s){dur_note}', ha='center', fontsize=axis_label_size)
+        fig.text(0.01, 0.5, 'Protrusion Length (µm)', va='center', rotation='vertical', fontsize=axis_label_size)
 
         for i, tid in enumerate(sorted_ids):
             ax = axes[i]
-            ax.set_title(f"Trap {tid}", fontsize=10, fontweight='bold')
+            
+            # Set size for subpanel numeric tick labels
+            ax.tick_params(axis='both', which='both', labelsize=tick_label_size)
+            
+            # Updated subpanel title font size
+            ax.set_title(f"Trap {tid}", fontsize=panel_title_size, fontweight='bold')
 
             for trap in trap_groups[tid]:
                 pd_data = trap.protrusion_data
@@ -1546,7 +1563,8 @@ def plot_asp_best_fit_multipanel(
 
                 best = visco['best_model']
                 if best is None:
-                    ax.text(0.05, 0.9, "Fit failed", transform=ax.transAxes, fontsize=7, color='red')
+                    # Updated failed-fit annotation font size
+                    ax.text(0.05, 0.9, "Fit failed", transform=ax.transAxes, fontsize=annotation_size, color='red')
                     continue
 
                 bp_params = visco['best_params']
@@ -1564,7 +1582,9 @@ def plot_asp_best_fit_multipanel(
 
                 ax.plot(t_smooth, l_pred, color=color, lw=2, alpha=0.85)
                 r2_str = f"R²={visco['best_r2']:.2f}" if visco['best_r2'] is not None else ""
-                ax.text(0.05, 0.9, f"{best}  {r2_str}", transform=ax.transAxes, fontsize=7, fontweight='bold', color=color)
+                
+                # Updated fit result annotation font size
+                ax.text(0.05, 0.9, f"{best}  {r2_str}", transform=ax.transAxes, fontsize=annotation_size, fontweight='bold', color=color)
 
         for j in range(n, len(axes)): axes[j].axis('off')
         plt.tight_layout(rect=[0.03, 0.03, 1, 0.95])
@@ -1899,8 +1919,8 @@ def plot_prepulse_visco_parameter_boxplots(
         tick_fontsize=tick_fontsize,
         legend_fontsize=legend_fontsize,
         bracket_fontsize = tick_fontsize,
-        grid_shape=(3,2),
-        rotation=10
+        grid_shape=(2,3),
+        rotation=20
     )
 
 def plot_model_independent_fits_multipanel(

@@ -1538,51 +1538,17 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                                             DEFAULT_RUNAWAY_RULE),
                                         uptake_metric: str = 'A',
                                         fate_states: Tuple[str, ...] = (
-                                            ANALYSIS_FATE_STATES)
+                                            ANALYSIS_FATE_STATES),
+                                        # --- New Font Size Parameters ---
+                                        title_size: int      = 15,
+                                        axis_label_size: int = 15,
+                                        tick_label_size: int = 15,
+                                        annotation_size: int = 15,
+                                        empty_n_size: int    = 15,
                                         ) -> None:
     """
     3x2 matrix of scatter plots — pre-pulse viscoelastic parameters
-    vs uptake.  Uptake ↔ protrusion length is covered by a
-    separate dedicated figure (`plot_thesis_uptake_vs_prot_length`),
-    where the mechanics filter isn't required.
-
-    Rows (pre-pulse mechanics):
-        PrePulse_E_Pa           elastic modulus
-        PrePulse_eta1_Pa_s      short-time viscosity
-        PrePulse_Tau_s          relaxation time
-
-    Columns (region), metric selected by `uptake_metric`:
-        'A'     Uptake_Body_VolNorm_A / Uptake_Prot_VolNorm_A
-                the fitted plateau (extrapolated; see
-                sec: ch3-supp uptake extrapolation).
-        'U100'  Uptake_Body_VolNorm_U100 / Uptake_Prot_VolNorm_U100
-                uptake read directly off the trace at the reference
-                time (REFERENCE_TIME_S); requires `mechanics_df` to
-                already carry these columns
-                (`attach_uptake_reference_time_columns`).
-
-    Cohort:
-        - `Fate_Status` restricted to `fate_states` (default: intact
-          only). The mechanics side of this figure is pre-pulse and
-          unaffected by rupture, but the uptake side is post-pulse, so
-          a ruptured cell would pair a valid pre-pulse mechanical
-          reading with an unreliable outcome. Excluding it keeps every
-          row of the figure describing the same cells.
-        - Mechanics y-axis always requires PrePulse_Visco_R2_Flag == True.
-        - Uptake x-axis requires Condition_Type == 'EP'. For the 'A'
-          metric it additionally requires the matching
-          Uptake_{region}_VolNorm_R2_Flag == True and passes the
-          runaway gate, since A is a fitted asymptote and an
-          unidentifiable fit is meaningless. For 'U100' neither gate
-          applies: it is a direct reading, not a fit, so a cell is
-          excluded only by having no value (short record or no trace;
-          see `attach_uptake_reference_time_columns`).
-          (ASP cells have no pulse to drive PI uptake, so any signal
-          there would be rupture — a categorical, not a continuous,
-          readout.)
-
-    X-axis is log for both uptake columns (multi-decade spread in both
-    metrics).  Spearman rho + p annotated per panel.
+    vs uptake.
     """
     if uptake_metric not in ('A', 'U100'):
         raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
@@ -1614,12 +1580,7 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
         ('PrePulse_eta1_Pa_s', r"$\eta_{1}$ (Pa$\cdot$s)", True),
         ('PrePulse_Tau_s',     r"$\tau$ (s)",            True),
     ]
-    # (col, label, R2_flag_col, cohort, x_log)
-    # x_log: True for both uptake metrics (multi-decade range, dominated
-    # by a handful of large-uptake cells on linear scale).  Kept linear
-    # for max protrusion length (5–35 um, no decade spread).
-    # R2_flag_col is None for U100: a direct reading has no fit-quality
-    # gate to apply.
+
     if uptake_metric == 'A':
         outcome_cols = [
             ('Uptake_Body_VolNorm_A',
@@ -1660,25 +1621,25 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                 sub = sub[sub['Condition_Type'] == 'EP']
             if yflag is not None:
                 sub = sub[sub[yflag].fillna(False).astype(bool)]
-                # Same runaway rule as the kinetics table: an
-                # unidentifiable fit contributes a meaningless A to rho.
                 if runaway_rule != 'none' and yflag in _FLAG_TO_REGION:
                     sub = apply_runaway_gate(
                         sub, _FLAG_TO_REGION[yflag], rule=runaway_rule)
             sub = sub[[mcol, ycol, 'Cell_Type', 'Fate_Status',
                        'Condition_Type', 'Duration_label']].dropna()
 
+            # Set size for numeric tick labels on both axes
+            ax.tick_params(axis='both', which='both', labelsize=tick_label_size)
+
             if len(sub) < 3:
                 ax.text(0.5, 0.5, f"n = {len(sub)}",
                         ha='center', va='center', transform=ax.transAxes,
-                        fontsize=10, color='gray')
+                        fontsize=empty_n_size, color='gray')
                 if i == len(outcome_cols) - 1:
-                    ax.set_xlabel(ylab)
+                    ax.set_xlabel(ylab, fontsize=axis_label_size)
                 if j == 0:
-                    ax.set_ylabel(mlab)
+                    ax.set_ylabel(mlab, fontsize=axis_label_size)
                 continue
 
-            # Points coloured by condition (ASP / 5ms / 100us).
             for cond_key in CONDITION_ORDER:
                 pts = sub[sub.apply(_condition_key, axis=1) == cond_key]
                 if pts.empty:
@@ -1695,40 +1656,36 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                                facecolor='none', edgecolor=color,
                                linewidths=1.3, alpha=0.85)
 
-            # Spearman across all points in the panel.
             x_all = sub[ycol].to_numpy(dtype=float)
             y_all = sub[mcol].to_numpy(dtype=float)
             m = np.isfinite(x_all) & np.isfinite(y_all)
             if m.sum() >= 3:
                 rho, p = stats.spearmanr(x_all[m], y_all[m])
                 p_str = f"p = {p:.3f}" if p >= 0.001 else "p < 0.001"
+                # Updated annotation text size
                 ax.text(0.03, 0.97,
                         rf"$\rho$ = {rho:.2f}" + "\n" + p_str +
                         f"\nn = {int(m.sum())}",
                         transform=ax.transAxes, ha='left', va='top',
-                        fontsize=8,
+                        fontsize=annotation_size,
                         bbox=dict(boxstyle='round,pad=0.25',
                                   fc='white', alpha=0.85, ec='gray'))
 
             if mlog:
                 ax.set_yscale('log')
             if xlog:
-                # Log x-axis for the fitted uptake plateaus.  Any
-                # non-positive A values would be discarded by matplotlib's
-                # log axis with a UserWarning; the fit's bounds are
-                # [0, inf) so A can be exactly 0 for a failed rise, but
-                # those cases are already excluded by the R2_Flag
-                # filter above.
                 ax.set_xscale('log')
             ax.spines[['top', 'right']].set_visible(False)
 
+            # Updated axis label sizes
             if i == len(outcome_cols) - 1:
-                ax.set_xlabel(ylab)
+                ax.set_xlabel(ylab, fontsize=axis_label_size)
             if j == 0:
-                ax.set_ylabel(mlab)
+                ax.set_ylabel(mlab, fontsize=axis_label_size)
 
+    # Updated main title size
     fig.suptitle(f"{treatment} — pre-pulse mechanics vs uptake and protrusion length",
-                 y=1.02, fontweight='bold')
+                 y=1.02, fontweight='bold', fontsize=title_size)
     fig.tight_layout()
     metric_suffix = '' if uptake_metric == 'A' else f'_{uptake_metric}'
     out = (Path(output_dir)
@@ -1738,70 +1695,26 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
     plt.close(fig)
     logger.info(f"  Saved: {out.name}")
 
-
 # ===================================================================== #
 # 3b. MI whole-trace mechanics vs uptake / protrusion length            #
 # ===================================================================== #
 def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
-                                        output_dir: Path,
-                                        treatment: str = 'WT',
-                                        runaway_rule: str = (
-                                            DEFAULT_RUNAWAY_RULE),
-                                        uptake_metric: str = 'A',
-                                        fate_states: Tuple[str, ...] = (
-                                            ANALYSIS_FATE_STATES)
-                                        ) -> None:
+                                      output_dir: Path,
+                                      treatment: str = 'WT',
+                                      runaway_rule: str = (
+                                          DEFAULT_RUNAWAY_RULE),
+                                      uptake_metric: str = 'A',
+                                      fate_states: Tuple[str, ...] = (
+                                          ANALYSIS_FATE_STATES),
+                                      # --- New Font Size Parameters ---
+                                      title_size: int      = 14,
+                                      axis_label_size: int = 14,
+                                      tick_label_size: int = 14,
+                                      annotation_size: int = 14,
+                                      empty_n_size: int    = 14,
+                                      ) -> None:
     """
-    2x2 matrix of scatter plots — whole-trace MI descriptors vs
-    uptake.  Analogue of `plot_thesis_prepulse_correlations`
-    but with model-independent whole-trace parameters on the y-axis.
-    Uptake ↔ protrusion length is covered by a separate figure
-    (`plot_thesis_uptake_vs_prot_length`).
-
-    Rows (MI whole-trace descriptors):
-        MI_Whole_Linear_Slope   creep rate from the whole-trace
-                                linear fit (applied to every MI-passing
-                                cell regardless of AICc winner; see note)
-        MI_Whole_PL_a           power-law amplitude, restricted to
-                                cells where the power-law was the AICc
-                                winner (`MI_Whole_Best_Model == 'Power-Law'`)
-
-    Columns (region), metric selected by `uptake_metric`:
-        'A'     Uptake_Body_VolNorm_A / Uptake_Prot_VolNorm_A
-                the fitted plateau (extrapolated; see
-                sec: ch3-supp uptake extrapolation).
-        'U100'  Uptake_Body_VolNorm_U100 / Uptake_Prot_VolNorm_U100
-                uptake read directly off the trace at the reference
-                time (REFERENCE_TIME_S); requires `mechanics_df` to
-                already carry these columns
-                (`attach_uptake_reference_time_columns`).
-
-    Cohort:
-        - `Fate_Status` restricted to `fate_states` (default: intact
-          only). A ruptured protrusion has discharged its cytoplasm
-          into the channel, so its post-pulse length trajectory is not
-          measuring creep and does not belong in a creep-rate
-          predictor. This applies to the y-axis (the MI descriptor)
-          and, by construction, to the uptake side as well, since both
-          columns come from the same filtered `df`.
-        - All rows require `MI_Whole_R2_Flag == True`.
-        - Uptake columns require Condition_Type == 'EP'. For the 'A'
-          metric they additionally require the matching
-          `Uptake_{region}_VolNorm_R2_Flag == True` and pass the
-          runaway gate. For 'U100' neither applies — see the note in
-          `plot_thesis_prepulse_correlations`.
-        - PL_a row further requires `MI_Whole_Best_Model == 'Power-Law'`.
-
-    Note on the slope row:
-        Linear_Slope is always computed for every cell in the pipeline
-        (it just isn't necessarily the AICc-selected model).  Using it
-        for all MI-passing cells matches how the characteristic creep
-        rate is discussed in §3.8 of the thesis and gives a single
-        comparable descriptor across the cohort.
-
-    X-axis: log for both uptake columns.
-
-    Spearman rho + p annotated per panel.
+    2x2 matrix of scatter plots — whole-trace MI descriptors vs uptake.
     """
     if uptake_metric not in ('A', 'U100'):
         raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
@@ -1830,10 +1743,10 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
 
     mech_rows = [
         ('MI_Whole_Linear_Slope', r"Whole-trace slope ($\mathrm{\mu m}$/s)",
-         False,  # y-log
-         None),  # extra per-row filter
+         False,
+         None),
         ('MI_Whole_PL_a',         r"Power-law amplitude $a$",
-         True,   # y-log — a spans decades
+         True,
          ('MI_Whole_Best_Model', 'Power-Law')),
     ]
     if uptake_metric == 'A':
@@ -1876,8 +1789,6 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                 sub = sub[sub['Condition_Type'] == 'EP']
             if yflag is not None:
                 sub = sub[sub[yflag].fillna(False).astype(bool)]
-                # Same runaway rule as the kinetics table: an
-                # unidentifiable fit contributes a meaningless A to rho.
                 if runaway_rule != 'none' and yflag in _FLAG_TO_REGION:
                     sub = apply_runaway_gate(
                         sub, _FLAG_TO_REGION[yflag], rule=runaway_rule)
@@ -1887,19 +1798,19 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
             sub = sub[[mcol, ycol, 'Cell_Type', 'Fate_Status',
                        'Condition_Type', 'Duration_label']].dropna()
 
+            # Set size for axis tick marks/labels
+            ax.tick_params(axis='both', which='both', labelsize=tick_label_size)
+
             if len(sub) < 3:
                 ax.text(0.5, 0.5, f"n = {len(sub)}",
                         ha='center', va='center', transform=ax.transAxes,
-                        fontsize=10, color='gray')
+                        fontsize=empty_n_size, color='gray')
                 if i == len(mech_rows) - 1:
-                    ax.set_xlabel(ylab)
+                    ax.set_xlabel(ylab, fontsize=axis_label_size)
                 if j == 0:
-                    ax.set_ylabel(mlab)
+                    ax.set_ylabel(mlab, fontsize=axis_label_size)
                 continue
 
-            # Points coloured by condition (5ms / 100us); ASP shouldn't
-            # appear for EP-only columns but the prot-length column
-            # includes ASP cells too if they pass MI_Whole_R2_Flag.
             for cond_key in CONDITION_ORDER:
                 pts = sub[sub.apply(_condition_key, axis=1) == cond_key]
                 if pts.empty:
@@ -1916,7 +1827,6 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                                facecolor='none', edgecolor=color,
                                linewidths=1.3, alpha=0.85)
 
-            # Spearman across all points in the panel.
             x_all = sub[ycol].to_numpy(dtype=float)
             y_all = sub[mcol].to_numpy(dtype=float)
             m = np.isfinite(x_all) & np.isfinite(y_all)
@@ -1927,7 +1837,7 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                         rf"$\rho$ = {rho:.2f}" + "\n" + p_str +
                         f"\nn = {int(m.sum())}",
                         transform=ax.transAxes, ha='left', va='top',
-                        fontsize=8,
+                        fontsize=annotation_size,
                         bbox=dict(boxstyle='round,pad=0.25',
                                   fc='white', alpha=0.85, ec='gray'))
 
@@ -1938,13 +1848,13 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
             ax.spines[['top', 'right']].set_visible(False)
 
             if i == len(mech_rows) - 1:
-                ax.set_xlabel(ylab)
+                ax.set_xlabel(ylab, fontsize=axis_label_size)
             if j == 0:
-                ax.set_ylabel(mlab)
+                ax.set_ylabel(mlab, fontsize=axis_label_size)
 
     fig.suptitle(f"{treatment} — whole-trace MI descriptors vs uptake "
                  "and protrusion length",
-                 y=1.00, fontweight='bold')
+                 y=1.00, fontweight='bold', fontsize=title_size)
     fig.tight_layout()
     metric_suffix = '' if uptake_metric == 'A' else f'_{uptake_metric}'
     out = (Path(output_dir)
@@ -1954,62 +1864,29 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
     plt.close(fig)
     logger.info(f"  Saved: {out.name}")
 
-
 # ===================================================================== #
 # 3c. Uptake amplitude vs pre-pulse protrusion length                   #
 # ===================================================================== #
 def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
-                                        output_dir: Path,
-                                        treatment: str = 'WT',
-                                        runaway_rule: str = (
-                                            DEFAULT_RUNAWAY_RULE),
-                                        uptake_metric: str = 'A',
-                                        fate_states: Tuple[str, ...] = (
-                                            ANALYSIS_FATE_STATES)
-                                        ) -> None:
+                                      output_dir: Path,
+                                      treatment: str = 'WT',
+                                      runaway_rule: str = (
+                                          DEFAULT_RUNAWAY_RULE),
+                                      uptake_metric: str = 'A',
+                                      fate_states: Tuple[str, ...] = (
+                                          ANALYSIS_FATE_STATES),
+                                      # --- New Font Size Parameters (Defaulted to 14) ---
+                                      title_size: int = 14,
+                                      panel_title_size: int = 14,
+                                      axis_label_size: int = 14,
+                                      tick_label_size: int = 14,
+                                      annotation_size: int = 14,
+                                      legend_size: int = 14,
+                                      empty_n_size: int = 14,
+                                      ) -> None:
     """
     Two-panel scatter of uptake vs pre-pulse maximum protrusion length.
     Panels: body (left), protrusion (right).
-
-    The question is whether a bigger pre-pulse protrusion (which
-    reflects both cell deformability and how far the tip reached
-    into the microfluidic channel before the pulse) predicts more
-    post-pulse uptake. Because this correlation involves only the
-    protrusion-length descriptor (measured before the pulse, so
-    unaffected by rupture) and uptake, no mechanics R² filter is
-    applied.
-
-    Columns (region), metric selected by `uptake_metric`:
-        'A'     Uptake_Body_VolNorm_A / Uptake_Prot_VolNorm_A
-                the fitted plateau (extrapolated; see
-                sec: ch3-supp uptake extrapolation).
-        'U100'  Uptake_Body_VolNorm_U100 / Uptake_Prot_VolNorm_U100
-                uptake read directly off the trace at the reference
-                time (REFERENCE_TIME_S); requires `mechanics_df` to
-                already carry these columns
-                (`attach_uptake_reference_time_columns`).
-
-    Cohort:
-        - EP cells of `treatment` with `Fate_Status` in `fate_states`
-          (default: intact only). The protrusion-length predictor is
-          measured before the pulse and would be unaffected by rupture
-          on its own, but the outcome plotted against it, uptake, is a
-          post-pulse quantity, so a ruptured cell still pairs a valid
-          predictor with an unreliable outcome. Pass
-          `fate_states=('intact', 'ruptured_post')` to restore the
-          pooled cohort.
-        - Additionally per-panel: for the 'A' metric, the matching
-          `Uptake_{region}_VolNorm_R2_Flag == True` and the runaway
-          gate. For 'U100', neither applies — see the note in
-          `plot_thesis_prepulse_correlations`.
-
-    X-axis: log for the 'A' metric (multi-decade spread), linear for
-    'U100' (already a bounded fold-change, no decade spread).
-    Y-axis: linear for protrusion length (5–35 µm, no decade spread).
-    Colour: condition (5ms / 100us) from the WT ramp.
-    Marker: fate (intact = filled, ruptured_post = open).
-
-    Spearman rho + p annotated per panel across all points.
     """
     if uptake_metric not in ('A', 'U100'):
         raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
@@ -2061,24 +1938,22 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.5), sharey=True)
 
     for ax, region in zip(axes, ('Body', 'Prot')):
+        # Set tick label size for subpanel axes
+        ax.tick_params(axis='both', which='both', labelsize=tick_label_size)
+
         a_col, flag_col, xlab = region_spec[region]
         keep = df[a_col].notna() & df[prot_len_col].notna()
         if flag_col is not None:
             keep = keep & df[flag_col].fillna(False).astype(bool)
         sub = df[keep].copy()
-                # Analysis cohort: the per-region R2 flag alone is not
-                # enough, because runaway fits pass it comfortably.  Apply
-                # the same runaway rule the kinetics table uses so this
-                # panel describes the same cells. Only meaningful for the
-                # 'A' metric — U100 is a direct reading, not a fit, so it
-                # has no runaway failure mode.
+
         if uptake_metric == 'A' and runaway_rule != 'none':
             sub = apply_runaway_gate(sub, region, rule=runaway_rule)
         if sub.empty:
             ax.text(0.5, 0.5, "No cells pass R² ≥ 0.85",
                     ha='center', va='center', transform=ax.transAxes,
-                    fontsize=10, color='gray')
-            ax.set_title(f"{region}  (n = 0)")
+                    fontsize=empty_n_size, color='gray')
+            ax.set_title(f"{region}  (n = 0)", fontsize=panel_title_size)
             continue
 
         sub['Cond_Key'] = sub.apply(_condition_key, axis=1)
@@ -2113,28 +1988,28 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
             ax.text(0.03, 0.97,
                     rf"$\rho$ = {rho:.2f}" + "\n" + p_str +
                     f"\nn = {int(m.sum())}",
-                    transform=ax.transAxes, ha='left', va='top', fontsize=9,
+                    transform=ax.transAxes, ha='left', va='top', fontsize=annotation_size,
                     bbox=dict(boxstyle='round,pad=0.3',
                               fc='white', alpha=0.85, ec='gray'))
 
-        ax.set_xlabel(xlab + xlabel_unit)
+        ax.set_xlabel(xlab + xlabel_unit, fontsize=axis_label_size)
         if x_log:
             ax.set_xscale('log')
-        ax.set_title(f"{region}  (n = {len(sub)})")
+        ax.set_title(f"{region}  (n = {len(sub)})", fontsize=panel_title_size)
         ax.spines[['top', 'right']].set_visible(False)
 
-    axes[0].set_ylabel(r"Max protrusion length ($\mathrm{\mu m}$)")
+    axes[0].set_ylabel(r"Max protrusion length ($\mathrm{\mu m}$)", fontsize=axis_label_size)
 
     # Shared legend below.
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
         fig.legend(handles, labels, loc='lower center', ncol=2,
-                   bbox_to_anchor=(0.5, -0.08), frameon=False, fontsize=9)
+                   bbox_to_anchor=(0.5, -0.08), frameon=False, fontsize=legend_size)
 
     metric_label = 'uptake plateau A' if uptake_metric == 'A' else 'U(100s)'
     fig.suptitle(f"{treatment} — {metric_label} vs max pre-pulse "
                  "protrusion length",
-                 y=1.02, fontweight='bold')
+                 y=1.02, fontweight='bold', fontsize=title_size)
     fig.tight_layout()
     metric_suffix = '' if uptake_metric == 'A' else f'_{uptake_metric}'
     out = (Path(output_dir)
@@ -2142,7 +2017,6 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
     utils.save_plot_pdf(out)
     plt.close(fig)
     logger.info(f"  Saved: {out.name}")
-
 
 # ===================================================================== #
 # 4. Per-cell multipanel: raw uptake + best-fit overlay                 #

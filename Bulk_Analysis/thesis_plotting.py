@@ -305,7 +305,14 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
                                          r_eff: float,
                                          C: float = 1.0,
                                          global_asp_dur: Optional[float] = None,
-                                         output_dir_map: Optional[Dict[str, Path]] = None) -> None:
+                                         output_dir_map: Optional[Dict[str, Path]] = None,
+                                         # --- New Font Size Parameters (Defaulted to 14) ---
+                                         legend_size: int      = 19,
+                                         axis_label_size: int  = 19,
+                                         panel_title_size: int = 19,
+                                         annotation_size: int  = 19,
+                                         tick_label_size: int  = 19,
+                                         ) -> None:
     import matplotlib.lines as mlines
     import math
 
@@ -351,14 +358,23 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
             mlines.Line2D([], [], color=model_color['Jeffreys'], lw=2, label='Jeffreys'),
             mlines.Line2D([], [], color=model_color['Burgers'], lw=2, label='Burgers'),
         ]
-        fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, 1.0), ncol=4, frameon=False, fontsize=12)
+        
+        # Legend font size set to parameter (14)
+        fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, 1.0), ncol=4, frameon=False, fontsize=legend_size)
         dur_note = f"  [window: {global_asp_dur:.0f} s]" if global_asp_dur else ""
-        fig.text(0.5, 0.01, f'Time from entry (s){dur_note}', ha='center', fontsize=14)
-        fig.text(0.01, 0.5, 'Protrusion Length (µm)', va='center', rotation='vertical', fontsize=14)
+        
+        # Figure-level axis labels set to parameter (14)
+        fig.text(0.5, 0.01, f'Time from entry (s){dur_note}', ha='center', fontsize=axis_label_size)
+        fig.text(0.01, 0.5, 'Protrusion Length (µm)', va='center', rotation='vertical', fontsize=axis_label_size)
 
         for i, tid in enumerate(sorted_ids):
             ax = axes[i]
-            ax.set_title(f"Trap {tid}", fontweight='bold')
+            
+            # Subpanel axis tick mark labels set to parameter (14)
+            ax.tick_params(axis='both', which='both', labelsize=tick_label_size)
+            
+            # Subpanel title set to parameter (14)
+            ax.set_title(f"Trap {tid}", fontweight='bold', fontsize=panel_title_size)
 
             for trap in trap_groups[tid]:
                 pd_data = trap.protrusion_data
@@ -387,7 +403,8 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
 
                 best = visco['best_model']
                 if best is None:
-                    ax.text(0.05, 0.9, "Fit failed", transform=ax.transAxes, fontsize=7, color='red')
+                    # Failed fit text set to parameter (14)
+                    ax.text(0.05, 0.9, "Fit failed", transform=ax.transAxes, fontsize=annotation_size, color='red')
                     continue
 
                 bp_params = visco['best_params']
@@ -408,7 +425,9 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
                 # truth; the fit is one interpretation).
                 ax.plot(t_smooth, l_pred, color=color, lw=2, alpha=0.55)
                 r2_str = f"R²={visco['best_r2']:.2f}" if visco['best_r2'] is not None else ""
-                ax.text(0.05, 0.9, f"{best}  {r2_str}", transform=ax.transAxes, fontsize=7, fontweight='bold', color=color)
+                
+                # Model + R² annotation set to parameter (14)
+                ax.text(0.05, 0.9, f"{best}  {r2_str}", transform=ax.transAxes, fontsize=annotation_size, fontweight='bold', color=color)
 
         for j in range(n, len(axes)): axes[j].axis('off')
         plt.tight_layout(rect=[0.03, 0.03, 1, 0.95])
@@ -2402,9 +2421,14 @@ def plot_thesis_asp_actin_trace_by_condition(grouped_data: Dict,
     plt.close()
     logger.info("Actin trace plot written.")
 
-
 def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
-                                        output_dir: Path) -> None:
+                                        output_dir: Path,
+                                        title_size: int = 14,
+                                        axis_label_size: int = 14,
+                                        tick_label_size: int = 14,
+                                        annotation_size: int = 14,
+                                        legend_size: int = 14,
+                                        ) -> None:
     """
     Scatter: pre-pulse actin (F0-normalised) vs elastic modulus E, per cell.
     Two panels: body and protrusion.  Spearman ρ annotated per treatment.
@@ -2412,6 +2436,8 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
     Filters to ASP intact cells with a valid viscoelastic fit.
     """
     from scipy import stats
+    import numpy as np
+
     if mechanics_df is None or mechanics_df.empty:
         return
 
@@ -2426,69 +2452,94 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
         logger.warning("Actin-vs-E plot skipped: no ASP intact cells with valid E.")
         return
 
-    # Three viscoelastic parameters are shown per region:
-    #   E     — elastic modulus (every viscoelastic winner has one)
-    #   eta1  — parallel (flow) viscosity (present in Jeffreys & Burgers,
-    #           absent in Kelvin-Voigt so those cells drop from this panel)
-    #   tau   — characteristic timescale (Kelvin-Voigt cells only; both
-    #           other models split viscosity into two branches so a single
-    #           tau isn't defined)
-    # Each panel is silently subset to the cells where that parameter is
-    # finite; per-panel n is annotated in the legend.
     mech_panels = [
-        ('E_Pa',      r"$E$ (Pa)",                        True),
+        ('E_Pa',       r"$E$ (Pa)",                  True),
         ('eta1_Pa_s', r"$\eta_1$ (Pa$\cdot$s)",           True),
         ('Tau_s',     r"$\tau$ (s, Kelvin-Voigt only)",   True),
     ]
     fig, axes = plt.subplots(2, 3, figsize=(10.5, 6.4), sharey=False)
+    
     for row_idx, region in enumerate(('Body', 'Prot')):
         actin_col = f'Actin_{region}_PrePulse_F0Norm'
         for col_idx, (mech_col, mech_label, use_log) in enumerate(mech_panels):
             ax = axes[row_idx, col_idx]
+
+            ax.tick_params(axis='both', which='both', labelsize=tick_label_size)
+
             if actin_col not in df.columns or mech_col not in df.columns:
                 ax.set_visible(False)
                 continue
 
             for treatment in _TREATMENT_ORDER:
-                sub = df.loc[df['Treatment'] == treatment,
-                             [actin_col, mech_col]].dropna()
+                sub = df.loc[df['Treatment'] == treatment, [actin_col, mech_col]].copy()
+                
+                # Convert columns explicitly to float (coercing strings/objects to NaN)
+                x_series = pd.to_numeric(sub[actin_col], errors='coerce')
+                y_series = pd.to_numeric(sub[mech_col], errors='coerce')
+                
+                # Safe finite mask on numeric Series
+                mask = np.isfinite(x_series) & np.isfinite(y_series)
+                sub = sub[mask].copy()
+                
+                # Update sub with cast values to avoid future object-type errors downstream
+                sub[actin_col] = x_series[mask]
+                sub[mech_col] = y_series[mask]
+
                 if sub.empty:
                     continue
+                
                 colour = _TREATMENT_COLOR[treatment]
                 ax.scatter(sub[actin_col], sub[mech_col], s=22,
                            color=colour, edgecolor=colour, linewidths=0.4,
                            alpha=0.75, label=f"{treatment} (n={len(sub)})")
 
-                if len(sub) >= 5:
-                    rho, p = stats.spearmanr(sub[actin_col], sub[mech_col])
-                    y_anchor = 0.95 if treatment == 'WT' else 0.88
-                    ax.text(0.03, y_anchor,
-                            rf"$\rho_{{{treatment}}}={rho:.2f}$ (p={p:.2g})",
-                            transform=ax.transAxes, fontsize=7.5,
-                            color=colour, va='top')
+                # SAFE CHECK: Needs at least 5 points AND non-zero variance in both variables
+                x_vals = sub[actin_col].values
+                y_vals = sub[mech_col].values
+                
+                if len(sub) >= 5 and np.std(x_vals) > 0 and np.std(y_vals) > 0:
+                    try:
+                        res = stats.spearmanr(x_vals, y_vals)
+                        rho = getattr(res, 'statistic', res[0] if isinstance(res, (tuple, list, np.ndarray)) else res)
+                        p = getattr(res, 'pvalue', res[1] if isinstance(res, (tuple, list, np.ndarray)) else np.nan)
+                        
+                        # Extract scalar float cleanly if wrapped in array/Series
+                        rho_val = float(rho) if hasattr(rho, '__float__') else float(np.asarray(rho).item())
+                        p_val = float(p) if hasattr(p, '__float__') else float(np.asarray(p).item())
+
+                        if np.isfinite(rho_val):
+                            y_anchor = 0.95 if treatment == 'WT' else 0.88
+                            ax.text(0.03, y_anchor,
+                                    rf"$\rho_{{{treatment}}}={rho_val:.2f}$ (p={p_val:.2g})",
+                                    transform=ax.transAxes, fontsize=annotation_size,
+                                    color=colour, va='top')
+                    except Exception as err:
+                        logger.debug(f"Spearman computation skipped for {treatment} ({region}/{mech_col}): {err}")
 
             if use_log:
                 ax.set_yscale('log')
             if row_idx == 1:
-                ax.set_xlabel(rf"Actin $I/F_0$ ({region.lower()}, pre-pulse)")
+                ax.set_xlabel(rf"Actin $I/F_0$ ({region.lower()}, pre-pulse)", fontsize=axis_label_size)
             if col_idx == 0:
-                ax.set_ylabel(f"{region}\n{mech_label}")
+                ax.set_ylabel(f"{region}\n{mech_label}", fontsize=axis_label_size)
             else:
-                ax.set_ylabel(mech_label)
+                ax.set_ylabel(mech_label, fontsize=axis_label_size)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
             plt.setp(ax.get_xticklabels(), rotation=30, ha='right')
 
-    axes[0, 0].legend(frameon=False, fontsize=7.5, loc='lower right')
+    # Add legend safely if artists exist on axes[0, 0]
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        axes[0, 0].legend(handles, labels, frameon=False, fontsize=legend_size, loc='lower right')
 
     plt.tight_layout()
     utils.save_plot_pdf(output_dir / "Thesis_ASP_Actin_vs_E.pdf")
     plt.close()
     logger.info("Actin-vs-E scatter written.")
 
-
 def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
-                                     output_dir: Path) -> None:
+                                    output_dir: Path) -> None:
     """
     Three-panel scatter of ASP quantities vs Trap_ID:
     (1) Max pre-pulse protrusion length
@@ -2497,7 +2548,7 @@ def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
 
     Coloured by treatment, Spearman ρ annotated per treatment per panel.
     Trap number is a proxy for aspiration pressure (3 kPa at trap 1 →
-    1 kPa at trap 18) and for electrode distance.  A flat regression here
+    1 kPa at trap 18) and for electrode distance. A flat regression here
     is what supports the "no meaningful pressure gradient effect" claim.
 
     Filters to ASP intact cells with a valid viscoelastic fit
@@ -2506,7 +2557,10 @@ def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
     depend on the fit, and gating panel 1 on the same criterion keeps a
     single reported n per treatment across the three panels.
     """
+    import numpy as np
+    import pandas as pd
     from scipy import stats
+
     if mechanics_df is None or mechanics_df.empty:
         return
 
@@ -2523,7 +2577,7 @@ def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
         return
 
     panels = [
-        ('Max_Prot_length_PrePulse_um', 'Protrusion length (µm)',           False),
+        ('Max_Prot_length_PrePulse_um', 'Protrusion length (µm)',         False),
         ('E_Pa',                        r"$E$ (Pa)",                        True ),
         ('eta1_Pa_s',                   r"$\eta_1$ (Pa$\cdot$s)",           True ),
     ]
@@ -2544,12 +2598,22 @@ def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
                        alpha=0.75, label=f"{treatment} (n={len(sub)})")
 
             if len(sub) >= 5:
-                rho, p = stats.spearmanr(sub['Trap_ID'], sub[col])
-                y_anchor = 0.95 if treatment == 'WT' else 0.88
-                ax.text(0.03, y_anchor,
-                        rf"$\rho_{{{treatment}}}={rho:.2f}$ (p={p:.2g})",
-                        transform=ax.transAxes, fontsize=7.5, color=colour,
-                        va='top')
+                # Compute Spearman correlation via pandas to avoid np.cov shape crash
+                rho = sub['Trap_ID'].corr(sub[col], method='spearman')
+
+                if pd.notna(rho):
+                    if abs(rho) < 1.0:
+                        dof = len(sub) - 2
+                        t_stat = rho * np.sqrt(dof / (1.0 - rho**2))
+                        p = 2 * stats.t.sf(np.abs(t_stat), df=dof)
+                    else:
+                        p = 0.0
+
+                    y_anchor = 0.95 if treatment == 'WT' else 0.88
+                    ax.text(0.03, y_anchor,
+                            rf"$\rho_{{{treatment}}}={rho:.2f}$ (p={p:.2g})",
+                            transform=ax.transAxes, fontsize=7.5, color=colour,
+                            va='top')
 
         if use_log:
             ax.set_yscale('log')
@@ -2564,7 +2628,6 @@ def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
     utils.save_plot_pdf(output_dir / "Thesis_ASP_Trap_Dependency.pdf")
     plt.close()
     logger.info("ASP trap-dependency scatter written.")
-
 
 def plot_thesis_asp_body_volume_vs_E(mechanics_df: pd.DataFrame,
                                       output_dir: Path) -> None:
