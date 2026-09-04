@@ -485,6 +485,7 @@ def render_visco_parameter_superplot(
     figsize: Tuple[float, float] = (16, 10),
     grid_shape: Tuple[int, int] = (2, 3),
     rotation: float = 15,
+    ncol=2,
     bracket_pairs: Optional[List[Tuple[int, int]]] = None,
     title_fontsize: Optional[float] = FONT_AXIS_TITLE,
     label_fontsize: Optional[float] = FONT_AXIS_LABEL,
@@ -646,7 +647,7 @@ def render_visco_parameter_superplot(
         legend_ax.legend(
             handles=handles,
             loc="center",
-            ncol=2,
+            ncol=ncol,
             frameon=False,
             fontsize=legend_fontsize,
             handletextpad=0.8,

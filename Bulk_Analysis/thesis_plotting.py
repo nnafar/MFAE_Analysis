@@ -3126,85 +3126,101 @@ def plot_thesis_fate_prepulse_visco_boxplots(mechanics_df: pd.DataFrame, output_
     )
     logger.info("Fate pre-pulse viscoelastic SuperPlot written.")
 
+def plot_thesis_fate_wholetrace_mi_boxplots(
+    mechanics_df: pd.DataFrame,
+    output_dir: Path,
+    r2_floor: float = 0.80,
+    title_fontsize = 15,
+    label_fontsize = 15,
+    tick_fontsize = 15,
+    legend_fontsize = 15,
+    bracket_fontsize = 15,
+) -> None:
+  """Fate-contrast SuperPlot on the whole-trace MI parameters (Intact only).
 
-def plot_thesis_fate_wholetrace_mi_boxplots(mechanics_df: pd.DataFrame,
-                                             output_dir: Path,
-                                             r2_floor: float = 0.80) -> None:
-    """
-    Fate-contrast SuperPlot on the whole-trace MI parameters.
+  Uses the same category scheme as `plot_thesis_fate_prepulse_visco_boxplots`
+  (No pulse baseline + EP by fate) restricted to intact fate status.
 
-    Uses the same category scheme as `plot_thesis_fate_prepulse_visco_boxplots`
-    (No pulse baseline + EP by fate) so the two figures read as a matched
-    pair. Statistical brackets are restricted to within-duration
-    Intact-vs-Ruptured contrasts.
+  Left panel: Linear model winners (`MI_Whole_Linear_Slope`) Right panel:
+  Power-Law model winners (`MI_Whole_PL_b`)
 
-    Cohort gate: `MI_Whole_Best_Model` present *and* winner-model R^2
-    at least `r2_floor` (0.80 by default).
-    """
-    if mechanics_df is None or mechanics_df.empty:
-        return
+  Cohort gate: `MI_Whole_Best_Model` present *and* winner-model R^2 at least
+  `r2_floor` (0.80 by default).
+  """
+  if mechanics_df is None or mechanics_df.empty:
+    return
 
-    df = mechanics_df.copy()
+  df = mechanics_df.copy()
 
-    def _wt_winner_r2(row):
-        m = row.get('MI_Whole_Best_Model')
-        if m == 'Linear':    return row.get('MI_Whole_Linear_R2', np.nan)
-        if m == 'Power-Law': return row.get('MI_Whole_PL_R2', np.nan)
-        return np.nan
+  def _wt_winner_r2(row):
+    m = row.get("MI_Whole_Best_Model")
+    if m == "Linear":
+      return row.get("MI_Whole_Linear_R2", np.nan)
+    if m == "Power-Law":
+      return row.get("MI_Whole_PL_R2", np.nan)
+    return np.nan
 
-    def _wt_winner_slope(row):
-        m = row.get('MI_Whole_Best_Model')
-        if m == 'Linear':    return row.get('MI_Whole_Linear_Slope', np.nan)
-        if m == 'Power-Law': return row.get('MI_Whole_PL_b', np.nan)
-        return np.nan
+  df["MI_Whole_Winner_R2"] = df.apply(_wt_winner_r2, axis=1)
+  df = df.loc[
+      df["MI_Whole_Best_Model"].notna()
+      & (df["MI_Whole_Winner_R2"] >= r2_floor)
+  ].copy()
 
-    df['MI_Whole_Winner_R2'] = df.apply(_wt_winner_r2, axis=1)
-    df = df.loc[df['MI_Whole_Best_Model'].notna()
-                & (df['MI_Whole_Winner_R2'] >= r2_floor)].copy()
+  # Restrict EP condition exclusively to intact fate status
+  keep_asp = (df["Condition_Type"] == "ASP") & (df["Treatment"] == "WT")
+  keep_ep = (df["Condition_Type"] == "EP") & (df["Fate_Status"] == "intact")
+  df = df[keep_asp | keep_ep].copy()
+  if df.empty:
+    return
 
-    keep_asp = (df['Condition_Type'] == 'ASP') & (df['Treatment'] == 'WT')
-    keep_ep  = ((df['Condition_Type'] == 'EP')
-                & df['Fate_Status'].isin(['intact', 'ruptured_post']))
-    df = df[keep_asp | keep_ep].copy()
-    if df.empty:
-        return
+  # Isolate metric variables for Linear and Power-Law models exclusively
+  df["Linear_Slope"] = np.where(
+      df["MI_Whole_Best_Model"] == "Linear",
+      df.get("MI_Whole_Linear_Slope"),
+      np.nan,
+  )
+  df["PL_Exponent_b"] = np.where(
+      df["MI_Whole_Best_Model"] == "Power-Law",
+      df.get("MI_Whole_PL_b"),
+      np.nan,
+  )
 
-    df['Winner_Slope'] = df.apply(_wt_winner_slope, axis=1)
+  # Category labels follow the same convention as the pre-pulse SuperPlot
+  df["Category"] = df.apply(bp._prepulse_new_category_label, axis=1)
+  categories = bp._prepulse_category_order(df)
 
-    # Category labels follow the same convention as the pre-pulse
-    # SuperPlot so the two figures read as a matched pair.
-    df['Category'] = df.apply(bp._prepulse_new_category_label, axis=1)
-    categories = bp._prepulse_category_order(df)
+  panels = [
+      (
+          "Linear_Slope",
+          r"Linear slope $m$ (µm/s)",
+          # "Whole-trace slope\n(Linear winners only)",
+          "",
+      ),
+      (
+          "PL_Exponent_b",
+          r"Power-Law exponent $b$ (–)",
+          # "Whole-trace exponent $b$\n(Power-Law winners only)",
+          "",
+      ),
+  ]
 
-    # Within-duration Intact-vs-Ruptured brackets.
-    bracket_pairs: List[Tuple[int, int]] = []
-    for i, cat in enumerate(categories):
-        if '(Intact)' in cat:
-            twin = cat.replace('(Intact)', '(Ruptured)')
-            if twin in categories:
-                bracket_pairs.append((i, categories.index(twin)))
-
-    panels = [
-        ('Winner_Slope',
-         r'Rate: $m$ (µm/s) if Linear; $b$ (–) if Power-Law',
-         'Whole-trace slope\n(winner-model)'),
-        ('MI_Whole_PL_a',
-         r'Amplitude $a$ (µm)',
-         'Whole-trace power-law $a$\n(PL winners only)'),
-    ]
-
-    bp.render_visco_parameter_superplot(
-        df=df,
-        panels=panels,
-        output_pdf=output_dir / "Thesis_Fate_WholeTrace_MI_Boxplots.pdf",
-        category_col='Category',
-        categories=categories,
-        figsize=(max(12.0, 2.4 * len(categories) + 4.0), 6.0),
-        grid_shape=(1, 3),  # panel-1, panel-2, legend
-        bracket_pairs=bracket_pairs,
-    )
-    logger.info("Fate whole-trace MI SuperPlot written.")
-
+  bp.render_visco_parameter_superplot(
+      df=df,
+      panels=panels,
+      output_pdf=output_dir / "Thesis_Fate_WholeTrace_MI_Boxplots.pdf",
+      category_col="Category",
+      categories=categories,
+      figsize=(max(12.0, 2.4 * len(categories) + 4.0), 6.0),
+      grid_shape=(1, 3),  # panel-1, panel-2, legend
+      bracket_pairs=[],
+      ncol=1,
+      title_fontsize=title_fontsize,
+      label_fontsize=label_fontsize,
+      tick_fontsize=tick_fontsize,
+      legend_fontsize=legend_fontsize,
+      bracket_fontsize=bracket_fontsize,
+  )
+  logger.info("Fate whole-trace MI SuperPlot written.")
 
 def plot_thesis_ep_wholetrace_by_fate(grouped_data: Dict,
                                        mechanics_df: pd.DataFrame,
