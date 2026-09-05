@@ -541,99 +541,100 @@ def render_visco_parameter_superplot(
     date_colours, date_labels, chip_markers = _sp_build_style_maps(df)
 
     utils.check_panel_area(figsize, grid_shape[0], grid_shape[1])
-    fig, axes = plt.subplots(grid_shape[0], grid_shape[1], figsize=figsize)
-    axes = np.asarray(axes).flatten()
+
+    # --- Key Changes Here ---
+    fig = plt.figure(figsize=figsize)
+
+    # Allocate dynamic width ratios: wide for plot panels, narrow (0.35) for single-column legend
+    if grid_shape == (1, 3):
+      width_ratios = [1.0, 1.0, 0.35]
+    else:
+      width_ratios = [1.0] * grid_shape[1]
+
+    gs = fig.add_gridspec(
+        grid_shape[0], grid_shape[1], width_ratios=width_ratios
+    )
+    axes = [fig.add_subplot(gs[r, c]) for r in range(grid_shape[0]) for c in range(grid_shape[1])]
+    axes = np.asarray(axes)
+    # ------------------------
+
     rng = np.random.default_rng(seed=42)
-
     n_panels = len(panels)
+
     for i, ax in enumerate(axes):
-        if i >= n_panels:
-            ax.set_visible(False)
-            continue
+      if i >= n_panels:
+        ax.set_visible(False)
+        continue
 
-        col, ylabel, title = panels[i]
-        panel_df = df[df[col].notna()].copy()
-        if panel_df.empty:
-            ax.set_visible(False)
-            continue
+      col, ylabel, title = panels[i]
+      panel_df = df[df[col].notna()].copy()
+      if panel_df.empty:
+        ax.set_visible(False)
+        continue
 
-        log_axis = (panel_df[col] > 0).all()
-        _sp_render_panel(
-            ax,
-            panel_df,
-            col,
-            categories,
-            date_colours,
-            chip_markers,
-            log_axis,
-            rng,
-            mean_markersize=mean_markersize,
-        )
+      log_axis = (panel_df[col] > 0).all()
+      _sp_render_panel(
+          ax,
+          panel_df,
+          col,
+          categories,
+          date_colours,
+          chip_markers,
+          log_axis,
+          rng,
+          mean_markersize=mean_markersize,
+      )
 
-        # Apply configurable title, label, and tick font sizes
-        ax.set_title(title, fontsize=title_fontsize)
-        ax.set_ylabel(ylabel, fontsize=label_fontsize)
-        ax.set_xlabel("")
-        ax.tick_params(axis="both", labelsize=tick_fontsize)
+      ax.set_title(title, fontsize=title_fontsize)
+      ax.set_ylabel(ylabel, fontsize=label_fontsize)
+      ax.set_xlabel("")
+      ax.tick_params(axis="both", labelsize=tick_fontsize)
 
+      ax.yaxis.set_major_formatter(ticker.LogFormatterMathtext())
+      ax.yaxis.set_minor_formatter(ticker.NullFormatter())
 
-        # Optional: Turn off minor tick labels completely if they clutter the axis
-        ax.yaxis.set_major_formatter(ticker.LogFormatterMathtext())
-        ax.yaxis.set_minor_formatter(ticker.NullFormatter())
-        # --------------------
+      max_label_len = max((len(str(c)) for c in categories), default=0)
+      if max_label_len > 8:
+        ax.tick_params(axis="x", rotation=rotation, labelsize=tick_fontsize)
+        for lbl in ax.get_xticklabels():
+          lbl.set_ha("center")
 
-        # X-tick rotation only when labels are long enough to collide
-        max_label_len = max((len(str(c)) for c in categories), default=0)
-        if max_label_len > 8:
-            ax.tick_params(axis="x", rotation=rotation, labelsize=tick_fontsize)
-            for lbl in ax.get_xticklabels():
-                lbl.set_ha("center")
+      for idx_a, idx_b in bracket_pairs:
+        if idx_a >= len(categories) or idx_b >= len(categories):
+          continue
+        cat_a = categories[idx_a]
+        cat_b = categories[idx_b]
+        a = panel_df.loc[panel_df["Category"] == cat_a, col].dropna().values
+        b = panel_df.loc[panel_df["Category"] == cat_b, col].dropna().values
+        if len(a) < 2 or len(b) < 2:
+          continue
+        stars, label, lw, delta = _build_stat_label(a, b)
 
-        # Brackets for the specified pairs
-        for idx_a, idx_b in bracket_pairs:
-            if idx_a >= len(categories) or idx_b >= len(categories):
-                continue
-            cat_a = categories[idx_a]
-            cat_b = categories[idx_b]
-            a = (
-                panel_df.loc[panel_df["Category"] == cat_a, col]
-                .dropna()
-                .values
-            )
-            b = (
-                panel_df.loc[panel_df["Category"] == cat_b, col]
-                .dropna()
-                .values
-            )
-            if len(a) < 2 or len(b) < 2:
-                continue
-            stars, label, lw, delta = _build_stat_label(a, b)
+      rep_a = (
+          panel_df[panel_df["Category"] == cat_a]
+          .groupby(["Date", "Chip_ID"])[col]
+          .mean()
+          .values
+      )
+      rep_b = (
+          panel_df[panel_df["Category"] == cat_b]
+          .groupby(["Date", "Chip_ID"])[col]
+          .mean()
+          .values
+      )
+      p_exp, n_exp_a, n_exp_b = _sp_experiment_level_mw(rep_a, rep_b)
 
-            rep_a = (
-                panel_df[panel_df["Category"] == cat_a]
-                .groupby(["Date", "Chip_ID"])[col]
-                .mean()
-                .values
-            )
-            rep_b = (
-                panel_df[panel_df["Category"] == cat_b]
-                .groupby(["Date", "Chip_ID"])[col]
-                .mean()
-                .values
-            )
-            p_exp, n_exp_a, n_exp_b = _sp_experiment_level_mw(rep_a, rep_b)
+      logger.info(
+          f"  [{title.splitlines()[0]:<30}] {cat_a} vs {cat_b}: "
+          f"cells n=({len(a)},{len(b)})  stars={stars}  delta={delta:+.3f}  "
+          f"exp n=({n_exp_a},{n_exp_b})  p_exp={p_exp:.4g}"
+      )
 
-            logger.info(
-                f"  [{title.splitlines()[0]:<30}] {cat_a} vs {cat_b}: "
-                f"cells n=({len(a)},{len(b)})  stars={stars}  delta={delta:+.3f}  "
-                f"exp n=({n_exp_a},{n_exp_b})  p_exp={p_exp:.4g}"
-            )
-
-            if label is not None:
-                y_top = float(np.nanmax(np.concatenate([a, b])))
-                _add_bracket(
-                    ax, idx_a, idx_b, y_top, label, lw=lw, fontsize=bracket_fontsize
-                )
+      if label is not None:
+          y_top = float(np.nanmax(np.concatenate([a, b])))
+          _add_bracket(
+              ax, idx_a, idx_b, y_top, label, lw=lw, fontsize=bracket_fontsize
+          )
 
     # Legend in the last unused slot
     if n_panels < len(axes):
@@ -646,7 +647,7 @@ def render_visco_parameter_superplot(
         )
         legend_ax.legend(
             handles=handles,
-            loc="center",
+            loc="center left",  # Anchors legend leftward toward the plot
             ncol=ncol,
             frameon=False,
             fontsize=legend_fontsize,

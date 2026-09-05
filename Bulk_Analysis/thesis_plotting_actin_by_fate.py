@@ -385,6 +385,9 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
     output_dir_map: Optional[Dict[str, Path]] = None,
     window_pre_s: float = 15.0,
     window_post_s: float = 15.0,
+    title_fontsize: float =  13,
+    label_fontsize: float =  13,
+    legend_fontsize: float = 13,
 ) -> None:
     """
     Time-resolved mean F0-normalised actin fluorescence aligned to the
@@ -413,7 +416,8 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
     """
     if mechanics_df is None or mechanics_df.empty:
         logger.warning(
-            "Actin-around-pulse (by fate) plot skipped: empty mechanics_df.")
+            "Actin-around-pulse (by fate) plot skipped: empty mechanics_df."
+        )
         return
 
     df = mechanics_df.copy()
@@ -429,27 +433,13 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
     }
     if not fate_map:
         logger.warning(
-            "Actin-around-pulse (by fate) plot skipped: no EP cells accepted.")
+            "Actin-around-pulse (by fate) plot skipped: no EP cells accepted."
+        )
         return
-
-    # ASP cohort filter (intact only). Used to build a per-treatment
-    # baseline reference. Whole-cell time-averaged I/F0 gives one scalar
-    # per ASP cell; the cohort mean and SD are drawn on each region axis
-    # as a horizontal band spanning the full time window.
-    df_asp = df.loc[
-        (df['Condition_Type'] == 'ASP')
-        & (df['Fate_Status'] == 'intact')
-    ]
-    asp_pairs: set = set(
-        zip(df_asp['Experiment_Folder'], df_asp['Trap_ID'])
-    )
 
     # (treatment, fate, duration, region) -> list of (t_aligned, I/F0)
     traces: Dict[Tuple[str, str, str, str], list] = {}
     durations_seen: set = set()
-
-    # (treatment, region) -> list of per-cell mean I/F0 scalars for ASP.
-    asp_scalars: Dict[Tuple[str, str], list] = {}
 
     for gk, traps in grouped_data.items():
         if not traps:
@@ -457,53 +447,7 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
         cond_type = traps[0].metadata.condition_type
 
         # -----------------------------------------------------------------
-        # ASP baseline aggregation. Each cell contributes one scalar per
-        # region (mean I/F0 over its usable trace). The scalar goes into
-        # the treatment bucket; SD across cells becomes the band width.
-        # -----------------------------------------------------------------
-        if cond_type == 'ASP':
-            for trap in traps:
-                meta = trap.metadata
-                if (meta.full_path.name, trap.trap_id) not in asp_pairs:
-                    continue
-                treatment = meta.treatment
-                if treatment not in _TREATMENT_ORDER:
-                    continue
-                ad = getattr(trap, 'actin_data', {}) or {}
-                if 'Time_s' not in ad:
-                    continue
-                t_raw = np.asarray(ad['Time_s'], dtype=float)
-                if len(t_raw) == 0:
-                    continue
-                for region in ('Body', 'Prot'):
-                    mean_key = f'Actin_{region}_Mean'
-                    f0_key   = f'F0_{region}'
-                    if mean_key not in ad or f0_key not in ad:
-                        continue
-                    intensity = np.asarray(ad[mean_key], dtype=float)
-                    f0_arr = np.asarray(ad[f0_key], dtype=float)
-                    f0_scalar = next(
-                        (float(v) for v in f0_arr
-                         if np.isfinite(v) and v > 0),
-                        None,
-                    )
-                    if f0_scalar is None:
-                        continue
-                    valid = (
-                        np.isfinite(intensity) & (intensity > 0)
-                    )
-                    if valid.sum() < 5:
-                        continue
-                    cell_mean = float(
-                        np.nanmean(intensity[valid] / f0_scalar))
-                    if not np.isfinite(cell_mean):
-                        continue
-                    asp_scalars.setdefault(
-                        (treatment, region), []).append(cell_mean)
-            continue
-
-        # -----------------------------------------------------------------
-        # EP trace aggregation (unchanged).
+        # EP trace aggregation.
         # -----------------------------------------------------------------
         if cond_type != 'EP':
             continue
@@ -562,7 +506,8 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
     durations = sorted(durations_seen, key=_duration_sort_key)
     if not durations:
         logger.warning(
-            "Actin-around-pulse (by fate) plot skipped: no valid EP durations.")
+            "Actin-around-pulse (by fate) plot skipped: no valid EP durations."
+        )
         return
 
     common_t = np.linspace(-window_pre_s, window_post_s, 90)
@@ -590,21 +535,6 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
                 len(trs),
             )
 
-    # Pre-compute the ASP baseline scalars per (treatment, region).
-    # Kept as a dict of (mean, sd, n) tuples so the drawing loop below
-    # can add the reference band to every figure without recomputing.
-    asp_baseline: Dict[Tuple[str, str], Tuple[float, float, int]] = {}
-    for (treatment, region), vals in asp_scalars.items():
-        arr = np.asarray(vals, dtype=float)
-        arr = arr[np.isfinite(arr)]
-        if len(arr) < 2:
-            continue
-        asp_baseline[(treatment, region)] = (
-            float(np.mean(arr)),
-            float(np.std(arr, ddof=1)),
-            int(len(arr)),
-        )
-
     # One figure per duration. 2 rows (Body / Prot); (treatment, fate)
     # overlaid within a subplot.
     for dur in durations:
@@ -620,30 +550,6 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
                 lw=1.0, ls='--', zorder=1,
             )
             ax.axhline(1.0, color='0.7', lw=0.6, ls=':', zorder=0)
-
-            # -------------------------------------------------------------
-            # ASP baseline: horizontal band per treatment. Drawn first so
-            # EP traces sit on top and remain visually dominant. Uses the
-            # ASP-treatment palette to distinguish from the pulse-colour
-            # EP traces (WT-ASP navy, CytD-ASP red).
-            # -------------------------------------------------------------
-            for treatment in _TREATMENT_ORDER:
-                base = asp_baseline.get((treatment, region))
-                if base is None:
-                    continue
-                mu_asp, sd_asp, n_asp = base
-                asp_colour = bp.ASP_TREATMENT_COLOUR.get(
-                    treatment, utils.get_style_color(treatment, 'ASP'))
-                ax.axhspan(
-                    mu_asp - sd_asp, mu_asp + sd_asp,
-                    color=asp_colour, alpha=0.10, zorder=0,
-                )
-                ax.axhline(
-                    mu_asp, color=asp_colour, lw=1.2, ls=':',
-                    alpha=0.75, zorder=0,
-                    label=f"{treatment} ASP baseline (n={n_asp})",
-                )
-                any_data_this_dur = True
 
             # -------------------------------------------------------------
             # EP mean traces by (treatment, fate).
@@ -674,10 +580,13 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
                         color=colour, alpha=0.12, linewidth=0,
                     )
 
-            ax.set_title(f"{dur} pulse -- {region}", fontsize=9)
-            if row_idx == 1:
-                ax.set_xlabel("Time from pulse (s)")
-            ax.set_ylabel(f"{region}\n" r"Actin $I(t)/F_0$")
+            if row_idx == 0:
+                ax.set_ylabel(r"Body $I(t)/F_0$", fontsize=label_fontsize)
+            else:
+                ax.set_xlabel("Time from pulse (s)", fontsize=label_fontsize)
+                ax.set_ylabel(r"Protrusion $I(t)/F_0$", fontsize=label_fontsize)
+
+            ax.tick_params(axis='both', labelsize=label_fontsize * 0.9)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
 
@@ -686,7 +595,8 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
             logger.info(f"  Skipping {dur} (by fate): no valid actin traces.")
             continue
 
-        axes[0, 0].legend(frameon=False, fontsize=7.5, loc='best')
+        fig.suptitle(f"{dur}", fontsize=title_fontsize, y=0.98)
+        axes[0, 0].legend(frameon=False, fontsize=legend_fontsize, loc='best')
         plt.tight_layout()
 
         target_dir = output_dir
@@ -699,11 +609,8 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
         plt.close()
         logger.info(
             f"Actin-around-pulse trace ({dur}, by fate) written "
-            f"(ASP baseline: "
-            f"{ {k: v[:2] for k, v in asp_baseline.items()} }; "
-            f"pulse-frame indexing caveat applies)."
+            f"(pulse-frame indexing caveat applies)."
         )
-
 
 # =============================================================================
 # Dispatcher registration helper

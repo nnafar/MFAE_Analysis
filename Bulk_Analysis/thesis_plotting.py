@@ -3210,7 +3210,7 @@ def plot_thesis_fate_wholetrace_mi_boxplots(
       output_pdf=output_dir / "Thesis_Fate_WholeTrace_MI_Boxplots.pdf",
       category_col="Category",
       categories=categories,
-      figsize=(max(12.0, 2.4 * len(categories) + 4.0), 6.0),
+      figsize=(max(12.0, 2.4 * len(categories) + 6.0), 6.0),
       grid_shape=(1, 3),  # panel-1, panel-2, legend
       bracket_pairs=[],
       ncol=1,
