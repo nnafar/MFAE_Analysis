@@ -376,6 +376,9 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
             # Subpanel title set to parameter (14)
             ax.set_title(f"Trap {tid}", fontweight='bold', fontsize=panel_title_size)
 
+            # Track successful annotations per subplot to stack labels vertically
+            label_count = 0
+
             for trap in trap_groups[tid]:
                 pd_data = trap.protrusion_data
                 if ('Time_s' not in pd_data or 'Protrusion_Length_um' not in pd_data):
@@ -402,9 +405,15 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
                     n_starts=3, min_points=15)
 
                 best = visco['best_model']
+                
+                # Bottom-right y position offset calculated based on label_count
+                y_pos = 0.05 + (label_count * 0.10)
+
                 if best is None:
-                    # Failed fit text set to parameter (14)
-                    ax.text(0.05, 0.9, "Fit failed", transform=ax.transAxes, fontsize=annotation_size, color='red')
+                    # Failed fit text set to parameter in bottom-right
+                    ax.text(0.95, y_pos, "Fit failed", transform=ax.transAxes, 
+                            fontsize=annotation_size, color='red', ha='right', va='bottom')
+                    label_count += 1
                     continue
 
                 bp_params = visco['best_params']
@@ -420,14 +429,14 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
                 else:
                     continue
 
-                # Fit line is semi-transparent so the raw scatter beneath
-                # remains visible through the trace (data is the ground
-                # truth; the fit is one interpretation).
                 ax.plot(t_smooth, l_pred, color=color, lw=2, alpha=0.55)
                 r2_str = f"R²={visco['best_r2']:.2f}" if visco['best_r2'] is not None else ""
                 
-                # Model + R² annotation set to parameter (14)
-                ax.text(0.05, 0.9, f"{best}  {r2_str}", transform=ax.transAxes, fontsize=annotation_size, fontweight='bold', color=color)
+                # Model + R² annotation anchored to bottom-right on its own vertical line
+                ax.text(0.95, y_pos, f"{best}  {r2_str}", transform=ax.transAxes, 
+                        fontsize=annotation_size, fontweight='bold', color=color, 
+                        ha='right', va='bottom')
+                label_count += 1
 
         for j in range(n, len(axes)): axes[j].axis('off')
         plt.tight_layout(rect=[0.03, 0.03, 1, 0.95])

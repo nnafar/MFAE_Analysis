@@ -1745,20 +1745,20 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
 # 3b. MI whole-trace mechanics vs uptake / protrusion length            #
 # ===================================================================== #
 def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
-                                      output_dir: Path,
-                                      treatment: str = 'WT',
-                                      runaway_rule: str = (
-                                          DEFAULT_RUNAWAY_RULE),
-                                      uptake_metric: str = 'A',
-                                      fate_states: Tuple[str, ...] = (
-                                          ANALYSIS_FATE_STATES),
-                                      # --- Font Size Parameters ---
-                                      title_size: int      = 14,
-                                      axis_label_size: int = 14,
-                                      tick_label_size: int = 14,
-                                      annotation_size: int = 14,
-                                      empty_n_size: int    = 14,
-                                      ) -> None:
+                                     output_dir: Path,
+                                     treatment: str = 'WT',
+                                     runaway_rule: str = (
+                                         DEFAULT_RUNAWAY_RULE),
+                                     uptake_metric: str = 'A',
+                                     fate_states: Tuple[str, ...] = (
+                                         ANALYSIS_FATE_STATES),
+                                     # --- Font Size Parameters ---
+                                     title_size: int      = 14,
+                                     axis_label_size: int = 14,
+                                     tick_label_size: int = 14,
+                                     annotation_size: int = 14,
+                                     empty_n_size: int    = 14,
+                                     ) -> None:
     """
     2x2 matrix of scatter plots — whole-trace MI descriptors vs uptake.
     """
@@ -1793,11 +1793,11 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
         return
 
     mech_rows = [
-        ('MI_Whole_Linear_Slope', r"Whole-trace slope ($\mathrm{\mu m}$/s)",
+        ('MI_Whole_Linear_Slope', r"Whole-trace slope, m ($\mathrm{\mu m}$/s)",
          False,
          None),
-        ('MI_Whole_PL_a',         r"Power-law amplitude $a$",
-         True,
+        ('MI_Whole_PL_b',         r"Power-law slope $b$",
+         False,
          ('MI_Whole_Best_Model', 'Power-Law')),
     ]
     if uptake_metric == 'A':
@@ -1944,9 +1944,9 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
             if j == 0:
                 ax.set_ylabel(mlab, fontsize=axis_label_size)
 
-    fig.suptitle(f"{treatment} — whole-trace MI descriptors vs uptake "
-                 "and protrusion length",
-                 y=1.00, fontweight='bold', fontsize=title_size)
+    # fig.suptitle(f"{treatment} — whole-trace MI descriptors vs uptake "
+    #              "and protrusion length",
+    #              y=1.00, fontweight='bold', fontsize=title_size)
     fig.tight_layout()
     metric_suffix = '' if uptake_metric == 'A' else f'_{uptake_metric}'
     out = (Path(output_dir)
@@ -1954,7 +1954,7 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
              f"{metric_suffix}.pdf")
     utils.save_plot_pdf(out)
     plt.close(fig)
-    logger.info(f"  Saved: {out.name}")
+    logger.info(f"   Saved: {out.name}")
 
 # ===================================================================== #
 # 3c. Uptake amplitude vs pre-pulse protrusion length                   #
