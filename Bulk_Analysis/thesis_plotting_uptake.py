@@ -1532,24 +1532,29 @@ def plot_thesis_uptake_amplitude_per_trap(mechanics_df: pd.DataFrame,
 # 3. Pre-pulse mechanics vs uptake / protrusion length                  #
 # ===================================================================== #
 def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
-                                        output_dir: Path,
-                                        treatment: str = 'WT',
-                                        runaway_rule: str = (
-                                            DEFAULT_RUNAWAY_RULE),
-                                        uptake_metric: str = 'A',
-                                        fate_states: Tuple[str, ...] = (
-                                            ANALYSIS_FATE_STATES),
-                                        # --- New Font Size Parameters ---
-                                        title_size: int      = 15,
-                                        axis_label_size: int = 15,
-                                        tick_label_size: int = 15,
-                                        annotation_size: int = 15,
-                                        empty_n_size: int    = 15,
-                                        ) -> None:
+                                      output_dir: Path,
+                                      treatment: str = 'WT',
+                                      runaway_rule: str = (
+                                          DEFAULT_RUNAWAY_RULE),
+                                      uptake_metric: str = 'A',
+                                      fate_states: Tuple[str, ...] = (
+                                          ANALYSIS_FATE_STATES),
+                                      # --- Font Size Parameters ---
+                                      title_size: int      = 15,
+                                      axis_label_size: int = 15,
+                                      tick_label_size: int = 15,
+                                      annotation_size: int = 15,
+                                      empty_n_size: int    = 15,
+                                      ) -> None:
     """
     3x2 matrix of scatter plots — pre-pulse viscoelastic parameters
     vs uptake.
     """
+    import numpy as np
+    import pandas as pd
+    from scipy import stats
+    import matplotlib.pyplot as plt
+
     if uptake_metric not in ('A', 'U100'):
         raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
                          f"{uptake_metric!r}.")
@@ -1576,7 +1581,7 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
         return
 
     mech_rows = [
-        ('PrePulse_E_Pa',      r"$E$ (Pa)",              True),
+        ('PrePulse_E_Pa',       r"$E$ (Pa)",               True),
         ('PrePulse_eta1_Pa_s', r"$\eta_{1}$ (Pa$\cdot$s)", True),
         ('PrePulse_Tau_s',     r"$\tau$ (s)",            True),
     ]
@@ -1615,6 +1620,12 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
     for i, (ycol, ylab, yflag, cohort, xlog) in enumerate(outcome_cols):
         for j, (mcol, mlab, mlog) in enumerate(mech_rows):
             ax = axes[i, j]
+
+            # Set scales FIRST before plotting or line rendering
+            if mlog:
+                ax.set_yscale('log')
+            if xlog:
+                ax.set_xscale('log')
 
             sub = df.copy()
             if cohort == 'EP_only':
@@ -1656,13 +1667,23 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                                facecolor='none', edgecolor=color,
                                linewidths=1.3, alpha=0.85)
 
-            x_all = sub[ycol].to_numpy(dtype=float)
-            y_all = sub[mcol].to_numpy(dtype=float)
+            x_all = sub[ycol].to_numpy(dtype=float) # Uptake (x-axis)
+            y_all = sub[mcol].to_numpy(dtype=float) # Mechanics (y-axis)
+
+            # Mask finite and strictly positive values if log scale is active
             m = np.isfinite(x_all) & np.isfinite(y_all)
+            if xlog:
+                m &= (x_all > 0)
+            if mlog:
+                m &= (y_all > 0)
+
             if m.sum() >= 3:
-                rho, p = stats.spearmanr(x_all[m], y_all[m])
+                x_vals = x_all[m]
+                y_vals = y_all[m]
+
+                # --- 1. Compute Spearman correlation & annotate ---
+                rho, p = stats.spearmanr(x_vals, y_vals)
                 p_str = f"p = {p:.3f}" if p >= 0.001 else "p < 0.001"
-                # Updated annotation text size
                 ax.text(0.03, 0.97,
                         rf"$\rho$ = {rho:.2f}" + "\n" + p_str +
                         f"\nn = {int(m.sum())}",
@@ -1671,19 +1692,44 @@ def plot_thesis_prepulse_correlations(mechanics_df: pd.DataFrame,
                         bbox=dict(boxstyle='round,pad=0.25',
                                   fc='white', alpha=0.85, ec='gray'))
 
-            if mlog:
-                ax.set_yscale('log')
-            if xlog:
-                ax.set_xscale('log')
+                # --- 2. Fit and plot trendline ---
+                try:
+                    if x_vals.min() < x_vals.max() and np.std(x_vals) > 0 and np.std(y_vals) > 0:
+                        x_line = np.geomspace(x_vals.min(), x_vals.max(), 2) if xlog else np.array([x_vals.min(), x_vals.max()])
+
+                        # Transform inputs depending on log choices for axes
+                        reg_x = np.log10(x_vals) if xlog else x_vals
+                        reg_y = np.log10(y_vals) if mlog else y_vals
+
+                        fit_x_line = np.log10(x_line) if xlog else x_line
+
+                        slope, intercept = np.polyfit(reg_x, reg_y, 1)
+                        fit_y_line = slope * fit_x_line + intercept
+
+                        y_line = 10 ** fit_y_line if mlog else fit_y_line
+
+                        ax.plot(
+                            x_line,
+                            y_line,
+                            color='gray',
+                            linestyle='--',
+                            dashes=(5, 5),
+                            linewidth=1.0,
+                            alpha=0.55,
+                            zorder=1
+                        )
+                except Exception as err:
+                    logger.warning(f"Trendline fit failed for pre-pulse correlations ({treatment}, {mcol} vs {ycol}): {err}")
+
             ax.spines[['top', 'right']].set_visible(False)
 
-            # Updated axis label sizes
+            # Axis label formatting
             if i == len(outcome_cols) - 1:
                 ax.set_xlabel(ylab, fontsize=axis_label_size)
             if j == 0:
                 ax.set_ylabel(mlab, fontsize=axis_label_size)
 
-    # Updated main title size
+    # Main title formatting
     fig.suptitle(f"{treatment} — pre-pulse mechanics vs uptake and protrusion length",
                  y=1.02, fontweight='bold', fontsize=title_size)
     fig.tight_layout()
@@ -1706,7 +1752,7 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                                       uptake_metric: str = 'A',
                                       fate_states: Tuple[str, ...] = (
                                           ANALYSIS_FATE_STATES),
-                                      # --- New Font Size Parameters ---
+                                      # --- Font Size Parameters ---
                                       title_size: int      = 14,
                                       axis_label_size: int = 14,
                                       tick_label_size: int = 14,
@@ -1716,6 +1762,11 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
     """
     2x2 matrix of scatter plots — whole-trace MI descriptors vs uptake.
     """
+    import numpy as np
+    import pandas as pd
+    from scipy import stats
+    import matplotlib.pyplot as plt
+
     if uptake_metric not in ('A', 'U100'):
         raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
                          f"{uptake_metric!r}.")
@@ -1784,6 +1835,12 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
         for j, (ycol, ylab, yflag, cohort, xlog) in enumerate(outcome_cols):
             ax = axes[i, j]
 
+            # Set log scale FIRST before plotting data or trendlines
+            if mlog:
+                ax.set_yscale('log')
+            if xlog:
+                ax.set_xscale('log')
+
             sub = df.copy()
             if cohort == 'EP_only':
                 sub = sub[sub['Condition_Type'] == 'EP']
@@ -1827,11 +1884,22 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                                facecolor='none', edgecolor=color,
                                linewidths=1.3, alpha=0.85)
 
-            x_all = sub[ycol].to_numpy(dtype=float)
-            y_all = sub[mcol].to_numpy(dtype=float)
+            x_all = sub[ycol].to_numpy(dtype=float)  # Uptake (x-axis)
+            y_all = sub[mcol].to_numpy(dtype=float)  # Descriptor (y-axis)
+
+            # Filter valid finite points; enforce positive values for active log axes
             m = np.isfinite(x_all) & np.isfinite(y_all)
+            if xlog:
+                m &= (x_all > 0)
+            if mlog:
+                m &= (y_all > 0)
+
             if m.sum() >= 3:
-                rho, p = stats.spearmanr(x_all[m], y_all[m])
+                x_vals = x_all[m]
+                y_vals = y_all[m]
+
+                # --- 1. Compute & annotate Spearman correlation ---
+                rho, p = stats.spearmanr(x_vals, y_vals)
                 p_str = f"p = {p:.3f}" if p >= 0.001 else "p < 0.001"
                 ax.text(0.03, 0.97,
                         rf"$\rho$ = {rho:.2f}" + "\n" + p_str +
@@ -1841,10 +1909,34 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
                         bbox=dict(boxstyle='round,pad=0.25',
                                   fc='white', alpha=0.85, ec='gray'))
 
-            if mlog:
-                ax.set_yscale('log')
-            if xlog:
-                ax.set_xscale('log')
+                # --- 2. Fit and plot trendline ---
+                try:
+                    if x_vals.min() < x_vals.max() and np.std(x_vals) > 0 and np.std(y_vals) > 0:
+                        x_line = np.geomspace(x_vals.min(), x_vals.max(), 2) if xlog else np.array([x_vals.min(), x_vals.max()])
+
+                        reg_x = np.log10(x_vals) if xlog else x_vals
+                        reg_y = np.log10(y_vals) if mlog else y_vals
+
+                        fit_x_line = np.log10(x_line) if xlog else x_line
+
+                        slope, intercept = np.polyfit(reg_x, reg_y, 1)
+                        fit_y_line = slope * fit_x_line + intercept
+
+                        y_line = 10 ** fit_y_line if mlog else fit_y_line
+
+                        ax.plot(
+                            x_line,
+                            y_line,
+                            color='gray',
+                            linestyle='--',
+                            dashes=(5, 5),
+                            linewidth=1.0,
+                            alpha=0.55,
+                            zorder=1
+                        )
+                except Exception as err:
+                    logger.warning(f"Trendline fit failed for MI-whole correlations ({treatment}, {mcol} vs {ycol}): {err}")
+
             ax.spines[['top', 'right']].set_visible(False)
 
             if i == len(mech_rows) - 1:
@@ -1868,26 +1960,31 @@ def plot_thesis_mi_whole_correlations(mechanics_df: pd.DataFrame,
 # 3c. Uptake amplitude vs pre-pulse protrusion length                   #
 # ===================================================================== #
 def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
-                                      output_dir: Path,
-                                      treatment: str = 'WT',
-                                      runaway_rule: str = (
-                                          DEFAULT_RUNAWAY_RULE),
-                                      uptake_metric: str = 'A',
-                                      fate_states: Tuple[str, ...] = (
-                                          ANALYSIS_FATE_STATES),
-                                      # --- New Font Size Parameters (Defaulted to 14) ---
-                                      title_size: int = 14,
-                                      panel_title_size: int = 14,
-                                      axis_label_size: int = 14,
-                                      tick_label_size: int = 14,
-                                      annotation_size: int = 14,
-                                      legend_size: int = 14,
-                                      empty_n_size: int = 14,
-                                      ) -> None:
+                                       output_dir: Path,
+                                       treatment: str = 'WT',
+                                       runaway_rule: str = (
+                                           DEFAULT_RUNAWAY_RULE),
+                                       uptake_metric: str = 'A',
+                                       fate_states: Tuple[str, ...] = (
+                                           ANALYSIS_FATE_STATES),
+                                       # --- Font Size Parameters ---
+                                       title_size: int = 14,
+                                       panel_title_size: int = 14,
+                                       axis_label_size: int = 14,
+                                       tick_label_size: int = 14,
+                                       annotation_size: int = 14,
+                                       legend_size: int = 14,
+                                       empty_n_size: int = 14,
+                                       ) -> None:
     """
     Two-panel scatter of uptake vs pre-pulse maximum protrusion length.
     Panels: body (left), protrusion (right).
     """
+    import numpy as np
+    import pandas as pd
+    from scipy import stats
+    import matplotlib.pyplot as plt
+
     if uptake_metric not in ('A', 'U100'):
         raise ValueError(f"uptake_metric must be 'A' or 'U100', got "
                          f"{uptake_metric!r}.")
@@ -1941,6 +2038,10 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
         # Set tick label size for subpanel axes
         ax.tick_params(axis='both', which='both', labelsize=tick_label_size)
 
+        # Set scale FIRST before plotting scatter points or trendlines
+        if x_log:
+            ax.set_xscale('log')
+
         a_col, flag_col, xlab = region_spec[region]
         keep = df[a_col].notna() & df[prot_len_col].notna()
         if flag_col is not None:
@@ -1978,12 +2079,19 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
                            label=f"{CONDITION_LABEL[cond_key]} ({fate})",
                            **marker_kwargs)
 
-        # Spearman across all points.
         x_all = sub[a_col].to_numpy(dtype=float)
         y_all = sub[prot_len_col].to_numpy(dtype=float)
+        
         m = np.isfinite(x_all) & np.isfinite(y_all)
+        if x_log:
+            m &= (x_all > 0)
+
         if m.sum() >= 3:
-            rho, p = stats.spearmanr(x_all[m], y_all[m])
+            x_vals = x_all[m]
+            y_vals = y_all[m]
+
+            # --- 1. Compute & annotate Spearman correlation ---
+            rho, p = stats.spearmanr(x_vals, y_vals)
             p_str = f"p = {p:.3f}" if p >= 0.001 else "p < 0.001"
             ax.text(0.03, 0.97,
                     rf"$\rho$ = {rho:.2f}" + "\n" + p_str +
@@ -1992,9 +2100,31 @@ def plot_thesis_uptake_vs_prot_length(mechanics_df: pd.DataFrame,
                     bbox=dict(boxstyle='round,pad=0.3',
                               fc='white', alpha=0.85, ec='gray'))
 
+            # --- 2. Safe trendline fit & plot ---
+            try:
+                if x_vals.min() < x_vals.max() and np.std(x_vals) > 0 and np.std(y_vals) > 0:
+                    x_line = np.geomspace(x_vals.min(), x_vals.max(), 2) if x_log else np.array([x_vals.min(), x_vals.max()])
+                    
+                    reg_x = np.log10(x_vals) if x_log else x_vals
+                    fit_x_line = np.log10(x_line) if x_log else x_line
+
+                    slope, intercept = np.polyfit(reg_x, y_vals, 1)
+                    y_line = slope * fit_x_line + intercept
+
+                    ax.plot(
+                        x_line,
+                        y_line,
+                        color='gray',
+                        linestyle='--',
+                        dashes=(5, 5),
+                        linewidth=1.0,
+                        alpha=0.55,
+                        zorder=1
+                    )
+            except Exception as err:
+                logger.warning(f"Trendline fit failed for Uptake-vs-protlength ({treatment}, {region}): {err}")
+
         ax.set_xlabel(xlab + xlabel_unit, fontsize=axis_label_size)
-        if x_log:
-            ax.set_xscale('log')
         ax.set_title(f"{region}  (n = {len(sub)})", fontsize=panel_title_size)
         ax.spines[['top', 'right']].set_visible(False)
 

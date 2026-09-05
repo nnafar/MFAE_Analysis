@@ -2431,12 +2431,14 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
                                         ) -> None:
     """
     Scatter: pre-pulse actin (F0-normalised) vs elastic modulus E, per cell.
-    Two panels: body and protrusion.  Spearman ρ annotated per treatment.
+    Two panels: body and protrusion. Spearman ρ annotated per treatment.
 
     Filters to ASP intact cells with a valid viscoelastic fit.
     """
     from scipy import stats
     import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
 
     if mechanics_df is None or mechanics_df.empty:
         return
@@ -2453,7 +2455,7 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
         return
 
     mech_panels = [
-        ('E_Pa',       r"$E$ (Pa)",                  True),
+        ('E_Pa',       r"$E$ (Pa)",                   True),
         ('eta1_Pa_s', r"$\eta_1$ (Pa$\cdot$s)",           True),
         ('Tau_s',     r"$\tau$ (s, Kelvin-Voigt only)",   True),
     ]
@@ -2466,6 +2468,10 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
 
             ax.tick_params(axis='both', which='both', labelsize=tick_label_size)
 
+            # --- Set scale FIRST so line drawing & dashing calculate correctly ---
+            if use_log:
+                ax.set_yscale('log')
+
             if actin_col not in df.columns or mech_col not in df.columns:
                 ax.set_visible(False)
                 continue
@@ -2473,15 +2479,16 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
             for treatment in _TREATMENT_ORDER:
                 sub = df.loc[df['Treatment'] == treatment, [actin_col, mech_col]].copy()
                 
-                # Convert columns explicitly to float (coercing strings/objects to NaN)
+                # Convert columns explicitly to float
                 x_series = pd.to_numeric(sub[actin_col], errors='coerce')
                 y_series = pd.to_numeric(sub[mech_col], errors='coerce')
                 
                 # Safe finite mask on numeric Series
                 mask = np.isfinite(x_series) & np.isfinite(y_series)
+                if use_log:
+                    mask &= (y_series > 0)
+
                 sub = sub[mask].copy()
-                
-                # Update sub with cast values to avoid future object-type errors downstream
                 sub[actin_col] = x_series[mask]
                 sub[mech_col] = y_series[mask]
 
@@ -2493,17 +2500,17 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
                            color=colour, edgecolor=colour, linewidths=0.4,
                            alpha=0.75, label=f"{treatment} (n={len(sub)})")
 
-                # SAFE CHECK: Needs at least 5 points AND non-zero variance in both variables
+                # SAFE CHECK: Needs at least 5 points AND non-zero variance
                 x_vals = sub[actin_col].values
                 y_vals = sub[mech_col].values
                 
                 if len(sub) >= 5 and np.std(x_vals) > 0 and np.std(y_vals) > 0:
                     try:
+                        # --- 1. Compute Spearman correlation ---
                         res = stats.spearmanr(x_vals, y_vals)
                         rho = getattr(res, 'statistic', res[0] if isinstance(res, (tuple, list, np.ndarray)) else res)
                         p = getattr(res, 'pvalue', res[1] if isinstance(res, (tuple, list, np.ndarray)) else np.nan)
                         
-                        # Extract scalar float cleanly if wrapped in array/Series
                         rho_val = float(rho) if hasattr(rho, '__float__') else float(np.asarray(rho).item())
                         p_val = float(p) if hasattr(p, '__float__') else float(np.asarray(p).item())
 
@@ -2513,8 +2520,32 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
                                     rf"$\rho_{{{treatment}}}={rho_val:.2f}$ (p={p_val:.2g})",
                                     transform=ax.transAxes, fontsize=annotation_size,
                                     color=colour, va='top')
+
+                        # --- 2. Fit and plot trendline ---
+                        # Only 2 points needed for a straight line; avoids overlapping dash artifacts
+                        x_line = np.array([x_vals.min(), x_vals.max()])
+                        
+                        if use_log:
+                            slope, intercept = np.polyfit(x_vals, np.log10(y_vals), 1)
+                            y_line = 10 ** (slope * x_line + intercept)
+                        else:
+                            slope, intercept = np.polyfit(x_vals, y_vals, 1)
+                            y_line = slope * x_line + intercept
+
+                        # Clean dashed line with explicit dash/gap spacing (5pt dash, 5pt space)
+                        ax.plot(
+                            x_line, 
+                            y_line, 
+                            color=colour, 
+                            linestyle='--', 
+                            dashes=(5, 5),
+                            linewidth=1.2, 
+                            alpha=0.5,
+                            zorder=1
+                        )
+
                     except Exception as err:
-                        logger.debug(f"Spearman computation skipped for {treatment} ({region}/{mech_col}): {err}")
+                        logger.debug(f"Spearman or trendline computation skipped for {treatment} ({region}/{mech_col}): {err}")
 
             if use_log:
                 ax.set_yscale('log')
@@ -2539,7 +2570,7 @@ def plot_thesis_asp_actin_vs_mechanics(mechanics_df: pd.DataFrame,
     logger.info("Actin-vs-E scatter written.")
 
 def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
-                                    output_dir: Path) -> None:
+                                     output_dir: Path) -> None:
     """
     Three-panel scatter of ASP quantities vs Trap_ID:
     (1) Max pre-pulse protrusion length
@@ -2560,6 +2591,7 @@ def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
     import numpy as np
     import pandas as pd
     from scipy import stats
+    import matplotlib.pyplot as plt
 
     if mechanics_df is None or mechanics_df.empty:
         return
@@ -2587,18 +2619,36 @@ def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
         if col not in df.columns:
             continue
 
+        # Set scale FIRST
+        if use_log:
+            ax.set_yscale('log')
+
         for treatment in _TREATMENT_ORDER:
-            sub = df.loc[df['Treatment'] == treatment,
-                         ['Trap_ID', col]].dropna()
+            sub = df.loc[df['Treatment'] == treatment, ['Trap_ID', col]].dropna()
+
+            # Cast strictly to float and enforce positive values for log panels
+            x_series = pd.to_numeric(sub['Trap_ID'], errors='coerce')
+            y_series = pd.to_numeric(sub[col], errors='coerce')
+
+            mask = np.isfinite(x_series) & np.isfinite(y_series)
+            if use_log:
+                mask &= (y_series > 0)
+
+            sub = sub[mask].copy()
+
             if sub.empty:
                 continue
+
             colour = _TREATMENT_COLOR[treatment]
             ax.scatter(sub['Trap_ID'], sub[col], s=20,
                        color=colour, edgecolor=colour, linewidths=0.4,
                        alpha=0.75, label=f"{treatment} (n={len(sub)})")
 
-            if len(sub) >= 5:
-                # Compute Spearman correlation via pandas to avoid np.cov shape crash
+            x_vals = sub['Trap_ID'].values.astype(float)
+            y_vals = sub[col].values.astype(float)
+
+            if len(sub) >= 5 and np.std(x_vals) > 0 and np.std(y_vals) > 0:
+                # --- 1. Compute & annotate Spearman correlation ---
                 rho = sub['Trap_ID'].corr(sub[col], method='spearman')
 
                 if pd.notna(rho):
@@ -2615,8 +2665,35 @@ def plot_thesis_asp_trap_dependency(mechanics_df: pd.DataFrame,
                             transform=ax.transAxes, fontsize=7.5, color=colour,
                             va='top')
 
-        if use_log:
-            ax.set_yscale('log')
+                # --- 2. Safe trendline computation ---
+                try:
+                    x_line = np.array([x_vals.min(), x_vals.max()])
+
+                    if use_log:
+                        # Explicitly compute polyfit on strictly positive finite log10 values
+                        log_y = np.log10(y_vals)
+                        if np.all(np.isfinite(log_y)):
+                            slope, intercept = np.polyfit(x_vals, log_y, 1)
+                            y_line = 10 ** (slope * x_line + intercept)
+                        else:
+                            continue
+                    else:
+                        slope, intercept = np.polyfit(x_vals, y_vals, 1)
+                        y_line = slope * x_line + intercept
+
+                    ax.plot(
+                        x_line,
+                        y_line,
+                        color=colour,
+                        linestyle='--',
+                        dashes=(5, 5),
+                        linewidth=1.0,
+                        alpha=0.45,
+                        zorder=1
+                    )
+                except Exception as err:
+                    logger.warning(f"Trendline fit failed for {treatment} ({col}): {err}")
+
         ax.set_xlabel("Trap ID")
         ax.set_ylabel(ylabel)
         ax.spines['top'].set_visible(False)
@@ -2636,10 +2713,14 @@ def plot_thesis_asp_body_volume_vs_E(mechanics_df: pd.DataFrame,
 
     If E correlates with body volume, the "stiffness" readout could
     partly be picking up cell-size availability of cortical material for
-    the protrusion rather than intrinsic mechanics.  A flat regression
+    the protrusion rather than intrinsic mechanics. A flat regression
     supports the intrinsic-mechanics interpretation.
     """
+    import numpy as np
+    import pandas as pd
     from scipy import stats
+    import matplotlib.pyplot as plt
+
     if mechanics_df is None or mechanics_df.empty:
         return
 
@@ -2656,28 +2737,72 @@ def plot_thesis_asp_body_volume_vs_E(mechanics_df: pd.DataFrame,
         return
 
     fig, ax = plt.subplots(figsize=(3.6, 2.8))
+
+    # Set log scale FIRST so trendlines and dash patterns render accurately
+    ax.set_yscale('log')
+
     for treatment in _TREATMENT_ORDER:
         sub = df.loc[df['Treatment'] == treatment,
                      ['Cell_Body_Volume_PrePulse_um3', 'E_Pa']].dropna()
+
+        # Strict numeric conversion and positive filter for log space
+        x_series = pd.to_numeric(sub['Cell_Body_Volume_PrePulse_um3'], errors='coerce')
+        y_series = pd.to_numeric(sub['E_Pa'], errors='coerce')
+
+        mask = np.isfinite(x_series) & np.isfinite(y_series) & (y_series > 0)
+        sub = sub[mask].copy()
+
         if sub.empty:
             continue
+
         colour = _TREATMENT_COLOR[treatment]
         ax.scatter(sub['Cell_Body_Volume_PrePulse_um3'], sub['E_Pa'],
                    s=22, color=colour, edgecolor=colour, linewidths=0.4,
                    alpha=0.75, label=f"{treatment} (n={len(sub)})")
 
-        if len(sub) >= 5:
-            rho, p = stats.spearmanr(
-                sub['Cell_Body_Volume_PrePulse_um3'], sub['E_Pa'])
-            y_anchor = 0.95 if treatment == 'WT' else 0.88
-            ax.text(0.03, y_anchor,
-                    rf"$\rho_{{{treatment}}}={rho:.2f}$ (p={p:.2g})",
-                    transform=ax.transAxes, fontsize=8, color=colour,
-                    va='top')
+        x_vals = sub['Cell_Body_Volume_PrePulse_um3'].values.astype(float)
+        y_vals = sub['E_Pa'].values.astype(float)
+
+        if len(sub) >= 5 and np.std(x_vals) > 0 and np.std(y_vals) > 0:
+            # --- 1. Compute & annotate Spearman correlation ---
+            res = stats.spearmanr(x_vals, y_vals)
+            rho = getattr(res, 'statistic', res[0] if isinstance(res, (tuple, list, np.ndarray)) else res)
+            p = getattr(res, 'pvalue', res[1] if isinstance(res, (tuple, list, np.ndarray)) else np.nan)
+
+            rho_val = float(rho) if hasattr(rho, '__float__') else float(np.asarray(rho).item())
+            p_val = float(p) if hasattr(p, '__float__') else float(np.asarray(p).item())
+
+            if np.isfinite(rho_val):
+                y_anchor = 0.95 if treatment == 'WT' else 0.88
+                ax.text(0.03, y_anchor,
+                        rf"$\rho_{{{treatment}}}={rho_val:.2f}$ (p={p_val:.2g})",
+                        transform=ax.transAxes, fontsize=8, color=colour,
+                        va='top')
+
+            # --- 2. Fit and plot trendline ---
+            try:
+                x_line = np.array([x_vals.min(), x_vals.max()])
+                log_y = np.log10(y_vals)
+
+                if np.all(np.isfinite(log_y)):
+                    slope, intercept = np.polyfit(x_vals, log_y, 1)
+                    y_line = 10 ** (slope * x_line + intercept)
+
+                    ax.plot(
+                        x_line,
+                        y_line,
+                        color=colour,
+                        linestyle='--',
+                        dashes=(5, 5),
+                        linewidth=1.0,
+                        alpha=0.45,
+                        zorder=1
+                    )
+            except Exception as err:
+                logger.warning(f"Trendline fit failed for {treatment} (BodyVolume_vs_E): {err}")
 
     ax.set_xlabel(r"Body volume (µm$^3$, pre-pulse)")
     ax.set_ylabel(r"$E$ (Pa)")
-    ax.set_yscale('log')
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.legend(frameon=False, fontsize=8, loc='best')
