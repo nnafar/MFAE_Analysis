@@ -378,6 +378,110 @@ def plot_thesis_actin_prepulse_vs_postpulse_paired_by_fate(
 # =============================================================================
 # Time-resolved actin around the pulse, split by fate
 # =============================================================================
+def plot_thesis_actin_asp_baselines(
+    grouped_data: Dict,
+    output_dir: Path,
+    title_fontsize: float = 13,
+    label_fontsize: float = 13,
+    legend_fontsize: float = 13,
+) -> None:
+    """
+    Extracts ASP baseline data (WT and CytD) and saves a dedicated 
+    standalone PDF plot with treatment-specific colors: 'Thesis_ASP_Actin_Baselines.pdf'.
+    """
+    asp_baselines: Dict[Tuple[str, str], list] = {}
+
+    for gk, traps in grouped_data.items():
+        if not traps:
+            continue
+        cond_type = traps[0].metadata.condition_type
+
+        # Process ASP baseline conditions only
+        if cond_type != 'ASP':
+            continue
+
+        for trap in traps:
+            treatment = trap.metadata.treatment
+            if treatment not in _TREATMENT_ORDER:
+                continue
+
+            ad = getattr(trap, 'actin_data', {}) or {}
+            for region in ('Body', 'Prot'):
+                mean_key = f'Actin_{region}_Mean'
+                f0_key = f'F0_{region}'
+                if mean_key not in ad or f0_key not in ad:
+                    continue
+
+                intensity = np.asarray(ad[mean_key], dtype=float)
+                f0_arr = np.asarray(ad[f0_key], dtype=float)
+                f0_scalar = next(
+                    (float(v) for v in f0_arr if np.isfinite(v) and v > 0),
+                    None,
+                )
+                if f0_scalar is None:
+                    continue
+
+                valid = np.isfinite(intensity) & (intensity > 0)
+                if valid.sum() >= 5:
+                    asp_baselines.setdefault((treatment, region), []).append(
+                        intensity[valid] / f0_scalar
+                    )
+
+    if not asp_baselines:
+        logger.warning("ASP baseline plot skipped: no valid ASP data found.")
+        return
+
+    fig, axes = plt.subplots(2, 1, figsize=(6.0, 5.6), sharex=True, squeeze=False)
+
+    for row_idx, region in enumerate(('Body', 'Prot')):
+        ax = axes[row_idx, 0]
+        ax.axhline(1.0, color='0.7', lw=0.6, ls=':', zorder=0)
+
+        for treatment in _TREATMENT_ORDER:
+            asp_list = asp_baselines.get((treatment, region), [])
+            if not asp_list:
+                continue
+
+            all_asp = np.concatenate(asp_list)
+            mu_asp = float(np.nanmean(all_asp))
+            sd_asp = float(np.nanstd(all_asp))
+            n_asp = len(asp_list)
+
+            # FIX: Call get_line_kwargs with a placeholder duration so it retrieves
+            # the exact treatment color map used across your thesis figures
+            lkw = utils.get_line_kwargs(treatment, "0s", size=5)
+            color_asp = lkw.get('color', 'gray')
+
+            label_asp = f"{treatment} ASP baseline (n={n_asp})"
+
+            ax.axhline(
+                mu_asp, color=color_asp, ls=':', lw=1.2,
+                label=label_asp, zorder=2,
+            )
+            ax.axhspan(
+                mu_asp - sd_asp, mu_asp + sd_asp,
+                color=color_asp, alpha=0.08, linewidth=0, zorder=1,
+            )
+
+        if row_idx == 0:
+            ax.set_ylabel(r"Body $I(t)/F_0$", fontsize=label_fontsize)
+        else:
+            ax.set_xlabel("Time (s)", fontsize=label_fontsize)
+            ax.set_ylabel(r"Protrusion $I(t)/F_0$", fontsize=label_fontsize)
+
+        ax.tick_params(axis='both', labelsize=label_fontsize * 0.9)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    fig.suptitle("ASP Baseline Traces", fontsize=title_fontsize, y=0.98)
+    axes[0, 0].legend(frameon=False, fontsize=legend_fontsize, loc='best')
+    plt.tight_layout()
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    utils.save_plot_pdf(output_dir / "Thesis_ASP_Actin_Baselines.pdf")
+    plt.close()
+    logger.info("ASP baseline plot written to Thesis_ASP_Actin_Baselines.pdf")
+
 def plot_thesis_actin_around_pulse_trace_by_fate(
     grouped_data: Dict,
     mechanics_df: pd.DataFrame,
@@ -385,35 +489,35 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
     output_dir_map: Optional[Dict[str, Path]] = None,
     window_pre_s: float = 15.0,
     window_post_s: float = 15.0,
-    title_fontsize: float =  13,
-    label_fontsize: float =  13,
-    legend_fontsize: float = 13,
+    title_fontsize: float =  18,
+    label_fontsize: float =  18,
+    legend_fontsize: float = 18,
 ) -> None:
     """
     Time-resolved mean F0-normalised actin fluorescence aligned to the
     pulse frame, one figure per pulse duration, with intact and
     ruptured_post overlaid as separate traces per treatment.
 
-    Layout: 2 rows (Body, Prot) x 1 col per figure. Within a subplot,
-    each (treatment, fate) group is overlaid as a mean +/- SD line.
-    Intact traces are solid; ruptured traces are dashed. The pulse
-    itself is drawn as a vertical dashed line at t=0.
-
-    Traces are aggregated by interpolating each per-cell (t, I/F0) onto
-    a common grid over [-window_pre_s, +window_post_s], stacking, and
-    taking nanmean +/- nanstd across cells.
-
-    Only EP cells with a fate label of `intact` or `ruptured_post` are
-    included, matching the pooled variant. Per-cell, per-region traces
-    with fewer than 5 valid time points inside the window are dropped
-    silently as in the pooled variant.
-
-    Files are named `Thesis_EP_Actin_Around_Pulse_{dur}_ByFate.pdf` so
-    they do not overwrite the pooled variants; if `output_dir_map` is
-    provided the file for each duration goes to
-    `output_dir_map[dur]`, falling back to `output_dir` for durations
-    not in the map.
+    Automatically extracts ASP baseline controls and writes a separate PDF
+    ('Thesis_ASP_Actin_Baselines.pdf') alongside the main duration plots.
     """
+    # -----------------------------------------------------------------
+    # 1. Generate standalone ASP Baseline PDF
+    # -----------------------------------------------------------------
+    try:
+        plot_thesis_actin_asp_baselines(
+            grouped_data=grouped_data,
+            output_dir=output_dir,
+            title_fontsize=title_fontsize,
+            label_fontsize=label_fontsize,
+            legend_fontsize=legend_fontsize,
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate ASP baseline plot: {e}")
+
+    # -----------------------------------------------------------------
+    # 2. Main EP By-Fate Traces Execution
+    # -----------------------------------------------------------------
     if mechanics_df is None or mechanics_df.empty:
         logger.warning(
             "Actin-around-pulse (by fate) plot skipped: empty mechanics_df."
@@ -425,8 +529,6 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
         (df['Condition_Type'] == 'EP')
         & df['Fate_Status'].isin(list(_FATE_ORDER))
     ]
-    # Map (folder, trap_id) -> fate so we can route each accepted EP trap
-    # into its fate cohort at aggregation time.
     fate_map: Dict[Tuple[str, int], str] = {
         (row.Experiment_Folder, int(row.Trap_ID)): row.Fate_Status
         for row in df_ep.itertuples(index=False)
@@ -437,7 +539,6 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
         )
         return
 
-    # (treatment, fate, duration, region) -> list of (t_aligned, I/F0)
     traces: Dict[Tuple[str, str, str, str], list] = {}
     durations_seen: set = set()
 
@@ -446,11 +547,9 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
             continue
         cond_type = traps[0].metadata.condition_type
 
-        # -----------------------------------------------------------------
-        # EP trace aggregation.
-        # -----------------------------------------------------------------
         if cond_type != 'EP':
             continue
+
         for trap in traps:
             meta = trap.metadata
             key = (meta.full_path.name, trap.trap_id)
@@ -472,7 +571,7 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
             pf = meta.pulse_frame
             if not (0 < pf < len(t_raw)):
                 continue
-            t_pulse_zero = t_raw - t_raw[pf]  # pulse-frame indexing caveat
+            t_pulse_zero = t_raw - t_raw[pf]
 
             for region in ('Body', 'Prot'):
                 mean_key = f'Actin_{region}_Mean'
@@ -482,8 +581,7 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
                 intensity = np.asarray(ad[mean_key], dtype=float)
                 f0_arr = np.asarray(ad[f0_key], dtype=float)
                 f0_scalar = next(
-                    (float(v) for v in f0_arr
-                     if np.isfinite(v) and v > 0),
+                    (float(v) for v in f0_arr if np.isfinite(v) and v > 0),
                     None,
                 )
                 if f0_scalar is None:
@@ -512,16 +610,13 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
 
     common_t = np.linspace(-window_pre_s, window_post_s, 90)
 
-    def _agg(trs: list) -> Tuple[Optional[np.ndarray],
-                                 Optional[np.ndarray],
-                                 int]:
+    def _agg(trs: list) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], int]:
         if not trs:
             return None, None, 0
         stack = []
         for t, y in trs:
             f = interp1d(
-                t, y, bounds_error=False, fill_value=np.nan,
-                assume_sorted=True,
+                t, y, bounds_error=False, fill_value=np.nan, assume_sorted=True,
             )
             stack.append(f(common_t))
         if not stack:
@@ -535,8 +630,6 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
                 len(trs),
             )
 
-    # One figure per duration. 2 rows (Body / Prot); (treatment, fate)
-    # overlaid within a subplot.
     for dur in durations:
         fig, axes = plt.subplots(
             2, 1, figsize=(6.0, 5.6), sharex=True, squeeze=False,
@@ -551,9 +644,6 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
             )
             ax.axhline(1.0, color='0.7', lw=0.6, ls=':', zorder=0)
 
-            # -------------------------------------------------------------
-            # EP mean traces by (treatment, fate).
-            # -------------------------------------------------------------
             for treatment in _TREATMENT_ORDER:
                 for fate in _FATE_ORDER:
                     mu, sd, n = _agg(
@@ -566,18 +656,15 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
                         treatment, dur, fate=fate, size=5,
                     )
                     colour = lkw['color']
-                    label = (
-                        f"{treatment} "
-                        f"{_FATE_TICK_LABEL[fate]} (n={n})"
-                    )
+                    label = f"{treatment} {_FATE_TICK_LABEL[fate]} (n={n})"
                     ax.plot(
                         common_t, mu,
                         markevery=max(1, len(common_t) // 10),
-                        label=label, **lkw,
+                        label=label, zorder=3, **lkw,
                     )
                     ax.fill_between(
                         common_t, mu - sd, mu + sd,
-                        color=colour, alpha=0.12, linewidth=0,
+                        color=colour, alpha=0.12, linewidth=0, zorder=2,
                     )
 
             if row_idx == 0:
@@ -607,10 +694,7 @@ def plot_thesis_actin_around_pulse_trace_by_fate(
             target_dir / f"Thesis_EP_Actin_Around_Pulse_{dur}_ByFate.pdf"
         )
         plt.close()
-        logger.info(
-            f"Actin-around-pulse trace ({dur}, by fate) written "
-            f"(pulse-frame indexing caveat applies)."
-        )
+        logger.info(f"Actin-around-pulse trace ({dur}, by fate) written.")
 
 # =============================================================================
 # Dispatcher registration helper

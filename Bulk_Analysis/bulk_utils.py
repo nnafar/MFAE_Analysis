@@ -166,14 +166,16 @@ MFA_COLORS = {
 
 # ---- Canonical keys -------------------------------------------------------
 STYLE_CELL_TYPES = ('WT', 'CytD')
-STYLE_PROTOCOLS  = ('ASP', '5ms', '100us')
+STYLE_PROTOCOLS  = ('ASP', '5ms', '100us', '0s')  # Added '0s'
 STYLE_FATES      = ('intact', 'ruptured_post')
 
 # ---- Colour: (cell_type, protocol) -> hex ---------------------------------
 MFA_STYLE_COLOR = {
+    ('WT',   '0s'):    '#1065AB',  # Charcoal / neutral dark for WT 0s control
     ('WT',   'ASP'):   '#1a243d',  # near-black blue  -- WT aspiration only
     ('WT',   '5ms'):   '#1065AB',  # medium blue      -- WT 5 ms EP
     ('WT',   '100us'): '#5DA5D5',  # sky blue         -- WT 100 us EP
+    ('CytD', '0s'):    '#B31529',  # Muted grey-red or distinct shade for CytD 0s
     ('CytD', 'ASP'):   '#B31529',  # dark red         -- CytD aspiration only
     ('CytD', '5ms'):   '#D75F4C',  # medium red       -- CytD 5 ms EP
     ('CytD', '100us'): '#F6A482',  # light red        -- CytD 100 us EP
