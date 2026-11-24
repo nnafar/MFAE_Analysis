@@ -86,6 +86,14 @@ def default_experiment_id(data_folder: Path) -> str:
     return data_folder.stem if data_folder.suffix.lower() == ".czi" else data_folder.name
 
 
+def threshold_scale(params: Dict[str, Any]) -> str:
+    """The scale the interactive thresholds are measured on (recorded in session_cache.json)."""
+    if utils.membrane_enhancement_enabled(params):
+        fs = params.get('image_processing', {}).get('membrane_snr_full_scale', 40.0)
+        return f"membrane SNR, 255 = {float(fs):g} sigma"
+    return "legacy (CLAHE)"
+
+
 def default_output_root() -> Path:
     """Folder that per-experiment results are written to by default."""
     return PROJECT_ROOT / "Output"
@@ -655,10 +663,7 @@ class MFAAnalysis:
 
     def _threshold_scale(self) -> str:
         """Describes the scale the setup thresholds are on (stored in the session cache)."""
-        if utils.membrane_enhancement_enabled(self.params):
-            fs = self.params.get('image_processing', {}).get('membrane_snr_full_scale', 40.0)
-            return f"membrane SNR, 255 = {float(fs):g} sigma"
-        return "legacy (CLAHE)"
+        return threshold_scale(self.params)
 
     def _load_session_cache(self) -> Optional[Dict[str, Any]]:
         """
@@ -1350,8 +1355,18 @@ def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
 
     cache = (output_root or default_output_root()) / config.paths.experiment_id / "session_cache.json"
     if cache.exists():
-        notes.append(f"A saved trap setup exists ({cache.name}); it will be reused. "
-                     "Add --fresh to redo the interactive setup.")
+        import json
+        try:
+            cached_scale = json.loads(cache.read_text()).get('threshold_scale', 'legacy (CLAHE)')
+        except (OSError, ValueError):
+            cached_scale = None
+        if cached_scale == threshold_scale(params):
+            notes.append(f"A saved trap setup exists ({cache.name}); it will be reused. "
+                         "Add --fresh to redo the interactive setup.")
+        else:
+            notes.append(f"A saved trap setup exists ({cache.name}) but its thresholds are on a "
+                         f"different scale ({cached_scale or 'unreadable file'}; now: "
+                         f"{threshold_scale(params)}), so the interactive setup will run again.")
 
     for note in notes:
         logger.warning(f"NOTE: {note}")

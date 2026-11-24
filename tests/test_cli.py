@@ -146,3 +146,14 @@ def test_legacy_full_config_gives_identical_settings():
                                 experiment_id="260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10")
     expected = json.loads((data / "legacy_full_config_expected.json").read_text())
     assert json.loads(json.dumps(config.model_dump(mode="json"))) == expected
+
+
+def test_check_reports_whether_saved_setup_will_be_reused(tmp_path, data_folder, capsys):
+    import json
+    dest = tmp_path / "my.yaml"
+    mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
+    cache = tmp_path / "out" / EXP_NAME / "session_cache.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"trap_configs": []}))            # old cache: no scale recorded
+    assert mfa.main([str(dest), "--check", "--output-dir", str(tmp_path / "out")]) == 0
+    assert "interactive setup will run again" in capsys.readouterr().out
