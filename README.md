@@ -35,22 +35,23 @@ on Linux install it with your package manager (e.g. `sudo apt install python3-tk
 
 ## 2. Quick start (one experiment)
 
-**Step 1 – create a config file** from the template that matches your experiment:
+**Step 1 – create a config file** for your experiment type:
 
 ```bash
-python MFA_analysis.py --init-config configs/my_experiment.yaml --template ep --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10"
+python MFA_analysis.py --init-config configs/my_experiment.yaml --preset ep --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10"
 ```
 
-| Template | Use for | Based on |
-|---|---|---|
-| `ep` (default) | Electroporation, 5 ms pulse, all analyses on | `config.yaml` |
-| `5ms` | Electroporation, 5 ms pulse | `config_5ms.yaml` |
-| `100us` | Electroporation, 100 µs pulse | `config_100us.yaml` |
-| `asp` | Aspiration-only controls (no pulse) | `config_asp.yaml` |
+| Preset | Use for |
+|---|---|
+| `ep` (default) | Electroporation, 5 ms pulse, all analyses on |
+| `5ms` | Electroporation, 5 ms pulse (rupture detection off) |
+| `100us` | Electroporation, 100 µs pulse (rupture detection off) |
+| `asp` | Aspiration-only controls, no pulse (rupture detection off) |
 
-`--data-folder` fills in `paths.data_folder`, and `paths.experiment_id` defaults to the folder's
-name. Open the new file and check **sections 1–2** (microscope scale, pressure, frame interval) and
-**section 7** (channel name patterns, pulse frame). Every setting is explained by the comments in the file.
+This writes a short file (about 40 lines) with only what changes between experiments: the data
+folder, experiment name, microscope scale, pressure, frame interval, pulse frame and channel names.
+`--data-folder` fills in the folder, and the experiment name defaults to the folder's name. Open the
+file and check the values. See [How settings work](#how-settings-work) for everything else.
 
 **Step 2 – check the setup** (opens no windows, writes no results):
 
@@ -79,8 +80,9 @@ Results are written to `Output/<experiment_id>/`.
 | `--data-folder PATH` | Use this image folder instead of the one in the config |
 | `--experiment-id NAME` | Name of the results folder (default: the data folder's name) |
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
+| `--show-config` | Print every setting the run would use, and which file set it |
 | `--debug` | Show detailed log messages |
-| `--init-config FILE --template NAME` | Create a new config from a template |
+| `--init-config FILE --preset NAME` | Create a new short config |
 
 Because `--data-folder` overrides the config, one config can be reused for a whole series of
 experiments recorded with the same settings:
@@ -88,6 +90,32 @@ experiments recorded with the same settings:
 ```bash
 python MFA_analysis.py configs/ep_5ms.yaml --data-folder "D:/MFAE/260129_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
 ```
+
+### How settings work
+
+A run combines three files; later ones win:
+
+```
+config/defaults.yaml          every setting, with the lab's tuned values and an explanation of each
+  ⬑ config/presets/<preset>   the few settings that differ for one experiment type
+     ⬑ your config file       paths, microscope, pulse ... plus anything you choose to change
+```
+
+- **To change any other setting**, copy it from `config/defaults.yaml` into your own file under the
+  same section name, e.g.
+
+  ```yaml
+  image_processing:
+    wall_clip_margin: 0.3
+  ```
+
+  Don't edit `config/defaults.yaml` for a single experiment; it changes the defaults for everyone.
+- **To see exactly what a run will use:** `python MFA_analysis.py my.yaml --show-config`. Every
+  value that doesn't come from the defaults is marked with the file that set it.
+- **Every run saves its complete settings** to `Output/<experiment_id>/effective_config.yaml`. That
+  file is itself a full config, so you can rerun an old analysis with exactly the same settings even
+  after the defaults have changed.
+- Old full-length config files (every setting listed, no `preset:`) still work unchanged.
 
 ## 3. The interactive setup
 
@@ -183,7 +211,7 @@ live elsewhere.
 | Message | What to do |
 |---|---|
 | `... has N problem(s): - section.key: ...` | The named setting is invalid; the message says why. |
-| `unknown setting (typo, or not supported ...)` | The key is misspelled or not a real setting. Compare with a template. |
+| `unknown setting (typo, or not supported ...)` | The key is misspelled or not a real setting. Compare with `config/defaults.yaml`. |
 | `Config key '...' is ignored: ...` | The setting exists in older configs but has no effect; you can delete it. |
 | `is not valid YAML` | Usually inconsistent indentation or an unclosed quote. Windows paths are safest in single quotes. |
 | `No .tif files found` | Check `paths.data_folder`. |
@@ -209,13 +237,15 @@ every push (`.github/workflows/tests.yml`).
 |---|---|
 | `MFA_analysis.py` | Entry point and orchestration (command line, setup, parallel workers, export) |
 | `config_schema.py` | Config validation (pydantic); every allowed setting is defined here |
+| `config_loader.py`, `config/` | Combining defaults, presets and the user's file |
 | `FileHandling_MFA.py` | Finding images, channel matching, timestamps |
 | `ImageProcessing_MFA.py` | Interactive rotation, ROI and trap selection |
 | `LineDetection_MFA.py` | Segmentation, protrusion length, entry/exit and rupture detection |
 | `UptakeQuantification.py` / `ActinQuantification.py` | Dye and actin channels |
 | `Calculation_MFA.py` / `Fitting_MFA.py` | Geometry, shear metrics and viscoelastic models |
-| `Plotting_MFA.py`, `Kymograph_MFA.py`, `Utils_MFA.py` | Figures and shared helpers |
+| `Plotting_MFA.py`, `Plotting_Multipanel.py`, `Kymograph_MFA.py`, `Utils_MFA.py` | Figures and shared helpers |
 | `Bulk_Analysis/` | Multi-experiment pooling, statistics and thesis figures |
 
-When you add a config setting, add it to `config_schema.py` too: unknown keys are rejected so typos
+When you add a config setting, add it to `config_schema.py` and document it in
+`config/defaults.yaml`: unknown keys are rejected so typos
 can't be silently ignored.

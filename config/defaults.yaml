@@ -1,0 +1,258 @@
+# ===================================================================
+# MFA PIPELINE: DEFAULT SETTINGS (reference, do not edit)
+# ===================================================================
+# Every setting the pipeline understands, with the lab's tuned values.
+#
+# How settings are combined for a run:
+#     1. this file                      (defaults)
+#     2. config/presets/<preset>.yaml   (only if your config names a preset)
+#     3. your own config file           (wins over everything above)
+#
+# To change a setting for your experiment, copy the line (with its section
+# header) into YOUR config file and edit it there. Changing this file
+# changes the defaults for everyone using this copy of the code.
+#
+# Each run saves the complete combined settings to
+#     Output/<experiment_id>/effective_config.yaml
+# and you can print them with:  python MFA_analysis.py my.yaml --show-config
+#
+# There is no `paths` section here: every experiment sets its own.
+
+# ===================================================================
+# 1. MICROSCOPE & EXPERIMENT
+# ===================================================================
+experiment_parameters:
+  # Microns per pixel of your objective/camera.
+  scale_factor: 0.315          # [µm/px]  10x = 0.629, 20x = 0.315, 40x = 0.158
+
+  # Pressure difference driving the cell into the pipette:
+  # [P_inlet - P_waste-outlet] * 0.55 (factor from Jessy's COMSOL simulation).
+  constant_pressure: 1100      # [Pa]
+
+  # Time between frames. Used only when the images carry no timing metadata
+  # (run with --check to see which one is used).
+  frame_interval: 0.14         # [s]
+
+  # Upper limit on traps found during setup.
+  max_traps: 18
+
+# ===================================================================
+# 2. CHANNELS, PULSE & DYE UPTAKE
+# ===================================================================
+dye_uptake_parameters:
+  enable: True                 # Analyse the dye channel.
+  has_pulse: True              # False for aspiration-only controls (no electroporation).
+
+  # Text in the file names that identifies each channel.
+  membrane_channel_pattern: "C1"
+  dye_channel_pattern: "C2"
+
+  # File number (as in the image file name) of the frame with the pulse.
+  pulse_frame: 10
+  baseline_frames: 5           # Frames before the pulse used as dye baseline.
+
+actin_parameters:
+  enable: True
+  channel_pattern: "C1"        # Text in the file names of the actin images.
+  cortex_thickness_px: 3       # Cortex shell depth (3 px ≈ 1.9 µm at 60x).
+  cortex_cv_threshold: 0.4     # Below = continuous cortex, above = patchy.
+  pre_pulse_window_frames: 5   # Frames before the pulse for the remodelling score.
+  post_pulse_window_frames: 10 # Frames after the pulse for the remodelling score.
+
+# ===================================================================
+# 3. DEVICE GEOMETRY & VISCOELASTIC FITTING
+# ===================================================================
+model_parameters:
+  # Fit viscoelastic models to the protrusion length. Skipped automatically
+  # for pulsed experiments (electroporation breaks the model assumptions).
+  perform_fitting: False
+
+  # Channel cross-section (from the mask design or SEM).
+  channel_width_um: 6.7        # [µm]
+  channel_height_um: 5.0       # [µm]
+  channel_length_um: 40.0      # [µm]
+
+  # Son (2007) shape factor for non-circular channels; "auto" computes it.
+  fstar: auto
+
+  # Viscosity of the medium (for shear stress and shear rate).
+  fluid_viscosity_pa_s: 1e-3   # [Pa·s]
+
+fitting_parameters:
+  # True = multi-start global search (slow, robust); False = local fit (fast).
+  use_global_optimization: False
+  jeffreys_maxfev: 50000       # Max evaluations, viscoelastic models.
+  empirical_maxfev: 5000       # Max evaluations, empirical models.
+
+  # Starting guess: [E, eta1, eta2]
+  default_initial_guess: [3000.0, 5000.0, 15000.0]
+
+  # Allowed parameter ranges for the fit.
+  fitting_bounds:
+    E: [100.0, 100000.0]       # [Pa]
+    eta1: [100.0, 500000.0]    # [Pa·s]
+    eta2: [500.0, 1000000.0]   # [Pa·s]
+
+  # Ranges for the automatic initial guess.
+  clipping_bounds_guess:
+    E: [500.0, 25000.0]        # [Pa]
+    eta1: [1000.0, 50000.0]    # [Pa·s]
+    eta2: [5000.0, 100000.0]   # [Pa·s]
+
+# ===================================================================
+# 4. CELL ENTRY, EXIT & RUPTURE DETECTION
+# ===================================================================
+# Rupture/DOA detection is a heuristic: treat its results as hints.
+rupture_detection:
+  # Master switch for rupture/DOA detection. False = no rupture is ever
+  # reported (entry/exit detection and all measurements still run).
+  enable: True
+
+  # --- Monitoring window (inside the pipette, ahead of the cell tip) ---
+  rupture_offset_from_tip_px: 7      # Gap between tip and window [px]
+  rupture_window_width_px: 5         # Window width [px]
+
+  # --- Cell entry ---
+  entry_protrusion_threshold_um: 5.0 # Protrusion length that marks entry
+  entry_max_prot_fraction: 0.9       # Longer than channel_length * this = clamped/debris
+  entry_body_area_min_um2: 10.0      # Minimum body area (noise floor only)
+  entry_confirmed_frames: 3          # Consecutive valid frames needed to confirm entry
+
+  # --- Cell exit ---
+  exit_protrusion_threshold_um: 0.5  # Length below which the cell has left
+  exit_drop_ratio: 0.05              # Length below this fraction of the previous frame = slip
+  exit_sustained_frames: 3           # Consecutive frames the drop must last
+  pulse_exit_blanking_frames: 5      # Frames after the pulse ignored for exit detection
+
+  # --- Dead-on-arrival (DOA) check ---
+  # A cell is DOA if, at entry, it fails to displace the fluid AND its body
+  # outline is fragmented.
+  doa_retention_ratio: 0.80          # Entry signal >= this x empty-trap baseline
+  doa_solidity_threshold: 0.85       # Body solidity below this = fragmented
+
+  # --- Baseline for the detectors below ---
+  cusum_settling_buffer: 3           # Frames skipped after entry
+  min_cusum_baseline_frames: 5       # Frames in the rolling baseline
+  cusum_baseline_lag: 2              # Gap between baseline and tested frame
+  min_intensity_noise_floor: 1.0     # Smallest noise sigma assumed
+  max_baseline_sigma: 1.0            # Largest noise sigma allowed (entry noise cap)
+
+  # --- 1. Spike: transient burst ---
+  enable_spike_check: True
+  spike_sigma_threshold: 3.5         # Lower = more sensitive
+
+  # --- 2. Step: fast leak ---
+  enable_step_check: True
+  step_sigma_threshold: 4.0
+
+  # --- 3. Sudden jump: frame-to-frame haze increase ---
+  sudden_jump_threshold: 1.0         # [a.u.]
+
+  # --- 4. CUSUM: slow drift ---
+  min_drift_tolerance: 3.0           # Smallest drift that counts [a.u.]
+  min_cusum_threshold: 5.0           # Smallest alarm level [a.u.]
+  cusum_drift_tolerance_factor: 0.5  # k, in noise sigmas
+  cusum_threshold_factor: 8.0        # h, in noise sigmas
+
+  # --- 5. Anchored rise: slow leak vs. the early-entry baseline ---
+  anchored_baseline_frames: 5
+  anchored_fold_threshold: 2.5       # Rise of at least 2.5x ...
+  anchored_abs_threshold: 3.0        # ... and at least 3 a.u.
+  anchored_scan_window: 7            # ... sustained over this many frames
+
+  # --- 6. Pulse context: haze rise right after the pulse (pulsed runs only) ---
+  pulse_context_pre_window: 5        # Frames before the pulse (baseline)
+  pulse_context_post_window: 5       # Frames after the pulse (sustained rise)
+  pulse_context_peak_window: 2       # Frames after the pulse (transient peak)
+  pulse_context_fold_threshold: 1.3  # Post/pre ratio needed
+  pulse_context_abs_threshold: 0.5   # And minimum absolute rise [a.u.]
+
+  # --- Length-drop veto ---
+  # A real rupture loses volume, so the protrusion must get shorter; candidates
+  # where it doesn't are removed (e.g. slow dye uptake in an intact cell).
+  # DOA and pulse-context candidates are never vetoed.
+  enable_length_veto: True
+  length_veto_window: 10             # Frames each side of the candidate
+  rupture_length_drop_ratio: 0.90    # Post/pre length below this = real rupture
+
+  # Haze rises big enough to skip the veto (pressure can keep a ruptured
+  # protrusion extended). Fold AND absolute thresholds must both be met.
+  veto_bypass_fold_threshold: 2.0    # vs. the 5 frames before the candidate
+  veto_bypass_abs_threshold: 5.0
+  veto_global_bypass_fold_threshold: 1.7  # vs. the early-entry baseline
+  veto_global_bypass_abs_threshold: 3.0
+
+  # --- Protrusion-length cleaning ---
+  enable_smoothing: False            # 3-frame rolling median on the length trace
+  # The following only affect viscoelastic fitting:
+  exclude_early_fraction: 0.03
+  enable_outlier_rejection: False
+  outlier_rejection_window: 11       # Odd number of frames
+  outlier_rejection_std_dev: 2.5
+
+# ===================================================================
+# 5. WORKFLOW & PERFORMANCE
+# ===================================================================
+workflow_settings:
+  verify_traps_interactively: True
+  debug_mode: True                   # Detailed messages in the log file
+  create_kymographs: True
+
+  # CPU cores used in parallel. Lower it if the computer becomes sluggish.
+  n_workers: 3
+  max_cache_size: 25                 # Frames kept in memory during setup
+
+  # Trap spacing as a multiple of the trap height (adjustable during setup).
+  trap_spacing_factor: 1.50
+
+  # Setup windows.
+  interactive_window_width: 1000
+  interactive_window_height: 800
+  window_scale_factor: 1.0           # Raise (1.5-2.0) on high-resolution screens
+
+  # Starting size of the trap box.
+  default_roi_width_um: 115.0        # [µm]
+  default_roi_height_um: 45.0        # [µm]
+
+  # Frame shown during setup, as a fraction of the recording (0.5 = middle).
+  # Ignored in GUV mode (guv_settings.selection_frame_index is used).
+  selection_frame_fraction: 0.3
+
+# ===================================================================
+# 6. FIGURES
+# ===================================================================
+plotting_parameters:
+  # Per-trap plots are saved as multipanel PDFs (one per plot type, every trap a panel).
+  multipanel_columns: 4              # Trap panels per row
+  save_individual_trap_plots: False  # True = also one PDF per trap per plot
+
+kymograph_parameters:
+  default_line_width_px: 10          # Thickness of the centre-line slice [px]
+
+# ===================================================================
+# 7. IMAGE PROCESSING (change only if segmentation fails)
+# ===================================================================
+image_processing:
+  min_area_threshold: 100            # Smallest object tracked [px²]
+  small_object_threshold: 50         # Objects smaller than this are removed [px²]
+  wall_clip_margin: 0.25             # Fraction of the ROI height ignored at top and bottom
+  clahe_clip_limit: 3.0              # Contrast enhancement strength
+  clahe_tile_grid_size: [16, 16]
+  gaussian_kernel_size: [5, 5]       # Blur before thresholding
+
+  # Passing-cell rejection: a body blob counts as the trapped cell only if its
+  # left edge is within this many pixels of the pipette entrance.
+  max_body_entrance_gap_px: 8
+
+  # Show the threshold histogram on the contrast-enhanced image (what the
+  # algorithm actually thresholds).
+  threshold_preview_clahe: True
+
+# ===================================================================
+# 8. GUV MODE (giant unilamellar vesicles instead of cells)
+# ===================================================================
+guv_settings:
+  enable: False
+  selection_frame_index: 1           # Early frame where the membrane is still intact
+  # Edge-detector sensitivity: 0.2-0.3 strong edges only, 0.5-0.6 faint membranes.
+  canny_sigma: 0.4

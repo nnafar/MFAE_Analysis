@@ -60,6 +60,7 @@ from Kymograph_MFA import create_kymograph_for_trap
 from UptakeQuantification import DyeUptakeAnalyzer
 from ActinQuantification import ActinAnalyzer
 from config_schema import MFAConfig, validate_config, format_validation_error
+import config_loader
 import Plotting_MFA
 import Plotting_Multipanel
 import Utils_MFA as utils
@@ -68,13 +69,6 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Ready-made config files a new user can start from (see README.md).
-CONFIG_TEMPLATES: Dict[str, str] = {
-    'ep':    'config.yaml',        # electroporation, 5 ms pulse, all analyses on
-    'asp':   'config_asp.yaml',    # aspiration only (no pulse) controls
-    '5ms':   'config_5ms.yaml',    # electroporation, 5 ms pulse
-    '100us': 'config_100us.yaml',  # electroporation, 100 us pulse
-}
 
 
 def default_output_root() -> Path:
@@ -1015,11 +1009,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Typical workflow:\n"
-            "  1. python MFA_analysis.py --init-config my_exp.yaml --template ep --data-folder D:/data/260128_...\n"
+            "  1. python MFA_analysis.py --init-config my_exp.yaml --preset ep --data-folder D:/data/260128_...\n"
             "  2. python MFA_analysis.py my_exp.yaml --check     (no windows; checks config and images)\n"
             "  3. python MFA_analysis.py my_exp.yaml             (interactive setup, then analysis)\n"
             "\n"
-            f"Templates: {', '.join(CONFIG_TEMPLATES)}. See README.md for details."
+            "Settings are combined from config/defaults.yaml, the preset named in your\n"
+            "file (config/presets/), and your file. See README.md for details."
         ),
     )
     parser.add_argument("config_path", nargs="?", type=Path,
@@ -1037,38 +1032,59 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Ignore a saved session_cache.json and redo the interactive trap setup.")
     parser.add_argument("--debug", action="store_true",
                         help="Show detailed (DEBUG) log messages on screen.")
+    parser.add_argument("--show-config", action="store_true",
+                        help="Print every setting this run would use, and which file set it, then exit.")
     parser.add_argument("--init-config", type=Path, metavar="NEW_CONFIG",
-                        help="Create a new config file from a template and exit.")
-    parser.add_argument("--template", choices=sorted(CONFIG_TEMPLATES), default="ep",
-                        help="Template used by --init-config (default: ep).")
+                        help="Create a new (short) config file and exit.")
+    parser.add_argument("--preset", "--template", dest="preset",
+                        choices=config_loader.available_presets(), default="ep",
+                        help="Experiment type for --init-config (default: ep).")
     return parser
 
 
-def _set_yaml_path_value(text: str, key: str, value: str) -> str:
-    """Replace `  key: ...` inside the paths section, keeping all comments."""
-    import re
-    quoted = "'" + value.replace("'", "''") + "'"
-    pattern = re.compile(rf"^(\s+{key}:)[^\n#]*", re.MULTILINE)
-    if not pattern.search(text):
-        raise ValueError(f"Template has no '{key}' entry.")
-    return pattern.sub(lambda m: f"{m.group(1)} {quoted}", text, count=1)
+def _yaml_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
 
 
-def init_config(dest: Path, template: str, data_folder: Optional[Path],
+def init_config(dest: Path, preset: str, data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
-    """Copy a template config, optionally filling in the data folder and experiment id."""
+    """
+    Write a short config (paths, microscope, pulse, channels) that names a
+    preset. Values not given on the command line are taken from the defaults
+    and the preset, so the file is valid as soon as the paths are filled in.
+    """
+    from string import Template
+
     if dest.exists():
         logger.error(f"{dest} already exists; choose another name or delete it first.")
         return False
-    text = (PROJECT_ROOT / CONFIG_TEMPLATES[template]).read_text(encoding="utf-8")
+
+    base = config_loader.deep_merge(
+        config_loader.read_yaml(config_loader.DEFAULTS_FILE),
+        config_loader.read_yaml(config_loader.PRESET_DIR / f"{preset}.yaml"))
+    exp, dye, actin = base["experiment_parameters"], base["dye_uptake_parameters"], base["actin_parameters"]
+
     if data_folder is not None:
-        text = _set_yaml_path_value(text, "data_folder", str(data_folder))
         experiment_id = experiment_id or data_folder.name
-    if experiment_id:
-        text = _set_yaml_path_value(text, "experiment_id", experiment_id)
+    text = Template(config_loader.USER_TEMPLATE_FILE.read_text(encoding="utf-8")).substitute(
+        config_name=dest.name,
+        preset_line=f"preset: {preset}",
+        data_folder=_yaml_quote(data_folder) if data_folder else "'CHANGE ME: folder with the .tif images'",
+        experiment_id=_yaml_quote(experiment_id) if experiment_id else "'CHANGE ME'",
+        scale_factor=exp["scale_factor"],
+        constant_pressure=exp["constant_pressure"],
+        frame_interval=exp["frame_interval"],
+        max_traps=exp["max_traps"],
+        pulse_frame=dye["pulse_frame"],
+        membrane_pattern=_yaml_quote(dye["membrane_channel_pattern"]),
+        dye_pattern=_yaml_quote(dye["dye_channel_pattern"]),
+        actin_enable=actin["enable"],
+        actin_pattern=_yaml_quote(actin["channel_pattern"]),
+        n_workers=base["workflow_settings"]["n_workers"],
+    )
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
-    logger.info(f"Created {dest} from template '{template}' ({CONFIG_TEMPLATES[template]}).")
+    logger.info(f"Created {dest} (preset '{preset}').")
     if data_folder is None:
         logger.info("Next: open it and set paths.data_folder and paths.experiment_id.")
     logger.info(f"Then check it with:  python MFA_analysis.py {dest} --check")
@@ -1076,35 +1092,54 @@ def init_config(dest: Path, template: str, data_folder: Optional[Path],
 
 
 def load_config(config_path: Path, data_folder: Optional[Path] = None,
-                experiment_id: Optional[str] = None) -> Optional[MFAConfig]:
-    """Read, override and validate a config file. Logs a readable error and returns None on failure."""
-    if not config_path.exists():
-        logger.error(f"Config file not found: {config_path}")
-        return None
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
-    except yaml.YAMLError as e:
-        logger.error(f"{config_path} is not valid YAML (check indentation and quotes):\n{e}")
-        return None
-
-    if isinstance(raw, dict):
-        paths = raw.setdefault("paths", {}) or {}
-        raw["paths"] = paths
-        if data_folder is not None:
-            paths["data_folder"] = str(data_folder)
-            if experiment_id is None:
-                experiment_id = data_folder.name
-        if experiment_id is not None:
-            paths["experiment_id"] = experiment_id
+                experiment_id: Optional[str] = None
+                ) -> Tuple[Optional[MFAConfig], Optional[config_loader.LayeredConfig]]:
+    """
+    Combine defaults, preset, the user's file and command-line overrides, then
+    validate. Logs a readable error and returns (None, None) on failure.
+    """
+    overrides: Dict[str, Any] = {}
+    if data_folder is not None:
+        overrides["data_folder"] = str(data_folder)
+        experiment_id = experiment_id or data_folder.name
+    if experiment_id is not None:
+        overrides["experiment_id"] = experiment_id
 
     try:
-        return validate_config(raw)
+        layered = config_loader.load_layers(config_path, {"paths": overrides} if overrides else None)
+    except config_loader.ConfigFileError as e:
+        logger.error(str(e))
+        return None, None
+
+    try:
+        return validate_config(layered.data), layered
     except ValidationError as e:
-        logger.error(f"{config_path} has {e.error_count()} problem(s):\n{format_validation_error(e)}")
+        logger.error(f"{config_path} has {e.error_count()} problem(s):\n"
+                     f"{format_validation_error(e, layered.sources)}")
     except ValueError as e:
         logger.error(f"{config_path}: {e}")
-    return None
+    return None, None
+
+
+def show_config(config: MFAConfig, layered: config_loader.LayeredConfig) -> str:
+    """All settings of a run, each value annotated with the file that set it (blank = defaults)."""
+    header = (f"# Settings from: {' <- '.join(layered.layers)}\n"
+              f"# Values without a comment come from config/defaults.yaml.\n\n")
+    return header + config_loader.render_settings(
+        config.model_dump(mode="json"), layered.sources, hide_source="defaults")
+
+
+def save_effective_config(config: MFAConfig, layered: config_loader.LayeredConfig,
+                          config_path: Path, results_dir: Path) -> Path:
+    """Record exactly which settings produced this run's results."""
+    from datetime import datetime
+    path = Path(results_dir) / "effective_config.yaml"
+    header = (f"# Complete settings used for this run (written {datetime.now():%Y-%m-%d %H:%M}).\n"
+              f"# Config file: {Path(config_path).resolve()}\n"
+              f"# This file is a full config: run it again with\n"
+              f"#     python MFA_analysis.py {path.name}\n")
+    path.write_text(header + show_config(config, layered).split("\n", 2)[2], encoding="utf-8")
+    return path
 
 
 def _bulk_folder_pattern():
@@ -1210,16 +1245,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     utils.setup_logging(debug_mode=args.debug)
 
     if args.init_config is not None:
-        return 0 if init_config(args.init_config, args.template,
+        return 0 if init_config(args.init_config, args.preset,
                                 args.data_folder, args.experiment_id) else 1
 
     if args.config_path is None:
         parser.print_help()
         return 2
 
-    config = load_config(args.config_path, args.data_folder, args.experiment_id)
+    config, layered = load_config(args.config_path, args.data_folder, args.experiment_id)
     if config is None:
         return 1
+
+    if args.show_config:
+        print(show_config(config, layered))
+        return 0
 
     if args.check:
         return 0 if check_setup(config, args.output_dir) else 1
@@ -1232,6 +1271,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         analysis = MFAAnalysis(config.paths.data_folder, str(config.paths.experiment_id), config,
                                output_root=args.output_dir,
                                use_session_cache=not args.fresh)
+        saved = save_effective_config(config, layered, args.config_path, analysis.results_dir)
+        logger.info(f"Settings for this run saved to {saved}")
         return 0 if analysis.run_analysis() else 1
     except KeyboardInterrupt:
         logger.warning("Analysis interrupted by user.")

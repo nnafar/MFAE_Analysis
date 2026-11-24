@@ -1732,6 +1732,14 @@ class LineDetectionMFA:
         if not self.results.get('entry_confirmed', True):
             return
 
+        # Master switch: with rupture detection disabled, never report a rupture
+        # (entry/exit detection and all measurements are unaffected).
+        if not r_params.get('enable', True):
+            self.results['rupture_detected'] = False
+            self.results['rupture_frame_index'] = None
+            self.results['rupture_reason'] = None
+            return
+
         entry_idx = self.results.get('entry_frame_index', 0)
         exit_idx  = self.results.get('exit_frame_index', len(intensities))
         

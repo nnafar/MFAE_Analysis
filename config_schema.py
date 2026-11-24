@@ -565,14 +565,19 @@ def validate_config(config_dict: Dict[str, Any]) -> 'MFAConfig':
     return MFAConfig(**config_dict)
 
 
-def format_validation_error(error: ValidationError) -> str:
+def format_validation_error(error: ValidationError,
+                            sources: Optional[Dict[str, str]] = None) -> str:
     """
     Turn a pydantic ValidationError into short, plain-language lines that
     point at the exact config entry, e.g.
 
         rupture_detection.enable_lenght_veto: unknown setting (typo, or not supported)
         experiment_parameters.scale_factor: Input should be greater than 0
+
+    With `sources` (dotted key -> file label, from config_loader), each line
+    also says which file the offending value came from.
     """
+    sources = sources or {}
     lines = []
     for err in error.errors():
         location = ".".join(str(part) for part in err.get("loc", ())) or "(top level)"
@@ -587,5 +592,7 @@ def format_validation_error(error: ValidationError) -> str:
                 message = message[len("Value error, "):]
         value = err.get("input")
         shown = "" if kind in ("missing", "extra_forbidden") or isinstance(value, dict) else f"  (got: {value!r})"
-        lines.append(f"  - {location}: {message}{shown}")
+        origin = sources.get(location)
+        where = f"  [in {origin}]" if origin else ""
+        lines.append(f"  - {location}: {message}{shown}{where}")
     return "\n".join(lines)

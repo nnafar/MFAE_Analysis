@@ -30,13 +30,15 @@ def data_folder(tmp_path):
     return folder
 
 
-def test_init_config_fills_paths_and_keeps_comments(tmp_path, data_folder):
+def test_init_config_writes_short_config_with_preset(tmp_path, data_folder):
     dest = tmp_path / "my.yaml"
-    assert mfa.main(["--init-config", str(dest), "--template", "asp",
+    assert mfa.main(["--init-config", str(dest), "--preset", "asp",
                      "--data-folder", str(data_folder)]) == 0
     text = dest.read_text(encoding="utf-8")
-    assert "# CONFIGURATION FOR MICROFLUIDIC ASPIRATION" in text  # comments kept
-    paths = yaml.safe_load(text)["paths"]
+    assert len(text.splitlines()) < 60
+    data = yaml.safe_load(text)
+    assert data["preset"] == "asp"
+    paths = data["paths"]
     assert Path(paths["data_folder"]) == data_folder
     assert paths["experiment_id"] == EXP_NAME  # defaults to the folder name
 
@@ -59,7 +61,7 @@ def test_check_fails_when_pulse_is_outside_recording(tmp_path, data_folder):
     dest = tmp_path / "my.yaml"
     mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
     dest.write_text(dest.read_text(encoding="utf-8").replace(
-        "pulse_frame: 10 ", "pulse_frame: 500 "), encoding="utf-8")
+        "pulse_frame: 10\n", "pulse_frame: 500\n"), encoding="utf-8")
     assert mfa.main([str(dest), "--check"]) == 1
 
 
@@ -68,7 +70,7 @@ def test_invalid_config_gives_readable_error(tmp_path, data_folder, capsys):
     mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
     text = dest.read_text(encoding="utf-8")
     text = text.replace("scale_factor: 0.315", "scale_factor: -1")
-    text = text.replace("  enable_spike_check:", "  enable_spike_chek:")
+    text += "\nrupture_detection:\n  enable_spike_chek: True\n"
     dest.write_text(text, encoding="utf-8")
 
     assert mfa.main([str(dest), "--check"]) == 1
@@ -85,3 +87,43 @@ def test_missing_config_file(tmp_path):
 def test_no_arguments_prints_help(capsys):
     assert mfa.main([]) == 2
     assert "usage:" in capsys.readouterr().out
+
+
+def test_show_config_marks_where_values_come_from(tmp_path, data_folder, capsys):
+    dest = tmp_path / "my.yaml"
+    mfa.main(["--init-config", str(dest), "--preset", "100us", "--data-folder", str(data_folder)])
+    capsys.readouterr()
+    assert mfa.main([str(dest), "--show-config"]) == 0
+    out = capsys.readouterr().out
+    assert "default_roi_width_um: 70.0  # preset 100us" in out
+    assert "scale_factor: 0.315  # my.yaml" in out
+    assert "min_area_threshold: 100\n" in out          # from defaults: no comment
+
+
+def test_effective_config_reproduces_the_run(tmp_path, data_folder):
+    dest = tmp_path / "my.yaml"
+    mfa.main(["--init-config", str(dest), "--preset", "5ms", "--data-folder", str(data_folder)])
+    config, layered = mfa.load_config(dest)
+    saved = mfa.save_effective_config(config, layered, dest, tmp_path)
+    again, _ = mfa.load_config(saved)
+    assert again.model_dump() == config.model_dump()
+
+
+def test_unknown_preset(tmp_path, data_folder):
+    dest = tmp_path / "my.yaml"
+    mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
+    dest.write_text(dest.read_text(encoding="utf-8").replace("preset: ep", "preset: 7ms"),
+                    encoding="utf-8")
+    assert mfa.main([str(dest), "--check"]) == 1
+
+
+def test_legacy_full_config_gives_identical_settings():
+    """An old 400-line config (no preset) must still load, with the same result."""
+    import json
+    import tempfile
+    data = ROOT / "tests" / "data"
+    config, _ = mfa.load_config(data / "legacy_full_config.yaml",
+                                data_folder=Path(tempfile.gettempdir()),
+                                experiment_id="260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10")
+    expected = json.loads((data / "legacy_full_config_expected.json").read_text())
+    assert json.loads(json.dumps(config.model_dump(mode="json"))) == expected

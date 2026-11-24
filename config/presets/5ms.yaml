@@ -1,0 +1,14 @@
+# Preset: electroporation with a 5 ms pulse.
+# Only settings that differ from config/defaults.yaml are listed.
+
+rupture_detection:
+  enable: False                  # Rupture/DOA detection off (not reliable for this protocol).
+  # Detector tuning kept for when detection is switched back on:
+  enable_spike_check: False
+  enable_step_check: False
+  enable_length_veto: False
+  anchored_fold_threshold: 1.8
+  anchored_abs_threshold: 2.0
+
+workflow_settings:
+  selection_frame_fraction: 0.1  # Show an early frame during setup.

@@ -13,7 +13,6 @@ matplotlib.use("Agg")
 
 import numpy as np
 import pytest
-import yaml
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -104,9 +103,11 @@ def test_worker_outputs(tmp_path, save_singles):
     from synthetic_data_generators import create_synthetic_protrusion_image
     import MFA_analysis as mfa
 
-    raw = yaml.safe_load((ROOT / 'config.yaml').read_text(encoding='utf-8'))
-    raw['paths']['data_folder'] = tempfile.gettempdir()
-    raw['plotting_parameters']['save_individual_trap_plots'] = save_singles
+    import config_loader
+    raw = config_loader.load_layers(ROOT / 'config.yaml', {
+        'paths': {'data_folder': tempfile.gettempdir()},
+        'plotting_parameters': {'save_individual_trap_plots': save_singles},
+    }).data
     params = MFAConfig(**raw).model_dump()
 
     n = 30

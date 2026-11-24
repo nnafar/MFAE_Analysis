@@ -13,12 +13,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import yaml
 from pydantic import ValidationError
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
+import config_loader  # noqa: E402
 from config_schema import MFAConfig  # noqa: E402
 from LineDetection_MFA import LineDetectionMFA  # noqa: E402
 
@@ -28,9 +28,13 @@ from LineDetection_MFA import LineDetectionMFA  # noqa: E402
 # =============================================================================
 
 def _load_config(name: str) -> dict:
-    raw = yaml.safe_load((ROOT / name).read_text(encoding='utf-8'))
-    raw['paths']['data_folder'] = tempfile.gettempdir()  # must exist
-    return raw
+    """Merged settings (defaults <- preset <- file) for a config, data folder made valid."""
+    path = ROOT / name if not Path(name).is_absolute() else Path(name)
+    return config_loader.load_layers(
+        path, {'paths': {'data_folder': tempfile.gettempdir()}}).data
+
+
+LEGACY = ROOT / 'tests' / 'data' / 'legacy_full_config.yaml'
 
 
 @pytest.mark.parametrize('name', ['config.yaml', 'config_100us.yaml',
@@ -40,23 +44,24 @@ def test_shipped_configs_validate(name):
 
 
 @pytest.mark.parametrize('name', ['config_100us.yaml', 'config_5ms.yaml', 'config_asp.yaml'])
-def test_length_veto_setting_survives_validation(name):
-    """These configs set enable_length_veto: False; it used to be dropped."""
+def test_preset_settings_reach_the_pipeline(name):
+    """These presets turn the length veto and rupture detection off."""
     dumped = MFAConfig(**_load_config(name)).model_dump()
     assert dumped['rupture_detection']['enable_length_veto'] is False
+    assert dumped['rupture_detection']['enable'] is False
 
 
-def test_unknown_key_in_section_is_rejected():
-    raw = _load_config('config.yaml')
-    raw['rupture_detection']['enable_lenght_veto'] = False  # typo
+def test_unknown_key_in_section_is_rejected(tmp_path):
+    cfg = tmp_path / 'typo.yaml'
+    cfg.write_text((ROOT / 'config.yaml').read_text(encoding='utf-8')
+                   + "\nrupture_detection:\n  enable_lenght_veto: False\n", encoding='utf-8')
     with pytest.raises(ValidationError):
-        MFAConfig(**raw)
+        MFAConfig(**_load_config(str(cfg)))
 
 
 def test_unimplemented_keys_are_dropped_with_warning(caplog):
-    raw = _load_config('config.yaml')
     with caplog.at_level('WARNING'):
-        dumped = MFAConfig(**raw).model_dump()
+        dumped = MFAConfig(**_load_config(str(LEGACY))).model_dump()
     assert 'doa_haze_collapse_ratio' not in dumped['rupture_detection']
     assert any('doa_haze_collapse_ratio' in r.getMessage() for r in caplog.records)
 
@@ -143,3 +148,13 @@ def test_resolve_pulse_frame_idx(dye_params, r_params, expected):
                            {'rupture_detection': r_params,
                             'dye_uptake_parameters': dye_params})
     assert det._resolve_pulse_frame_idx() == expected
+
+
+def test_rupture_master_switch_off_reports_no_rupture():
+    """rupture_detection.enable: False must suppress every rupture/DOA candidate."""
+    res = _run_detector(
+        {'enable': True, 'has_pulse': True, 'pulse_frame': 10},
+        {'pulse_frame_idx': PULSE_IDX, 'enable': False, 'enable_length_veto': False},
+    )
+    assert res['rupture_detected'] is False
+    assert res['rupture_frame_index'] is None

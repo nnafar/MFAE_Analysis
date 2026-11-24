@@ -1,0 +1,48 @@
+# ===================================================================
+# MFA EXPERIMENT CONFIG
+# ===================================================================
+# Only the settings that change between experiments live here. Everything
+# else comes from config/defaults.yaml (the full, commented reference) and
+# from the preset below. To change any other setting, copy it from
+# config/defaults.yaml into this file, under the same section name.
+#
+#   Check this file:     python MFA_analysis.py $config_name --check
+#   See all settings:    python MFA_analysis.py $config_name --show-config
+
+# Experiment type. See config/presets/ for what each one changes.
+#   ep    = electroporation, 5 ms pulse, all analyses (defaults unchanged)
+#   5ms   = electroporation, 5 ms pulse
+#   100us = electroporation, 100 µs pulse
+#   asp   = aspiration only, no pulse
+$preset_line
+
+paths:
+  # Folder with this experiment's .tif images.
+  data_folder: $data_folder
+  # Name of the results folder. Follow the naming rule so the bulk analysis
+  # recognises it: YYMMDD_Cell_Treatment_Chip_Experiment-1100Pa-100V-5ms-frame10
+  experiment_id: $experiment_id
+
+experiment_parameters:
+  # Microns per pixel: 10x = 0.629, 20x = 0.315, 40x = 0.158
+  scale_factor: $scale_factor
+  # Aspiration pressure [Pa]
+  constant_pressure: $constant_pressure
+  # Seconds between frames; used only if the images have no timing metadata
+  frame_interval: $frame_interval
+  max_traps: $max_traps
+
+dye_uptake_parameters:
+  # File number of the frame with the pulse
+  pulse_frame: $pulse_frame
+  # Text in the file names that identifies each channel
+  membrane_channel_pattern: $membrane_pattern
+  dye_channel_pattern: $dye_pattern
+
+actin_parameters:
+  enable: $actin_enable
+  channel_pattern: $actin_pattern
+
+workflow_settings:
+  # CPU cores to use; lower it if the computer becomes slow
+  n_workers: $n_workers
