@@ -30,19 +30,24 @@ def data_folder(tmp_path):
     return folder
 
 
-def test_init_config_writes_short_config_with_preset(tmp_path, data_folder):
+def test_init_config_copies_config_yaml_with_new_paths(tmp_path, data_folder):
     dest = tmp_path / "my.yaml"
     assert mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)]) == 0
-    text = dest.read_text(encoding="utf-8")
-    assert len(text.splitlines()) < 60
-    data = yaml.safe_load(text)
-    assert data["preset"] == "ep"                      # 100V in the name -> ep
-    assert data["dye_uptake_parameters"]["enable"] is True
-    assert data["actin_parameters"]["enable"] is True
-    assert "pulse_frame" not in data["dye_uptake_parameters"]   # read from the name
-    paths = data["paths"]
-    assert Path(paths["data_folder"]) == data_folder
-    assert paths["experiment_id"] == EXP_NAME  # defaults to the folder name
+    data = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    template = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    assert Path(data["paths"]["data_folder"]) == data_folder
+    assert data["paths"]["experiment_id"] == EXP_NAME  # defaults to the folder name
+    # everything except the paths is copied unchanged
+    assert {k: v for k, v in data.items() if k != "paths"} == \
+           {k: v for k, v in template.items() if k != "paths"}
+
+
+def test_init_config_from_another_config(tmp_path, data_folder):
+    dest = tmp_path / "my.yaml"
+    assert mfa.main(["--init-config", str(dest), "--from", str(ROOT / "config_100us.yaml"),
+                     "--data-folder", str(data_folder)]) == 0
+    data = yaml.safe_load(dest.read_text(encoding="utf-8"))
+    assert data["workflow_settings"]["default_roi_width_um"] == 70.0
 
 
 def test_init_config_refuses_to_overwrite(tmp_path):
@@ -113,12 +118,13 @@ def test_effective_config_reproduces_the_run(tmp_path, data_folder):
     assert again.model_dump() == config.model_dump()
 
 
-def test_unknown_preset(tmp_path, data_folder):
+def test_leftover_preset_line_is_ignored(tmp_path, data_folder, capsys):
     dest = tmp_path / "my.yaml"
     mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
-    dest.write_text(dest.read_text(encoding="utf-8").replace("preset: ep", "preset: 7ms"),
-                    encoding="utf-8")
-    assert mfa.main([str(dest), "--check"]) == 1
+    dest.write_text("preset: ep\n" + dest.read_text(encoding="utf-8"), encoding="utf-8")
+    capsys.readouterr()
+    assert mfa.main([str(dest), "--check"]) == 0
+    assert "'preset' is no longer used" in capsys.readouterr().out
 
 
 def test_legacy_full_config_gives_identical_settings():

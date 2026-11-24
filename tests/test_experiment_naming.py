@@ -37,15 +37,15 @@ def test_bulk_loader_uses_the_same_rule():
     assert bulk_file_handling.BulkDataLoader.FOLDER_PATTERN is experiment_naming.FOLDER_PATTERN
 
 
-def _write(tmp_path, preset, experiment_id, extra=""):
+def _write(tmp_path, experiment_id, extra=""):
     path = tmp_path / "exp.yaml"
-    path.write_text(f"preset: {preset}\npaths:\n  data_folder: '{tempfile.gettempdir()}'\n"
+    path.write_text(f"paths:\n  data_folder: '{tempfile.gettempdir()}'\n"
                     f"  experiment_id: '{experiment_id}'\n{extra}", encoding="utf-8")
     return path
 
 
 def test_pulse_settings_come_from_the_name(tmp_path):
-    layered = config_loader.load_layers(_write(tmp_path, "ep", EP_1MS))
+    layered = config_loader.load_layers(_write(tmp_path, EP_1MS))
     config = MFAConfig(**layered.data)
     assert config.dye_uptake_parameters.has_pulse is True
     assert config.dye_uptake_parameters.pulse_frame == 12
@@ -53,29 +53,23 @@ def test_pulse_settings_come_from_the_name(tmp_path):
 
 
 def test_aspiration_name_means_no_pulse(tmp_path):
-    config = MFAConfig(**config_loader.load_layers(_write(tmp_path, "asp", ASP)).data)
+    config = MFAConfig(**config_loader.load_layers(_write(tmp_path, ASP)).data)
     assert config.dye_uptake_parameters.has_pulse is False
 
 
 def test_config_contradicting_the_name_is_an_error(tmp_path):
-    path = _write(tmp_path, "ep", EP_1MS, "dye_uptake_parameters:\n  pulse_frame: 10\n")
+    path = _write(tmp_path, EP_1MS, "dye_uptake_parameters:\n  pulse_frame: 10\n")
     with pytest.raises(config_loader.ConfigFileError, match="experiment name"):
         config_loader.load_layers(path)
 
 
 def test_matching_explicit_value_is_fine(tmp_path):
-    path = _write(tmp_path, "ep", EP_1MS, "dye_uptake_parameters:\n  pulse_frame: 12\n")
+    path = _write(tmp_path, EP_1MS, "dye_uptake_parameters:\n  pulse_frame: 12\n")
     assert MFAConfig(**config_loader.load_layers(path).data).dye_uptake_parameters.pulse_frame == 12
 
 
-@pytest.mark.parametrize("preset, name", [("asp", EP_1MS), ("ep", ASP)])
-def test_preset_must_match_the_voltage(tmp_path, preset, name):
-    with pytest.raises(config_loader.ConfigFileError, match="preset"):
-        config_loader.load_layers(_write(tmp_path, preset, name))
-
-
 def test_name_without_naming_rule_uses_config_values(tmp_path):
-    path = _write(tmp_path, "ep", "my_test_run",
+    path = _write(tmp_path, "my_test_run",
                   "dye_uptake_parameters:\n  pulse_frame: 7\n")
     config = MFAConfig(**config_loader.load_layers(path).data)
     assert config.dye_uptake_parameters.pulse_frame == 7

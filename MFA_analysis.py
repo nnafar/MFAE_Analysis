@@ -72,6 +72,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 
+# The lab's standard experiment config; also the template for --init-config.
+DEFAULT_CONFIG = PROJECT_ROOT / "config.yaml"
+
+
 def default_output_root() -> Path:
     """Folder that per-experiment results are written to by default."""
     return PROJECT_ROOT / "Output"
@@ -1008,12 +1012,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Typical workflow:\n"
-            "  1. python MFA_analysis.py --init-config my_exp.yaml --preset ep --data-folder D:/data/260128_...\n"
+            "  1. python MFA_analysis.py --init-config my_exp.yaml --data-folder D:/data/260128_...\n"
             "  2. python MFA_analysis.py my_exp.yaml --check     (no windows; checks config and images)\n"
             "  3. python MFA_analysis.py my_exp.yaml             (interactive setup, then analysis)\n"
             "\n"
-            "Settings are combined from config/defaults.yaml, the preset named in your\n"
-            "file (config/presets/), and your file. See README.md for details."
+            "Your file holds the experiment's settings; everything else comes from\n"
+            "config/defaults.yaml. See README.md for details."
         ),
     )
     parser.add_argument("config_path", nargs="?", type=Path,
@@ -1034,62 +1038,54 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show-config", action="store_true",
                         help="Print every setting this run would use, and which file set it, then exit.")
     parser.add_argument("--init-config", type=Path, metavar="NEW_CONFIG",
-                        help="Create a new (short) config file and exit.")
-    parser.add_argument("--preset", "--template", dest="preset",
-                        choices=config_loader.available_presets(), default=None,
-                        help="Experiment type for --init-config: ep or asp "
-                             "(default: chosen from the experiment name, 0 V = asp).")
+                        help="Create a new config by copying an existing one with the new "
+                             "--data-folder / --experiment-id filled in, then exit.")
+    parser.add_argument("--from", dest="copy_from", type=Path, default=DEFAULT_CONFIG,
+                        metavar="CONFIG",
+                        help=f"Config copied by --init-config (default: {DEFAULT_CONFIG.name}).")
     return parser
 
 
-def _yaml_quote(value: str) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
+def _set_yaml_value(text: str, key: str, value: str) -> str:
+    """Replace the value of the first `  key: ...` line, keeping comments and layout."""
+    import re
+    quoted = "'" + str(value).replace("'", "''") + "'"
+    pattern = re.compile(rf"^(\s+{key}:)[^\n]*", re.MULTILINE)
+    if not pattern.search(text):
+        raise ValueError(f"no '{key}:' entry to fill in")
+    return pattern.sub(lambda m: f"{m.group(1)} {quoted}", text, count=1)
 
 
-def init_config(dest: Path, preset: Optional[str], data_folder: Optional[Path],
+def init_config(dest: Path, source: Path, data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
     """
-    Write a short config (paths, microscope, pulse, channels) that names a
-    preset. Values not given on the command line are taken from the defaults
-    and the preset, so the file is valid as soon as the paths are filled in.
+    Copy an existing config (by default config.yaml) to `dest`, replacing its
+    data folder and experiment name. All other settings are kept, so copying
+    the config of a similar experiment is the quickest way to start a new one.
     """
-    from string import Template
-
     if dest.exists():
         logger.error(f"{dest} already exists; choose another name or delete it first.")
         return False
+    if not source.exists():
+        logger.error(f"Config to copy not found: {source}")
+        return False
 
+    text = source.read_text(encoding="utf-8")
     if data_folder is not None:
         experiment_id = experiment_id or data_folder.name
-    if preset is None:
-        name = experiment_naming.parse_experiment_name(experiment_id or "")
-        preset = "asp" if (name is not None and not name.has_pulse) else "ep"
+    try:
+        if data_folder is not None:
+            text = _set_yaml_value(text, "data_folder", str(data_folder))
+        if experiment_id:
+            text = _set_yaml_value(text, "experiment_id", experiment_id)
+    except ValueError as e:
+        logger.error(f"Cannot fill in {source.name}: {e}.")
+        return False
 
-    base = config_loader.deep_merge(
-        config_loader.read_yaml(config_loader.DEFAULTS_FILE),
-        config_loader.read_yaml(config_loader.PRESET_DIR / f"{preset}.yaml"))
-    exp, dye, actin = base["experiment_parameters"], base["dye_uptake_parameters"], base["actin_parameters"]
-
-    text = Template(config_loader.USER_TEMPLATE_FILE.read_text(encoding="utf-8")).substitute(
-        config_name=dest.name,
-        preset_line=f"preset: {preset}",
-        data_folder=_yaml_quote(data_folder) if data_folder else "'CHANGE ME: folder with the .tif images'",
-        experiment_id=_yaml_quote(experiment_id) if experiment_id else "'CHANGE ME'",
-        scale_factor=exp["scale_factor"],
-        constant_pressure=exp["constant_pressure"],
-        frame_interval=exp["frame_interval"],
-        max_traps=exp["max_traps"],
-        dye_enable=dye["enable"],
-        membrane_pattern=_yaml_quote(dye["membrane_channel_pattern"]),
-        dye_pattern=_yaml_quote(dye["dye_channel_pattern"]),
-        actin_enable=actin["enable"],
-        actin_pattern=_yaml_quote(actin["channel_pattern"]),
-        n_workers=base["workflow_settings"]["n_workers"],
-    )
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
-    logger.info(f"Created {dest} (preset '{preset}').")
-    if data_folder is None:
+    logger.info(f"Created {dest} (copy of {source.name}).")
+    if data_folder is None and not experiment_id:
         logger.info("Next: open it and set paths.data_folder and paths.experiment_id.")
     logger.info(f"Then check it with:  python MFA_analysis.py {dest} --check")
     return True
@@ -1099,7 +1095,7 @@ def load_config(config_path: Path, data_folder: Optional[Path] = None,
                 experiment_id: Optional[str] = None
                 ) -> Tuple[Optional[MFAConfig], Optional[config_loader.LayeredConfig]]:
     """
-    Combine defaults, preset, the user's file and command-line overrides, then
+    Combine the defaults, the user's file and command-line overrides, then
     validate. Logs a readable error and returns (None, None) on failure.
     """
     overrides: Dict[str, Any] = {}
@@ -1247,7 +1243,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     utils.setup_logging(debug_mode=args.debug)
 
     if args.init_config is not None:
-        return 0 if init_config(args.init_config, args.preset,
+        return 0 if init_config(args.init_config, args.copy_from,
                                 args.data_folder, args.experiment_id) else 1
 
     if args.config_path is None:

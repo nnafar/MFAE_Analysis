@@ -3,10 +3,8 @@
 # ===================================================================
 # Every setting the pipeline understands, with the lab's tuned values.
 #
-# How settings are combined for a run:
-#     1. this file                      (defaults)
-#     2. config/presets/<preset>.yaml   (only if your config names a preset)
-#     3. your own config file           (wins over everything above)
+# How settings are combined for a run: this file first, then your own
+# config file (e.g. config.yaml), which wins for every setting it lists.
 #
 # To change a setting for your experiment, copy the line (with its section
 # header) into YOUR config file and edit it there. Changing this file

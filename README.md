@@ -35,29 +35,25 @@ on Linux install it with your package manager (e.g. `sudo apt install python3-tk
 
 ## 2. Quick start (one experiment)
 
-**Step 1 – create a config file:**
+**Step 1 – create a config file** by copying `config.yaml`, the lab's standard experiment config,
+with your data folder filled in:
 
 ```bash
 python MFA_analysis.py --init-config configs/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10"
 ```
 
-This writes a short file (about 45 lines) with only what changes between experiments: the data
+The experiment name defaults to the folder's name. To start from one of your other configs instead,
+add `--from config_asp.yaml` (or any config file). You can also just copy a config file by hand.
+
+A config file is short (about 45 lines). It holds what changes between experiments: the data
 folder, experiment name, microscope scale, pressure, frame interval, which analyses to run (dye
-uptake and actin on/off) and the channel names. `--data-folder` fills in the folder, and the
-experiment name defaults to the folder's name. Open the file and check the values.
+uptake and actin on/off), the channel names and the number of CPU cores. Open it and check the values.
 
 **The pulse is read from the experiment name** (see [Naming experiment folders](#5-naming-experiment-folders)):
 `…-100V-1ms-frame10` means a 100 V, 1 ms pulse at file number 10, and `0V` means no pulse. Any
 voltage or duration works; you never type them into the config.
 
-The file names one of two presets, chosen automatically from the voltage in the name:
-
-| Preset | Use for |
-|---|---|
-| `ep` | Electroporation, any voltage and pulse duration |
-| `asp` | Aspiration only (0 V); also smooths the length trace |
-
-Rupture detection is **off** in both. To switch it on for an experiment, add to your file:
+Rupture detection is **off** by default. To switch it on for an experiment, add to its config:
 
 ```yaml
 rupture_detection:
@@ -95,7 +91,7 @@ Results are written to `Output/<experiment_id>/`.
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
 | `--show-config` | Print every setting the run would use, and which file set it |
 | `--debug` | Show detailed log messages |
-| `--init-config FILE` | Create a new short config (`--preset ep\|asp` to override the automatic choice) |
+| `--init-config FILE` | Create a new config by copying `config.yaml` (or `--from OTHER.yaml`) |
 
 Because `--data-folder` overrides the config, one config can be reused for a whole series of
 experiments recorded with the same settings:
@@ -106,12 +102,11 @@ python MFA_analysis.py configs/ep_5ms.yaml --data-folder "D:/MFAE/260129_MDAMB23
 
 ### How settings work
 
-A run combines three files; later ones win:
+A run combines two files; your config wins for every setting it lists:
 
 ```
-config/defaults.yaml          every setting, with the lab's tuned values and an explanation of each
-  ⬑ config/presets/<preset>   ep or asp: the few settings that differ for that experiment type
-     ⬑ your config file       paths, microscope, pulse ... plus anything you choose to change
+config/defaults.yaml     advanced settings that stay the same between experiments, each explained
+  ⬑ your config file     the experiment's settings, plus anything you choose to change
 ```
 
 - **To change any other setting**, copy it from `config/defaults.yaml` into your own file under the
@@ -128,7 +123,7 @@ config/defaults.yaml          every setting, with the lab's tuned values and an 
 - **Every run saves its complete settings** to `Output/<experiment_id>/effective_config.yaml`. That
   file is itself a full config, so you can rerun an old analysis with exactly the same settings even
   after the defaults have changed.
-- Old full-length config files (every setting listed, no `preset:`) still work unchanged.
+- Old full-length config files (every setting listed) still work unchanged.
 
 ## 3. The interactive setup
 
@@ -253,7 +248,7 @@ every push (`.github/workflows/tests.yml`).
 |---|---|
 | `MFA_analysis.py` | Entry point and orchestration (command line, setup, parallel workers, export) |
 | `config_schema.py` | Config validation (pydantic); every allowed setting is defined here |
-| `config_loader.py`, `config/` | Combining defaults, presets and the user's file |
+| `config_loader.py`, `config/defaults.yaml` | Combining the defaults with the user's config |
 | `FileHandling_MFA.py` | Finding images, channel matching, timestamps |
 | `ImageProcessing_MFA.py` | Interactive rotation, ROI and trap selection |
 | `LineDetection_MFA.py` | Segmentation, protrusion length, entry/exit and rupture detection |

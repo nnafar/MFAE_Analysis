@@ -1,18 +1,17 @@
 # ===================================================================
 # MFA EXPERIMENT CONFIG
 # ===================================================================
-# Only the settings that change between experiments live here. Everything
-# else comes from config/defaults.yaml (the full, commented reference) and
-# from the preset below. To change any other setting, copy it from
-# config/defaults.yaml into this file, under the same section name.
+# The settings for one experiment. Everything not listed here comes from
+# config/defaults.yaml (the full, commented reference). To change any other
+# setting for this experiment, copy it from there into this file under the
+# same section name.
 #
-#   Check this file:     python MFA_analysis.py config_asp.yaml --check
-#   See all settings:    python MFA_analysis.py config_asp.yaml --show-config
-
-# Experiment type:
-#   ep  = electroporation (any voltage / pulse duration)
-#   asp = aspiration only (0 V)
-preset: asp
+# Start a new experiment by copying a config, with the paths filled in:
+#   python MFA_analysis.py --init-config my_exp.yaml --data-folder "D:/MFAE/<folder>"
+#   (add  --from config_asp.yaml  to copy a different config)
+#
+# Check a config:      python MFA_analysis.py <this file> --check
+# See all settings:    python MFA_analysis.py <this file> --show-config
 
 paths:
   # Folder with this experiment's .tif images.
@@ -33,6 +32,7 @@ experiment_parameters:
   max_traps: 18
 
 # Which analyses to run (True / False). The membrane channel is always analysed.
+# Whether there was a pulse is read from the experiment name (0V = no pulse).
 dye_uptake_parameters:
   enable: True
   # Text in the file names that identifies each channel
@@ -46,3 +46,8 @@ actin_parameters:
 workflow_settings:
   # CPU cores to use; lower it if the computer becomes slow
   n_workers: 3
+
+rupture_detection:
+  # Smooth the length trace (3-frame rolling median)
+  enable_smoothing: True
+  enable_outlier_rejection: True

@@ -1,3 +1,0 @@
-# Preset: electroporation (any voltage and pulse duration).
-# Uses config/defaults.yaml unchanged. Voltage, duration and pulse frame are
-# read from the experiment name.
