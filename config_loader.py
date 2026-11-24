@@ -9,7 +9,10 @@ A run's settings are built from up to three YAML files, later ones winning:
                                        (used when the user's file says `preset: <name>`)
     3. the user's own config file      usually ~25 lines: paths, microscope, pulse
 
-plus any command-line overrides. The merged result is validated by
+plus any command-line overrides. Finally, the pulse settings are read from the
+experiment name (see experiment_naming.py): 0 V means no pulse, otherwise the
+pulse frame is the name's `frame<N>`. A value set explicitly in the user's
+file that contradicts the name is an error, so the two can't silently differ. The merged result is validated by
 config_schema.MFAConfig exactly as a single file would be, so unknown keys and
 bad values are still rejected. A full, old-style config file (every setting
 listed) still works: it simply overrides all the defaults.
@@ -24,6 +27,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+from experiment_naming import ExperimentName, NAMING_RULE, parse_experiment_name
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 DEFAULTS_FILE = CONFIG_DIR / "defaults.yaml"
@@ -41,6 +46,7 @@ class LayeredConfig:
     sources: Dict[str, str]                     # "section.key" -> layer label
     preset: Optional[str] = None
     layers: List[str] = field(default_factory=list)  # labels, lowest priority first
+    experiment: Optional[ExperimentName] = None       # parsed experiment name, if it follows the rule
 
 
 def available_presets() -> List[str]:
@@ -115,8 +121,52 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> 
         data = deep_merge(data, layer)
         for key in _leaf_keys(layer):
             sources[key] = label
-    return LayeredConfig(data=data, sources=sources, preset=preset,
-                         layers=[label for label, _ in layers])
+
+    layered = LayeredConfig(data=data, sources=sources, preset=preset,
+                            layers=[label for label, _ in layers])
+    _apply_experiment_name(layered, user_path,
+                           explicit={user_path.name, "command line"})
+    return layered
+
+
+EXPERIMENT_NAME_LABEL = "experiment name"
+
+
+def _apply_experiment_name(layered: LayeredConfig, user_path: Path, explicit: set) -> None:
+    """Take the pulse settings from paths.experiment_id when it follows the naming rule."""
+    experiment_id = (layered.data.get("paths") or {}).get("experiment_id")
+    info = parse_experiment_name(experiment_id) if experiment_id else None
+    layered.experiment = info
+    if info is None:
+        return
+
+    if layered.preset == "asp" and info.has_pulse:
+        raise ConfigFileError(
+            f"{user_path}: preset 'asp' (aspiration only) but the experiment name says "
+            f"{info.voltage_v} V. Use 'preset: ep', or fix the name.")
+    if layered.preset == "ep" and not info.has_pulse:
+        raise ConfigFileError(
+            f"{user_path}: preset 'ep' but the experiment name says 0 V (no pulse). "
+            f"Use 'preset: asp', or fix the name.")
+
+    derived = {"has_pulse": info.has_pulse}
+    if info.has_pulse:
+        derived["pulse_frame"] = info.pulse_frame
+
+    dye = layered.data.setdefault("dye_uptake_parameters", {})
+    for key, value in derived.items():
+        dotted = f"dye_uptake_parameters.{key}"
+        current = dye.get(key)
+        if layered.sources.get(dotted) in explicit and current is not None:
+            same = (float(current) == float(value)) if key == "pulse_frame" else (bool(current) == value)
+            if not same:
+                raise ConfigFileError(
+                    f"{user_path}: dye_uptake_parameters.{key} is {current!r}, but the experiment "
+                    f"name '{experiment_id}' says {value!r}. Remove the setting (it is read "
+                    f"from the name) or fix the name ({NAMING_RULE}).")
+            continue
+        dye[key] = value
+        layered.sources[dotted] = EXPERIMENT_NAME_LABEL
 
 
 # =============================================================================

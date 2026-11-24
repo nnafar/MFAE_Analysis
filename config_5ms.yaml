@@ -9,18 +9,18 @@
 #   Check this file:     python MFA_analysis.py config_5ms.yaml --check
 #   See all settings:    python MFA_analysis.py config_5ms.yaml --show-config
 
-# Experiment type. See config/presets/ for what each one changes.
-#   ep    = electroporation, 5 ms pulse, all analyses (defaults unchanged)
-#   5ms   = electroporation, 5 ms pulse
-#   100us = electroporation, 100 µs pulse
-#   asp   = aspiration only, no pulse
-preset: 5ms
+# Experiment type:
+#   ep  = electroporation (any voltage / pulse duration)
+#   asp = aspiration only (0 V)
+preset: ep
 
 paths:
   # Folder with this experiment's .tif images.
   data_folder: 'D:\MFAE\5ms_100V\260114_MDAMB231_WT_Chip1_Experiment5-1100Pa-100V-5ms-frame10'
-  # Name of the results folder. Follow the naming rule so the bulk analysis
-  # recognises it: YYMMDD_Cell_Treatment_Chip_Experiment-1100Pa-100V-5ms-frame10
+  # Name of the results folder. The pulse voltage, duration and frame are read
+  # from it, so follow the naming rule:
+  #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
+  #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
   experiment_id: '260114_MDAMB231_WT_Chip1_Experiment5-1100Pa-100V-5ms-frame10'
 
 experiment_parameters:
@@ -32,9 +32,9 @@ experiment_parameters:
   frame_interval: 1.75
   max_traps: 18
 
+# Which analyses to run (True / False). The membrane channel is always analysed.
 dye_uptake_parameters:
-  # File number of the frame with the pulse
-  pulse_frame: 10
+  enable: True
   # Text in the file names that identifies each channel
   membrane_channel_pattern: 'C1'
   dye_channel_pattern: 'C2'
@@ -46,3 +46,5 @@ actin_parameters:
 workflow_settings:
   # CPU cores to use; lower it if the computer becomes slow
   n_workers: 3
+  # Show an early frame during setup
+  selection_frame_fraction: 0.1

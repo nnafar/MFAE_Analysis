@@ -1,14 +1,13 @@
-# Preset: aspiration only (no electroporation pulse).
+# Preset: aspiration only (no electroporation pulse; experiment name has 0V).
 # Only settings that differ from config/defaults.yaml are listed.
 
 dye_uptake_parameters:
-  has_pulse: False               # No pulse: pulse markers and pulse-based checks are off.
+  has_pulse: False               # Also read from the name (0V); set here as a fallback.
 
 rupture_detection:
-  enable: False                  # Rupture/DOA detection off.
-  enable_smoothing: True         # 3-frame rolling median on the length trace.
+  enable_smoothing: True         # 3-frame rolling median on the length trace
   enable_outlier_rejection: True
-  # Detector tuning kept for when detection is switched back on:
+  # Detector tuning, used only if rupture detection is switched on:
   enable_spike_check: False
   enable_step_check: False
   enable_length_veto: False

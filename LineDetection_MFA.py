@@ -1988,9 +1988,10 @@ class LineDetectionMFA:
         0-based array index of the electroporation pulse, or None when the
         experiment has no pulse.
 
-        A pulse exists only when dye_uptake_parameters.enable AND has_pulse are
-        both True. Aspiration-only controls keep a pulse_frame value in their
-        config, so pulse_frame alone must never be treated as a real pulse.
+        A pulse exists only when dye_uptake_parameters.has_pulse is True (set
+        from the experiment name: 0 V = no pulse), independent of whether the
+        dye channel is analysed. Aspiration-only controls may keep a
+        pulse_frame value, so pulse_frame alone is never treated as a pulse.
 
         Primary source: rupture_detection.pulse_frame_idx, injected by the MFA
         worker after converting the filename-based pulse_frame with the
@@ -1999,7 +2000,7 @@ class LineDetectionMFA:
         start at t0001, matching UptakeQuantification / ActinQuantification.
         """
         dup = self.params.get('dye_uptake_parameters', {})
-        if not (dup.get('enable', False) and dup.get('has_pulse', True)):
+        if not dup.get('has_pulse', True):
             return None
         idx = self.params.get('rupture_detection', {}).get('pulse_frame_idx')
         if idx is not None:

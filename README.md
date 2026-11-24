@@ -35,23 +35,36 @@ on Linux install it with your package manager (e.g. `sudo apt install python3-tk
 
 ## 2. Quick start (one experiment)
 
-**Step 1 – create a config file** for your experiment type:
+**Step 1 – create a config file:**
 
 ```bash
-python MFA_analysis.py --init-config configs/my_experiment.yaml --preset ep --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10"
+python MFA_analysis.py --init-config configs/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10"
 ```
+
+This writes a short file (about 45 lines) with only what changes between experiments: the data
+folder, experiment name, microscope scale, pressure, frame interval, which analyses to run (dye
+uptake and actin on/off) and the channel names. `--data-folder` fills in the folder, and the
+experiment name defaults to the folder's name. Open the file and check the values.
+
+**The pulse is read from the experiment name** (see [Naming experiment folders](#5-naming-experiment-folders)):
+`…-100V-1ms-frame10` means a 100 V, 1 ms pulse at file number 10, and `0V` means no pulse. Any
+voltage or duration works; you never type them into the config.
+
+The file names one of two presets, chosen automatically from the voltage in the name:
 
 | Preset | Use for |
 |---|---|
-| `ep` (default) | Electroporation, 5 ms pulse, all analyses on |
-| `5ms` | Electroporation, 5 ms pulse (rupture detection off) |
-| `100us` | Electroporation, 100 µs pulse (rupture detection off) |
-| `asp` | Aspiration-only controls, no pulse (rupture detection off) |
+| `ep` | Electroporation, any voltage and pulse duration |
+| `asp` | Aspiration only (0 V); also smooths the length trace |
 
-This writes a short file (about 40 lines) with only what changes between experiments: the data
-folder, experiment name, microscope scale, pressure, frame interval, pulse frame and channel names.
-`--data-folder` fills in the folder, and the experiment name defaults to the folder's name. Open the
-file and check the values. See [How settings work](#how-settings-work) for everything else.
+Rupture detection is **off** in both. To switch it on for an experiment, add to your file:
+
+```yaml
+rupture_detection:
+  enable: True
+```
+
+See [How settings work](#how-settings-work) for everything else.
 
 **Step 2 – check the setup** (opens no windows, writes no results):
 
@@ -82,7 +95,7 @@ Results are written to `Output/<experiment_id>/`.
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
 | `--show-config` | Print every setting the run would use, and which file set it |
 | `--debug` | Show detailed log messages |
-| `--init-config FILE --preset NAME` | Create a new short config |
+| `--init-config FILE` | Create a new short config (`--preset ep\|asp` to override the automatic choice) |
 
 Because `--data-folder` overrides the config, one config can be reused for a whole series of
 experiments recorded with the same settings:
@@ -97,7 +110,7 @@ A run combines three files; later ones win:
 
 ```
 config/defaults.yaml          every setting, with the lab's tuned values and an explanation of each
-  ⬑ config/presets/<preset>   the few settings that differ for one experiment type
+  ⬑ config/presets/<preset>   ep or asp: the few settings that differ for that experiment type
      ⬑ your config file       paths, microscope, pulse ... plus anything you choose to change
 ```
 
@@ -178,8 +191,8 @@ enough to cut data on. All CSVs therefore contain every frame; treat the markers
 
 ## 5. Naming experiment folders
 
-The bulk analysis reads the experimental conditions from the folder name, so every
-`experiment_id` must follow this pattern (details in
+The pulse settings of a run and the condition groups of the bulk analysis are both read from the
+experiment name, so every `experiment_id` must follow this pattern (details in
 [`Bulk_Analysis/OtherInfo/Folder_naming.txt`](Bulk_Analysis/OtherInfo/Folder_naming.txt)):
 
 ```
@@ -188,7 +201,10 @@ YYMMDD_CellType_Treatment_Chip_Experiment-<P>Pa-<V>V-<D><ms|us|s>-frame<N>
 260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0       aspiration only
 ```
 
-`--check` warns when a name does not match.
+`--check` shows what it read from the name (e.g. `1100 Pa, 100 V, 5ms pulse at frame 10`) and warns
+when a name does not match the rule or its pressure differs from `constant_pressure`. If a name
+can't follow the rule, set `dye_uptake_parameters.has_pulse` and `pulse_frame` in your config
+instead; the bulk analysis will skip that experiment.
 
 ## 6. Bulk analysis (many experiments)
 

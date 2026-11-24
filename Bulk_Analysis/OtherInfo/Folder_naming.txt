@@ -1,5 +1,9 @@
-Experiment folder naming (required by the bulk analysis)
-========================================================
+Experiment folder naming
+========================
+
+The analysis reads the pulse (voltage, duration, pulse frame) from this name,
+and the bulk analysis groups experiments by it. The rule is defined once in
+experiment_naming.py.
 
 Name each experiment's data folder (and its experiment_id in the config) as:
 

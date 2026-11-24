@@ -18,6 +18,7 @@ Volume estimation (recomputed at load time, overwriting on-disk values):
 """
 
 import math
+import sys
 import re
 import logging
 import pandas as pd
@@ -26,6 +27,13 @@ from copy import copy
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+# The folder naming rule lives in the repository root (experiment_naming.py)
+# so the per-experiment analysis and this loader can never disagree.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from experiment_naming import FOLDER_PATTERN  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -209,14 +217,8 @@ class ExperimentAttrition:
 
 
 class BulkDataLoader:
-    FOLDER_PATTERN = re.compile(
-        r"(\d{6})_([^_\-]+)_([^_\-]+)_([^_\-]+)_([^_\-]+)"
-        r"[-_](\d+)Pa"
-        r"[-_](\d+)V"
-        r"[-_](\d+)(ms|us|µs|s)"
-        r"[-_]frame(\d+)",
-        re.IGNORECASE
-    )
+    # Defined once in experiment_naming.py, shared with MFA_analysis.py.
+    FOLDER_PATTERN = FOLDER_PATTERN
 
     def __init__(
         self,

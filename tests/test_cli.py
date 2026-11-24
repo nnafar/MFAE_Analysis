@@ -32,12 +32,14 @@ def data_folder(tmp_path):
 
 def test_init_config_writes_short_config_with_preset(tmp_path, data_folder):
     dest = tmp_path / "my.yaml"
-    assert mfa.main(["--init-config", str(dest), "--preset", "asp",
-                     "--data-folder", str(data_folder)]) == 0
+    assert mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)]) == 0
     text = dest.read_text(encoding="utf-8")
     assert len(text.splitlines()) < 60
     data = yaml.safe_load(text)
-    assert data["preset"] == "asp"
+    assert data["preset"] == "ep"                      # 100V in the name -> ep
+    assert data["dye_uptake_parameters"]["enable"] is True
+    assert data["actin_parameters"]["enable"] is True
+    assert "pulse_frame" not in data["dye_uptake_parameters"]   # read from the name
     paths = data["paths"]
     assert Path(paths["data_folder"]) == data_folder
     assert paths["experiment_id"] == EXP_NAME  # defaults to the folder name
@@ -60,9 +62,8 @@ def test_check_passes_on_valid_setup(tmp_path, data_folder):
 def test_check_fails_when_pulse_is_outside_recording(tmp_path, data_folder):
     dest = tmp_path / "my.yaml"
     mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
-    dest.write_text(dest.read_text(encoding="utf-8").replace(
-        "pulse_frame: 10\n", "pulse_frame: 500\n"), encoding="utf-8")
-    assert mfa.main([str(dest), "--check"]) == 1
+    late = EXP_NAME.replace("frame10", "frame500")      # pulse frame comes from the name
+    assert mfa.main([str(dest), "--check", "--experiment-id", late]) == 1
 
 
 def test_invalid_config_gives_readable_error(tmp_path, data_folder, capsys):
@@ -91,18 +92,21 @@ def test_no_arguments_prints_help(capsys):
 
 def test_show_config_marks_where_values_come_from(tmp_path, data_folder, capsys):
     dest = tmp_path / "my.yaml"
-    mfa.main(["--init-config", str(dest), "--preset", "100us", "--data-folder", str(data_folder)])
+    mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
+    dest.write_text(dest.read_text(encoding="utf-8")
+                    + "\nimage_processing:\n  wall_clip_margin: 0.3\n", encoding="utf-8")
     capsys.readouterr()
     assert mfa.main([str(dest), "--show-config"]) == 0
     out = capsys.readouterr().out
-    assert "default_roi_width_um: 70.0  # preset 100us" in out
+    assert "wall_clip_margin: 0.3  # my.yaml" in out
+    assert "pulse_frame: 10.0  # experiment name" in out
     assert "scale_factor: 0.315  # my.yaml" in out
     assert "min_area_threshold: 100\n" in out          # from defaults: no comment
 
 
 def test_effective_config_reproduces_the_run(tmp_path, data_folder):
     dest = tmp_path / "my.yaml"
-    mfa.main(["--init-config", str(dest), "--preset", "5ms", "--data-folder", str(data_folder)])
+    mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
     config, layered = mfa.load_config(dest)
     saved = mfa.save_effective_config(config, layered, dest, tmp_path)
     again, _ = mfa.load_config(saved)

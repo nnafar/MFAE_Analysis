@@ -41,14 +41,16 @@ experiment_parameters:
 # ===================================================================
 dye_uptake_parameters:
   enable: True                 # Analyse the dye channel.
-  has_pulse: True              # False for aspiration-only controls (no electroporation).
+
+  # Pulse: read from the experiment name (…-100V-1ms-frame10); 0 V = no pulse.
+  # Set these only if your experiment name doesn't follow the naming rule.
+  has_pulse: True
 
   # Text in the file names that identifies each channel.
   membrane_channel_pattern: "C1"
   dye_channel_pattern: "C2"
 
-  # File number (as in the image file name) of the frame with the pulse.
-  pulse_frame: 10
+  pulse_frame: 10              # File number of the frame with the pulse
   baseline_frames: 5           # Frames before the pulse used as dye baseline.
 
 actin_parameters:
@@ -102,11 +104,12 @@ fitting_parameters:
 # ===================================================================
 # 4. CELL ENTRY, EXIT & RUPTURE DETECTION
 # ===================================================================
-# Rupture/DOA detection is a heuristic: treat its results as hints.
+# Rupture/DOA detection is a heuristic and is OFF by default. The detector
+# settings below are the tuned values used when it is switched on.
 rupture_detection:
   # Master switch for rupture/DOA detection. False = no rupture is ever
   # reported (entry/exit detection and all measurements still run).
-  enable: True
+  enable: False
 
   # --- Monitoring window (inside the pipette, ahead of the cell tip) ---
   rupture_offset_from_tip_px: 7      # Gap between tip and window [px]
