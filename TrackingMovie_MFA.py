@@ -180,8 +180,8 @@ def save_tracking_movie(rois: Sequence[Optional[np.ndarray]],
              'pulse': pulse_idx, 'rupture': rupture}
 
     # Fixed, clearly distinct colours (BGR): magenta protrusion, cyan body.
-    c_prot = (220, 80, 255)
-    c_body = (255, 210, 60)
+    c_prot = utils.MASK_OUTLINE_PROT
+    c_body = utils.MASK_OUTLINE_BODY
     c_pip = utils.get_ui_color('pipette')
     colors = {'trace': (80, 200, 255), 'entry': (120, 220, 120), 'exit': (200, 200, 200),
               'pulse': (255, 200, 60), 'rupture': (60, 60, 255)}

@@ -75,7 +75,7 @@ class ActinAnalyzer:
         # Each entry is (mask_prot, mask_body) — the exact same masks used for
         # protrusion length measurement and kymograph generation, so all metrics
         # are spatially consistent with each other.
-        # Falls back to recomputing via generate_dual_masks() if not provided
+        # Frames without a LineDetection mask are skipped (never re-segmented)
         # (e.g. when called from older code paths).
         self.frame_masks = frame_masks or []
         self.start_idx = int(start_idx)
@@ -229,13 +229,10 @@ class ActinAnalyzer:
         # whether or not the dye channel is analysed.
         has_pulse = dye_params.get('has_pulse', True)
         
-        if has_pulse:
-            baseline_end   = min(self.pulse_frame, valid_frames)
-            baseline_start = max(self.start_idx, baseline_end - self.baseline_len)
-        else:
-            # Anchor to cell entry, not frame 0
-            baseline_start = self.start_idx
-            baseline_end   = min(self.start_idx + self.baseline_len, valid_frames)
+        # Baseline frames: just before the pulse (or the first frames without
+        # one), always inside the tracked cell's own frames [start_idx, exit]
+        baseline_start, baseline_end = utils.baseline_window(
+            self.start_idx, valid_frames, self.pulse_frame, self.baseline_len, has_pulse)
 
         # Collect mean values across the baseline window for each region/zone.
         base_prot, base_body, base_total      = [], [], []
@@ -410,9 +407,12 @@ class ActinAnalyzer:
             profile = utils.calculate_spatial_profile(act_f, mask_total)
             self.results['spatial_profiles'].append(profile)
 
-        # Sync time vector to however many frames were actually processed
+        # Sync time vector to the frames actually processed: the per-frame lists
+        # start at the cell's entry (start_idx), so their times do too (as in
+        # the dye uptake analysis); time_data[:n] labelled every actin value
+        # start_idx frames too early.
         n_frames = len(self.results['actin_prot_rel'])
-        self.results['time_s'] = time_data[:n_frames]
+        self.results['time_s'] = list(time_data[self.start_idx:self.start_idx + n_frames])
 
         # ----------------------------------------------------------------
         # STEP 3 — Post-loop derived metrics
@@ -428,23 +428,18 @@ class ActinAnalyzer:
 
     def _get_masks(self, frame_idx: int, mem_img: np.ndarray):
         """
-        Returns (mask_prot, mask_body) for a given frame.
+        (mask_prot, mask_body) of this frame exactly as LineDetection built them.
+
+        Masks are never re-segmented here: every module (protrusion length,
+        dye uptake, actin) works on the same LineDetection mask. A frame without
+        one returns (None, None) and is skipped.
         """
         if self.frame_masks and frame_idx < len(self.frame_masks):
             mp, mb = self.frame_masks[frame_idx]
             if mp is not None and mb is not None:
                 return mp, mb
-                
-        # FIX: Check is_guv before triggering the threshold fallback
-        is_guv = self.params.get('guv_settings', {}).get('enable', False)
-        if is_guv:
-            logger.warning(f"Missing pre-computed masks for GUV at frame {frame_idx}. Skipping frame fallback.")
-            return None, None
-            
-        return utils.generate_dual_masks(
-            mem_img, self.pipette_x,
-            self.threshold_prot, self.threshold_body, self.params
-        )
+        logger.debug(f"No LineDetection mask for frame {frame_idx}; frame skipped.")
+        return None, None
 
     @staticmethod
     def _masked_mean(image: np.ndarray, mask: np.ndarray) -> float:
@@ -830,15 +825,23 @@ class ActinAnalyzer:
         ]
 
         for i in range(n_frames):
-            mem_img = self.mem_imgs[i]
-            act_img = self.actin_imgs[i]
+            # results[...][i] is frame start_idx + i (lists start at the cell's
+            # entry); image and masks must come from that same frame
+            k = self.start_idx + i
+            if k >= len(self.mem_imgs) or k >= len(self.actin_imgs):
+                break
+            mem_img = self.mem_imgs[k]
+            act_img = self.actin_imgs[k]
 
             if mem_img is None or act_img is None:
                 writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
                 continue
 
             display               = self._build_base_frame(act_img)
-            mask_prot, mask_body  = self._get_masks(i, mem_img)
+            mask_prot, mask_body  = self._get_masks(k, mem_img)
+            if mask_prot is None or mask_body is None:
+                writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
+                continue
             zones                 = self._build_zone_masks(mask_prot, mask_body)
 
             layers = [
@@ -850,6 +853,8 @@ class ActinAnalyzer:
             display = self._draw_masks_on_frame(display, layers, alpha=0.45)
             cv2.line(display, (int(self.pipette_x), 0),
                      (int(self.pipette_x), h), col_line, 1)
+            # the LineDetection mask outlines, as drawn in the tracking movie
+            utils.draw_mask_outlines(display, mask_prot, mask_body, k, len(self.mem_imgs))
 
             time_s = self.results['time_s'][i] if i < n_frames else 0.0
             n_tip  = int(cv2.countNonZero(zones['tip']))
@@ -918,15 +923,23 @@ class ActinAnalyzer:
         ]
 
         for i in range(n_frames):
-            mem_img = self.mem_imgs[i]
-            act_img = self.actin_imgs[i]
+            # results[...][i] is frame start_idx + i (lists start at the cell's
+            # entry); image and masks must come from that same frame
+            k = self.start_idx + i
+            if k >= len(self.mem_imgs) or k >= len(self.actin_imgs):
+                break
+            mem_img = self.mem_imgs[k]
+            act_img = self.actin_imgs[k]
 
             if mem_img is None or act_img is None:
                 writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
                 continue
 
             display                  = self._build_base_frame(act_img)
-            mask_prot, mask_body     = self._get_masks(i, mem_img)
+            mask_prot, mask_body     = self._get_masks(k, mem_img)
+            if mask_prot is None or mask_body is None:
+                writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
+                continue
             mask_b_cortex, mask_b_lumen = utils.generate_cortex_masks(
                 mask_body, self.cortex_thickness_px
             )
@@ -944,6 +957,8 @@ class ActinAnalyzer:
             display = self._draw_masks_on_frame(display, layers, alpha=0.45)
             cv2.line(display, (int(self.pipette_x), 0),
                      (int(self.pipette_x), h), col_line, 1)
+            # the LineDetection mask outlines, as drawn in the tracking movie
+            utils.draw_mask_outlines(display, mask_prot, mask_body, k, len(self.mem_imgs))
 
             time_s   = self.results['time_s'][i] if i < n_frames else 0.0
             b_cl  = (self.results['actin_body_cortex_lumen_ratio'][i]

@@ -484,3 +484,157 @@ def test_relative_level_drops_the_halo_around_a_bright_protrusion(seed):
     assert _iou(on[:, cols], core) > 0.8       # relative level: mask on the protrusion itself
     # the dim shaft right next to the bright spot is kept (columns PIP-50 .. PIP-47)
     assert on[30:43, PIP - 50:PIP - 46].mean() > 0.9
+
+
+def test_debug_movies_show_the_linedetection_mask_of_the_same_frame(tmp_path):
+    """Dye and actin debug movies draw LineDetection's own mask for each frame, and
+    frame i of the results (which start at the cell's entry) is frame start_idx + i."""
+    from ActinQuantification import ActinAnalyzer
+    from UptakeQuantification import DyeUptakeAnalyzer
+
+    img, _, _ = _trap_image()
+    n, start = 8, 3
+    rois = [img] * n
+    params = _params()
+    params.update({
+        'experiment_parameters': {'scale_factor': 0.629},
+        'dye_uptake_parameters': {'enable': True, 'has_pulse': False, 'baseline_frames': 2},
+        'actin_parameters': {},
+    })
+    mp, mb = utils.generate_dual_masks(img, PIP, 100, 100, params)
+    masks = [(mp.copy(), mb.copy()) for _ in range(n)]
+
+    seen = {}
+    for cls, args in ((ActinAnalyzer, (rois, rois, PIP, 100, 100, params)),
+                      (DyeUptakeAnalyzer, (rois, rois, PIP, 100, 100, None, params))):
+        a = cls(*args, frame_masks=masks, start_idx=start)
+        a.run(list(range(n)))
+        calls = []
+        orig = a._get_masks
+
+        def spy(k, m, _orig=orig, _calls=calls):
+            out = _orig(k, m)
+            assert out[0] is masks[k][0] and out[1] is masks[k][1]   # LineDetection's mask, not a new one
+            _calls.append(k)
+            return out
+        a._get_masks = spy
+        if cls is ActinAnalyzer:
+            a.save_zones_debug_video(1, tmp_path)
+            a.save_cortex_debug_video(1, tmp_path)
+        else:
+            a.save_debug_video(1, tmp_path)
+        seen[cls.__name__] = calls
+
+    assert set(seen['ActinAnalyzer']) == set(range(start, n))
+    assert set(seen['DyeUptakeAnalyzer']) == set(range(start, n))
+
+
+def test_actin_times_start_at_the_cell_entry():
+    """Actin per-frame values start at start_idx; their time stamps must too (as for dye)."""
+    from ActinQuantification import ActinAnalyzer
+    from UptakeQuantification import DyeUptakeAnalyzer
+
+    img, _, _ = _trap_image()
+    n, start = 8, 3
+    rois = [img] * n
+    params = _params()
+    params.update({
+        'experiment_parameters': {'scale_factor': 0.629},
+        'dye_uptake_parameters': {'enable': True, 'has_pulse': False, 'baseline_frames': 2},
+        'actin_parameters': {},
+    })
+    mp, mb = utils.generate_dual_masks(img, PIP, 100, 100, params)
+    times = [10.0 * k for k in range(n)]
+    act = ActinAnalyzer(rois, rois, PIP, 100, 100, params,
+                        frame_masks=[(mp, mb)] * n, start_idx=start).run(times)
+    dye = DyeUptakeAnalyzer(rois, rois, PIP, 100, 100, None, params,
+                            frame_masks=[(mp, mb)] * n, start_idx=start).run(times)
+    assert list(act['time_s']) == times[start:]
+    assert list(act['time_s']) == list(dye['time_s'])
+
+
+def test_downstream_never_resegments_a_frame_without_a_linedetection_mask(monkeypatch, tmp_path):
+    """Dye and actin only use LineDetection's masks; a frame without one is skipped."""
+    from ActinQuantification import ActinAnalyzer
+    from UptakeQuantification import DyeUptakeAnalyzer
+
+    img, _, _ = _trap_image()
+    n = 6
+    rois = [img] * n
+    params = _params()
+    params.update({
+        'experiment_parameters': {'scale_factor': 0.629},
+        'dye_uptake_parameters': {'enable': True, 'has_pulse': False, 'baseline_frames': 2},
+        'actin_parameters': {},
+    })
+    mp, mb = utils.generate_dual_masks(img, PIP, 100, 100, params)
+    masks = [(mp, mb)] * n
+    masks[4] = (None, None)                       # LineDetection had no mask here
+
+    def boom(*a, **k):
+        raise AssertionError("downstream module re-segmented the membrane image")
+    monkeypatch.setattr(utils, 'generate_dual_masks', boom)
+    monkeypatch.setattr(utils, 'threshold_membrane', boom)
+
+    act = ActinAnalyzer(rois, rois, PIP, 100, 100, params, frame_masks=masks, start_idx=0)
+    res_a = act.run(list(range(n)))
+    act.save_zones_debug_video(1, tmp_path); act.save_cortex_debug_video(1, tmp_path)
+    dye = DyeUptakeAnalyzer(rois, rois, PIP, 100, 100, None, params, frame_masks=masks, start_idx=0)
+    res_d = dye.run(list(range(n)))
+    dye.save_debug_video(1, tmp_path)
+    assert res_d['mask_count_prot'][4] == 0 and res_d['mask_count_prot'][3] > 0
+    assert len(res_a['time_s']) == n
+
+
+def test_masks_exist_only_for_the_tracked_cell():
+    """Two cells in one trap: only the selected (pulsed) cell's frames keep masks, so dye,
+    actin and the movies never see the other cell."""
+    lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] + [20, 25, 30, 35, 40, 45, 50, 55, 60, 62, 64]
+    res = _run_cells(lengths, pulse_idx=len(lengths) - 4)
+    e, x = res['entry_frame_index'], res['exit_frame_index']
+    fm = res['frame_masks']
+    assert all(fm[i] == (None, None) for i in range(len(fm)) if i < e or i > x)
+    assert all(fm[i][0] is not None for i in range(e, x + 1))
+
+
+def test_dye_and_actin_only_measure_the_tracked_cell(tmp_path):
+    """Frames outside entry..exit (another cell, empty trap) are never measured or
+    used for the baseline, even if they are bright."""
+    from ActinQuantification import ActinAnalyzer
+    from UptakeQuantification import DyeUptakeAnalyzer
+
+    img, _, _ = _trap_image()
+    n, entry, exit_ = 12, 3, 7
+    bright = np.full_like(img, 60000)                 # 'other cell' frames: would wreck F0
+    # cell frames get +100 per frame, so which frames went into F0 is visible
+    dye = [bright if (i < entry or i > exit_) else (img + 100 * i).astype(np.uint16) for i in range(n)]
+    params = _params()
+    params.update({
+        'experiment_parameters': {'scale_factor': 0.629},
+        'dye_uptake_parameters': {'enable': True, 'has_pulse': True, 'pulse_frame_idx': 10,
+                                  'baseline_frames': 3},
+        'actin_parameters': {},
+    })
+    mp, mb = utils.generate_dual_masks(img, PIP, 100, 100, params)
+    masks = [((mp, mb) if entry <= i <= exit_ else (None, None)) for i in range(n)]
+    times = [float(i) for i in range(n)]
+    d = DyeUptakeAnalyzer([img] * n, dye, PIP, 100, 100, None, params, frame_masks=masks,
+                          start_idx=entry, end_idx=exit_)
+    rd = d.run(times)
+    a = ActinAnalyzer([img] * n, dye, PIP, 100, 100, params, frame_masks=masks,
+                      start_idx=entry, end_idx=exit_)
+    ra = a.run(times)
+    # cell left before the pulse (frame 10): baseline = its own last 3 frames, not frames 7-9
+    assert d.f0['body'] == pytest.approx(float(img[mb > 0].mean()) + 600, rel=1e-6)   # frames 5, 6, 7
+    assert list(rd['time_s']) == times[entry:exit_ + 1]
+    assert list(ra['time_s']) == times[entry:exit_ + 1]
+    assert max(rd['raw_mean_body']) < 30000 and max(ra['actin_body_mean']) < 30000
+
+
+def test_baseline_window_stays_inside_the_cell():
+    bw = utils.baseline_window
+    assert bw(0, 100, 50, 5, True) == (45, 50)       # just before the pulse
+    assert bw(48, 100, 50, 5, True) == (48, 50)      # entered just before the pulse
+    assert bw(0, 20, 50, 5, True) == (15, 20)        # left before the pulse: its last frames
+    assert bw(50, 100, 50, 5, True) == (50, 55)      # entered at the pulse: its first frames
+    assert bw(10, 100, None, 5, False) == (10, 15)   # no pulse: first frames after entry

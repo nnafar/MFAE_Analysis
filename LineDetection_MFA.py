@@ -1818,6 +1818,14 @@ class LineDetectionMFA:
         self.results['selected_cell'] = (sel + 1) if sel is not None else None
         self.results['cell_at_pulse'] = cell_at_pulse
 
+        # Masks exist only for the tracked cell: frames of other cells in the
+        # same trap (or an empty trap) get none, so dye, actin and the movies,
+        # which all use these masks, only ever see this cell.
+        fm = self.results.get('frame_masks', [])
+        for i in range(len(fm)):
+            if i < entry_idx or i > exit_idx:
+                fm[i] = (None, None)
+
         # Nullify out-of-bounds data physically isolated to the active period
         for i in range(len(protrusions)):
             if i < entry_idx or i > exit_idx:
