@@ -1418,12 +1418,16 @@ class LineDetectionMFA:
             offset = float(edge_idx)
             
         refined = max(0.0, min(float(w), x_start + offset))
-        # Sub-pixel means sub-pixel: the 50 % crossing is searched up to 30 px
-        # beyond the mask, and faint signal in the channel ahead of the tip
-        # could move the tip far past the mask edge (e.g. to the box edge).
-        # Keep it within max_tip_refinement_px of the mask's own edge.
-        max_shift = float(self.params.get('image_processing', {}).get('max_tip_refinement_px', 2.0))
-        return float(min(max(refined, int_edge_x - max_shift), int_edge_x + max_shift))
+        # The half-maximum point usually lies a few px beyond the mask edge on a
+        # thin, dim tip, and it is steadier than the mask edge itself. But faint
+        # signal in the channel ahead (above half the tip's brightness) can carry
+        # the crossing far past the mask, up to the box edge. A crossing more than
+        # max_tip_refinement_px beyond the mask is therefore not trusted, and the
+        # mask edge is used instead.
+        max_out = float(self.params.get('image_processing', {}).get('max_tip_refinement_px', 15.0))
+        if refined < int_edge_x - max_out:
+            return float(int_edge_x)
+        return float(refined)
 
     def _process_all_frames(self, pipette_start_x: int, threshold: int) -> None:
         """

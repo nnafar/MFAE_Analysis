@@ -478,8 +478,8 @@ class ImageProcessingConstants(_StrictModel):
         )
     )
     max_tip_refinement_px: float = Field(
-        default=2.0, ge=0.0, le=30.0,
-        description="The sub-pixel tip refinement may move the tip at most this far from the mask edge [px]."
+        default=15.0, ge=0.0, le=30.0,
+        description="Tip refinement (half-maximum along the centre line) is used only if it lies at most this far beyond the mask edge [px]; otherwise the mask edge is used."
     )
     protrusion_leak_fraction: float = Field(
         default=0.4, ge=0.0, lt=1.0,

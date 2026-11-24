@@ -381,7 +381,7 @@ def test_tip_refinement_stays_near_the_mask_edge():
     img[30:42, edge - 26] = 40          # one dark column far ahead
     stat = np.array([edge, 30, PIP - edge, 12, (PIP - edge) * 12])
     refined = det._refine_edge_subpixel(img, edge, stat)
-    assert edge - 2 <= refined <= edge + 2   # unclamped, it was ~edge - 25
+    assert refined == edge                    # crossing ~25 px out is not trusted -> mask edge
 
 
 def test_thin_tip_inside_the_box_is_not_cut():
@@ -408,3 +408,18 @@ def test_cell_leaving_at_the_pulse_is_separated():
     res = _run_cells(lengths, pulse_idx=drop)          # the drop falls inside the pulse window
     assert len(res['cell_segments']) >= 2
     assert res['cell_segments'][0][1] < drop
+
+
+def test_tip_refinement_extends_onto_a_dim_tip_within_the_limit():
+    """A dim tip just beyond the mask edge: the half-maximum point (a few px out) is kept."""
+    params = _params()
+    det = _detector(params)
+    img = np.full((H, W), 40, np.uint8)
+    edge = 60
+    img[30:42, edge:PIP] = 200
+    for k in range(1, 6):                       # tip fading out over 5 px beyond the mask
+        img[30:42, edge - k] = 200 - 32 * k
+    stat = np.array([edge, 30, PIP - edge, 12, 0])
+    refined = det._refine_edge_subpixel(img, edge, stat)
+    assert edge - 5 <= refined < edge - 1
+

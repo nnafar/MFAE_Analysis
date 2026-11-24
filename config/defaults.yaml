@@ -235,7 +235,7 @@ image_processing:
   membrane_temporal_window: 3        # Masks from the median of 3 consecutive frames (1 = off); steadier tips
   membrane_snr_full_scale: 40.0      # SNR shown as 255; threshold T = T*40/255 sigma above background
   protrusion_leak_fraction: 0.4      # Mask running to the box edge: cut where signal is < 40 % of the protrusion's (0 = off)
-  max_tip_refinement_px: 2.0         # Sub-pixel tip refinement moves the tip at most this far from the mask edge [px]
+  max_tip_refinement_px: 15.0        # Tip refinement farther than this beyond the mask edge is ignored [px]
   membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
   membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI
 
