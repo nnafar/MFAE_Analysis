@@ -310,7 +310,11 @@ clear and consistent from frame to frame:
    the histogram.
 3. Each pixel becomes "noise units above background", so one threshold means the same thing in
    every frame, regardless of bleaching, exposure, or a very bright protrusion tip.
-4. After thresholding, background enclosed by the cell is filled in (membrane stains are brightest
+4. If the protrusion mask runs on into faint signal ahead of the tip (out-of-focus light or debris
+   in the channel), it is cut where the signal along the channel stays below 40 % of the
+   protrusion's own level (`protrusion_leak_fraction`). Otherwise single frames read the full
+   box length.
+5. After thresholding, background enclosed by the cell is filled in (membrane stains are brightest
    at the rim, which would otherwise give ring-shaped masks), and small specks are removed.
 
 **Dye and actin intensities are always measured on the raw pixels.** They only borrow the masks;

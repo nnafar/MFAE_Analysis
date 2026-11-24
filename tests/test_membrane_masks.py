@@ -266,3 +266,24 @@ def test_tracking_stops_when_tip_leaves_roi():
     assert res['exit_frame_index'] == first_edge - 1
     assert all(np.isnan(v) for v in res['protrusion_lengths_um'][first_edge:])
     assert np.isfinite(res['protrusion_lengths_um'][first_edge - 1])
+
+
+def test_protrusion_mask_does_not_leak_into_faint_glow_ahead():
+    """Faint glow in the channel ahead of the tip must not extend the protrusion to the box edge."""
+    from LineDetection_MFA import LineDetectionMFA
+    yy, xx = np.mgrid[0:H, 0:W]
+    rng = np.random.default_rng(1)
+    L = 50
+    sig = np.zeros((H, W))
+    sig += np.where((xx >= PIP - L) & (xx < PIP) & (np.abs(yy - 36) <= 6), 150.0, 0.0)
+    sig += np.where((xx < PIP - L - 2) & (np.abs(yy - 36) <= 7), 45.0, 0.0)      # glow, 30 %
+    img = 300 + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2) + rng.normal(0, 20, (H, W))
+    img = np.clip(img, 0, 65535).astype(np.uint16)
+    params = _params()
+    det = LineDetectionMFA([img], [PIP, 0], params)
+    thr = 45                                   # ~7 sigma: the glow is above it
+    m = det._keep_closest_blob(det._segment_mask(img, thr, True, PIP), PIP, True)
+    assert m[:, :3].any()                      # without the cut the mask reaches the edge
+    cut = det._cut_protrusion_leak(m, utils.prepare_membrane_for_threshold(img, params), PIP)
+    assert not cut[:, :3].any()
+    assert abs(det._measure_protrusion_from_mask(cut, PIP)[0] - L) <= 3

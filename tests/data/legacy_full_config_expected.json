@@ -86,6 +86,7 @@
   "membrane_snr_full_scale": 40.0,
   "membrane_temporal_window": 3,
   "min_area_threshold": 100,
+  "protrusion_leak_fraction": 0.4,
   "small_object_threshold": 50,
   "threshold_preview_clahe": true,
   "wall_clip_margin": 0.25

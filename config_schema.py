@@ -476,6 +476,14 @@ class ImageProcessingConstants(_StrictModel):
             "T * membrane_snr_full_scale / 255 noise units above background."
         )
     )
+    protrusion_leak_fraction: float = Field(
+        default=0.4, ge=0.0, lt=1.0,
+        description=(
+            "Cut the protrusion mask where it runs into faint signal ahead of the tip: at the first "
+            "stretch of 3+ columns whose signal stays below this fraction of the protrusion's own "
+            "level (0 = off). Stops single frames from reading the full box length."
+        )
+    )
     membrane_fill_holes: bool = Field(
         default=True,
         description="Fill background regions fully enclosed by the thresholded membrane (ring-shaped stains)."

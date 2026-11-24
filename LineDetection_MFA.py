@@ -1220,6 +1220,52 @@ class LineDetectionMFA:
 
         return out
 
+    def _cut_protrusion_leak(self, mask: np.ndarray, prepared: np.ndarray, pipette_x: int) -> np.ndarray:
+        """
+        Cut the protrusion mask where it leaks into faint signal ahead of the tip.
+
+        Faint glow in the channel ahead of the protrusion (out-of-focus light,
+        debris) can sit right at the threshold; in frames where it crosses it,
+        the mask runs on to the edge of the box and the length jumps. That glow
+        is much dimmer than the protrusion itself, so the mask is profiled along
+        the channel from the entrance (mean enhanced signal of the masked pixels
+        per column) and cut at the first stretch of >= 3 columns where the
+        profile stays below protrusion_leak_fraction x the protrusion's level
+        (median of the profile over the half of the mask nearest the entrance).
+        Without a leak the mask edge comes first and nothing changes.
+        """
+        frac = float(self.params.get('image_processing', {}).get('protrusion_leak_fraction', 0.4))
+        pip = int(pipette_x)
+        if frac <= 0 or pip <= 4 or not mask[:, :pip].any():
+            return mask
+        m = mask[:, :pip] > 0
+        cols = np.where(m.any(axis=0))[0]
+        left, right = int(cols.min()), int(cols.max())
+        prof = np.zeros(pip, dtype=float)
+        counts = m.sum(axis=0)
+        prof[counts > 0] = (prepared[:, :pip].astype(float) * m).sum(axis=0)[counts > 0] / counts[counts > 0]
+        half = left + (right - left) // 2
+        near = prof[half:right + 1][counts[half:right + 1] > 0]
+        if near.size < 3:
+            return mask
+        level = float(np.median(near))
+        if level <= 0:
+            return mask
+        low = prof < frac * level
+        run = 0
+        for x in range(right, left - 1, -1):
+            if low[x]:
+                run += 1
+                if run >= 3:
+                    cut = x + run          # first column after the low stretch, towards the entrance
+                    out = mask.copy()
+                    out[:, :cut] = 0
+                    # keep only what is still connected to the entrance side
+                    return self._keep_closest_blob(out, pip, is_protrusion=True) if out.any() else out
+            else:
+                run = 0
+        return mask
+
     def _fill_convex_hulls(self, binary_mask: np.ndarray) -> np.ndarray:
         """Replace each white blob with its convex hull, painted solid.
 
@@ -1445,6 +1491,9 @@ class LineDetectionMFA:
 
             # Filter out debris by strictly keeping the blob nearest the entrance
             mask_prot = self._keep_closest_blob(mask_prot, pipette_start_x, is_protrusion=True)
+            if not is_guv and utils.membrane_enhancement_enabled(self.params):
+                mask_prot = self._cut_protrusion_leak(
+                    mask_prot, utils.prepare_membrane_for_threshold(image, self.params), pipette_start_x)
             mask_body_standard = self._keep_closest_blob(mask_body_standard, pipette_start_x, is_protrusion=False)
 
             mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
