@@ -319,7 +319,12 @@ clear and consistent from frame to frame:
    (`tip_level_fraction`; lower follows dimmer tips). If the profile is still above that level
    15 px beyond the mask edge (signal in the channel, not the tip), or the contrast is too low,
    the mask edge is used instead (`max_tip_refinement_px`).
-5. After thresholding, background enclosed by the cell is filled in (membrane stains are brightest
+5. A pixel must also be at least 30 % as bright (above background) as the brightest signal across
+   the channel in its column (`membrane_relative_level`, 0 = off). Around a bright cell the
+   out-of-focus halo is well above the noise but only 10-20 % of the cell's brightness, so without
+   this the masks are wider and blobbier than the cell. Only 2 px either side along the channel
+   count, so the dim shaft next to a bright spot in the protrusion is kept.
+6. After thresholding, background enclosed by the cell is filled in (membrane stains are brightest
    at the rim, which would otherwise give ring-shaped masks), and small specks are removed.
 
 **Dye and actin intensities are always measured on the raw pixels.** They only borrow the masks;
@@ -327,7 +332,7 @@ this also holds when actin is imaged in the same channel as the membrane.
 
 The settings are in `config/defaults.yaml` under `image_processing` (`membrane_enhancement`,
 `membrane_denoise_sigma`, `membrane_denoise_sigma_along`, `membrane_temporal_window`, `membrane_snr_full_scale`,
-`membrane_fill_holes`, `membrane_max_hole_fraction`). Set `membrane_enhancement: False` to return
+`membrane_fill_holes`, `membrane_max_hole_fraction`, `membrane_relative_level`). Set `membrane_enhancement: False` to return
 to the older CLAHE-based segmentation; thresholds picked in one mode are not comparable with the
 other.
 

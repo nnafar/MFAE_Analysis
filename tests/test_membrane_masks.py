@@ -450,3 +450,37 @@ def test_tip_refinement_is_stable_on_a_dim_tip_in_a_lit_channel():
     tips = np.array(tips)
     assert tips.min() > edge - 4 and tips.max() < edge + 6
     assert tips.std() < 1.0
+
+
+def _halo_image(seed: int = 0):
+    """Bright protrusion (12 rows) with a wide out-of-focus halo at ~12 % of its brightness,
+    a bright spot inside it, and a dim shaft next to the spot."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:H, 0:W]
+    img = np.full((H, W), 400.0)
+    core = (xx >= PIP - 60) & (xx < PIP) & (np.abs(yy - 36) <= 6)
+    halo = (xx >= PIP - 66) & (xx < PIP) & (np.abs(yy - 36) <= 14)
+    sig = np.where(halo, 150.0, 0.0) + np.where(core, 1100.0, 0.0)
+    spot = (np.hypot(xx - (PIP - 40), yy - 36) <= 5)
+    sig += np.where(spot, 2500.0, 0.0)
+    sig = cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.0)
+    img = img + sig + rng.normal(0, 15, img.shape)
+    return np.clip(img, 0, 65535).astype(np.uint16), core
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_relative_level_drops_the_halo_around_a_bright_protrusion(seed):
+    img, core = _halo_image(seed)
+    thr = 20                                   # ~3 sigma: the halo (10 sigma) passes the noise test
+    p_off = _params(); p_off['image_processing']['membrane_relative_level'] = 0.0
+    p_on = _params(); p_on['image_processing']['membrane_relative_level'] = 0.3
+    off = utils.threshold_membrane(img, thr, p_off)[:, :PIP] > 0
+    on = utils.threshold_membrane(img, thr, p_on)[:, :PIP] > 0
+    # width across the channel along the protrusion (away from its end, where only
+    # halo is in the column and the tip refinement sets the length)
+    cols = slice(PIP - 55, PIP - 5)
+    core = core[:, cols]
+    assert _iou(off[:, cols], core) < 0.6      # noise threshold alone: halo included
+    assert _iou(on[:, cols], core) > 0.8       # relative level: mask on the protrusion itself
+    # the dim shaft right next to the bright spot is kept (columns PIP-50 .. PIP-47)
+    assert on[30:43, PIP - 50:PIP - 46].mean() > 0.9
