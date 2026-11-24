@@ -432,6 +432,35 @@ class ImageProcessingConstants(_StrictModel):
             "8 px (~2.5 µm at 20×, ~5 µm at 10×) works at any objective without tuning."
         )
     )
+    membrane_enhancement: bool = Field(
+        default=True,
+        description=(
+            "Build the membrane masks from a background-referenced SNR image "
+            "((smoothed - background) / noise, re-estimated every frame) instead of "
+            "the per-frame percentile stretch + CLAHE. Thresholds then mean the same "
+            "number of noise units above background in every frame. Affects masks "
+            "only; actin/dye intensities are always measured on raw pixels."
+        )
+    )
+    membrane_denoise_sigma: float = Field(
+        default=1.0, ge=0.0, le=5.0,
+        description="Gaussian sigma [px] applied before the SNR transform (0 = off)."
+    )
+    membrane_snr_full_scale: float = Field(
+        default=20.0, gt=0.0, le=200.0,
+        description=(
+            "SNR mapped to 255 on the enhanced image. A threshold T corresponds to "
+            "T * membrane_snr_full_scale / 255 noise units above background."
+        )
+    )
+    membrane_fill_holes: bool = Field(
+        default=True,
+        description="Fill background regions fully enclosed by the thresholded membrane (ring-shaped stains)."
+    )
+    membrane_max_hole_fraction: float = Field(
+        default=0.25, ge=0.0, le=1.0,
+        description="Holes larger than this fraction of the ROI are not filled (0 = no limit)."
+    )
     threshold_preview_clahe: bool = Field(
         default=True,
         description=(

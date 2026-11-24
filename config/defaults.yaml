@@ -211,6 +211,19 @@ image_processing:
   # algorithm actually thresholds).
   threshold_preview_clahe: True
 
+  # Membrane-channel enhancement (used for the protrusion/body masks only).
+  # The membrane image is denoised and converted to signal-to-noise units
+  # relative to the background, re-estimated in every frame, so a threshold
+  # means the same thing in every frame regardless of bleaching or a bright
+  # protrusion tip. Actin and dye intensities are always read from the raw
+  # pixels; only the masks come from this enhanced image.
+  # Set membrane_enhancement: False to go back to the CLAHE settings above.
+  membrane_enhancement: True
+  membrane_denoise_sigma: 1.0        # Gaussian smoothing before the SNR transform [px]
+  membrane_snr_full_scale: 20.0      # SNR shown as 255; threshold T = T*20/255 sigma above background
+  membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
+  membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI
+
 # ===================================================================
 # 7. GUV MODE (giant unilamellar vesicles instead of cells)
 # ===================================================================

@@ -445,20 +445,201 @@ def prepare_display_image(image: np.ndarray, window_width: int, window_height: i
     canvas[y_offset:y_offset + new_h, x_offset:x_offset + new_w] = resized
     return canvas
 
-def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int, 
+# =============================================================================
+# MEMBRANE-CHANNEL ENHANCEMENT (mask generation only)
+# =============================================================================
+# The membrane channel is used for one thing only: building binary masks of
+# the protrusion and the cell body. No intensity is ever measured from it, so
+# we can transform it however we like to make the cell/background boundary
+# crisp and, above all, *consistent from frame to frame*.
+#
+# The older path (per-frame percentile stretch -> CLAHE -> fixed threshold)
+# had two problems:
+#   1. normalize_to_8bit stretches every frame by its own 1-99.9 percentiles,
+#      so the same 0-255 threshold means a different raw intensity in each
+#      frame (a bright protrusion tip makes the body look dim, bleaching
+#      changes the stretch, ...).
+#   2. CLAHE with an 8x8/16x16 tile grid on a ~70 px tall trap ROI equalises
+#      tiles only a few pixels wide. Background noise is amplified locally,
+#      and the cell/background separation gets flattened, so the histogram
+#      turns unimodal and no single threshold separates cell from background.
+#
+# The enhancement below replaces both with a background-referenced
+# signal-to-noise image:
+#       SNR(x, y) = (smoothed(x, y) - background) / noise
+# where background and noise are re-estimated in every frame from the
+# background peak of the histogram. A threshold therefore means "k noise
+# units above the local background" in every frame, regardless of exposure,
+# bleaching, or how bright other structures in the ROI are.
+#
+# IMPORTANT: these functions always return NEW arrays and never modify the
+# input. Intensity-based analyses (actin, dye uptake) must keep reading the
+# raw ROI pixels and only borrow the masks.
+
+def _membrane_enhancement_settings(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    img_p = (params or {}).get('image_processing', {}) or {}
+    return {
+        'enable':          bool(img_p.get('membrane_enhancement', True)),
+        'denoise_sigma':   float(img_p.get('membrane_denoise_sigma', 1.0)),
+        'snr_full_scale':  float(img_p.get('membrane_snr_full_scale', 20.0)),
+        'fill_holes':      bool(img_p.get('membrane_fill_holes', True)),
+        'max_hole_frac':   float(img_p.get('membrane_max_hole_fraction', 0.25)),
+    }
+
+
+def membrane_enhancement_enabled(params: Optional[Dict[str, Any]]) -> bool:
+    """True when the SNR enhancement replaces the CLAHE path (cell mode only)."""
+    if (params or {}).get('guv_settings', {}).get('enable', False):
+        return False
+    return _membrane_enhancement_settings(params)['enable']
+
+
+def estimate_background_and_noise(image: np.ndarray) -> Tuple[float, float]:
+    """
+    Robust background level and noise of a (smoothed) membrane image.
+
+    Background = mode of the intensity histogram. In a trap ROI the medium
+    around the cell is the most common intensity; cell pixels are brighter,
+    channel walls darker, and neither shifts the mode.
+    Noise = 1.4826 * median absolute deviation of the pixels *at or below*
+    the mode. Only the dark half of the background peak is used, so bright
+    cell pixels cannot inflate the noise estimate.
+    """
+    v = np.asarray(image, dtype=np.float64).ravel()
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return 0.0, 1.0
+    lo, hi = np.percentile(v, (0.5, 99.5))
+    if hi <= lo:
+        return float(lo), 1.0
+    hist, edges = np.histogram(v, bins=256, range=(lo, hi))
+    # Light smoothing so a single noisy bin cannot win the argmax.
+    k = np.array([1, 4, 6, 4, 1], dtype=np.float64)
+    hist = np.convolve(hist.astype(np.float64), k / k.sum(), mode='same')
+    i = int(np.argmax(hist))
+    bg = 0.5 * (edges[i] + edges[i + 1])
+    below = v[v <= bg]
+    noise = 1.4826 * float(np.median(bg - below)) if below.size > 10 else 0.0
+    # Floor: never below one histogram bin, so flat/synthetic images do not
+    # blow up the SNR scale.
+    noise = max(noise, (hi - lo) / 256.0, 1e-6)
+    return float(bg), float(noise)
+
+
+def enhance_membrane_image(image: np.ndarray, params: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    """
+    Contrast-enhanced 8-bit membrane image used ONLY for thresholding.
+
+    Steps: float conversion of the raw pixels -> Gaussian denoise ->
+    per-frame background/noise estimate -> SNR image -> linear map so that
+    SNR = membrane_snr_full_scale becomes 255. Background (SNR <= 0) maps to
+    0, so the cell stands out on a black background.
+
+    A threshold T on this image corresponds to T * snr_full_scale / 255
+    noise units above background (see threshold_to_snr).
+    """
+    if image is None:
+        return np.zeros((100, 100), dtype=np.uint8)
+    cfg = _membrane_enhancement_settings(params)
+    img = np.asarray(image)
+    if img.ndim == 3:
+        img = img[..., 0] if img.shape[2] == 1 else cv2.cvtColor(img.astype(np.float32), cv2.COLOR_BGR2GRAY)
+    img_f = img.astype(np.float32)  # always a copy -> raw ROI is never touched
+    if cfg['denoise_sigma'] > 0:
+        img_f = cv2.GaussianBlur(img_f, (0, 0), cfg['denoise_sigma'])
+    bg, noise = estimate_background_and_noise(img_f)
+    snr = (img_f - bg) / noise
+    gain = 255.0 / max(cfg['snr_full_scale'], 1e-3)
+    return np.clip(snr * gain, 0, 255).astype(np.uint8)
+
+
+def threshold_to_snr(threshold: float, params: Optional[Dict[str, Any]] = None) -> float:
+    """Convert a 0-255 threshold on the enhanced image into noise units (sigma)."""
+    return float(threshold) * _membrane_enhancement_settings(params)['snr_full_scale'] / 255.0
+
+
+def fill_small_holes(mask: np.ndarray, max_hole_area: Optional[int] = None) -> np.ndarray:
+    """
+    Fill enclosed background regions of a binary mask.
+
+    Membrane stains are brightest at the cell periphery, so a threshold often
+    returns a ring or crescent instead of the full cell. Any background region
+    that does not touch the image border is enclosed by the cell and is filled.
+    Holes larger than max_hole_area are left alone (safety net against filling
+    large regions enclosed by debris or bright trap structures).
+    """
+    m = (mask > 0).astype(np.uint8)
+    inv = (1 - m).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=4)
+    if n <= 1:
+        return (m * 255).astype(np.uint8)
+    h, w = m.shape
+    out = m.copy()
+    for i in range(1, n):
+        x, y, bw, bh, area = stats[i]
+        touches_border = x == 0 or y == 0 or x + bw >= w or y + bh >= h
+        if touches_border:
+            continue
+        if max_hole_area is not None and area > max_hole_area:
+            continue
+        out[labels == i] = 1
+    return (out * 255).astype(np.uint8)
+
+
+def prepare_membrane_for_threshold(image: np.ndarray, params: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    """
+    Single source of truth for the 8-bit image that the membrane threshold is
+    applied to. Used by the interactive preview, LineDetection, and
+    generate_dual_masks, so the threshold the user confirms is applied to
+    exactly the same signal during batch processing.
+    """
+    if membrane_enhancement_enabled(params):
+        return enhance_membrane_image(image, params)
+
+    # Legacy path: percentile stretch -> CLAHE -> Gaussian blur.
+    img_p = (params or {}).get('image_processing', {}) or {}
+    img_8u = normalize_to_8bit(image)
+    gray = img_8u if img_8u.ndim == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(
+        clipLimit=img_p.get('clahe_clip_limit', 2.0),
+        tileGridSize=tuple(img_p.get('clahe_tile_grid_size', (8, 8))),
+    )
+    enhanced = clahe.apply(gray)
+    return cv2.GaussianBlur(enhanced, tuple(img_p.get('gaussian_kernel_size', (5, 5))), 0)
+
+
+def threshold_membrane(image: np.ndarray, threshold: int, params: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    """
+    Full-frame binary mask of the membrane channel: threshold the prepared
+    image and (with enhancement on) fill enclosed holes. Hole filling is done
+    on the full frame, before the ROI is split at the pipette entrance, so a
+    membrane ring cut by the entrance line is still closed.
+    """
+    prepared = prepare_membrane_for_threshold(image, params)
+    _, binary = cv2.threshold(prepared, int(threshold), 255, cv2.THRESH_BINARY)
+    if membrane_enhancement_enabled(params):
+        cfg = _membrane_enhancement_settings(params)
+        if cfg['fill_holes']:
+            max_area = int(cfg['max_hole_frac'] * binary.size) if cfg['max_hole_frac'] > 0 else None
+            binary = fill_small_holes(binary, max_area)
+    return binary
+
+
+def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
                         threshold_body: int, params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
     """
     Centrally managed mask generation for Protrusion and Cell Body.
     Prevents circular imports between quantification modules.
+
+    Masks are built from the (enhanced) membrane channel only; the input image
+    is never modified, so callers can keep measuring raw intensities.
     """
-    img_8u = normalize_to_8bit(image)
-    gray = img_8u if len(img_8u.shape) == 2 else cv2.cvtColor(img_8u, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-    
+    h, w = np.asarray(image).shape[:2]
+
     img_params = params.get('image_processing', {})
     guv_settings = params.get('guv_settings', {})
     is_guv = guv_settings.get('enable', False)
-    
+
     # FIX: Explicitly abort if called in GUV mode to prevent thresholding the lumen
     if is_guv:
         logger.error("generate_dual_masks called in GUV mode! Thresholding is invalid for GUVs. Returning empty masks.")
@@ -473,24 +654,20 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     # not follow the cell contour.  Default is False so this never fires unless
     # the config explicitly sets it, which only makes sense in GUV mode.
     fill_holes = guv_settings.get('fill_membrane_holes', False)
-    
-    clahe = cv2.createCLAHE(clipLimit=img_params.get('clahe_clip_limit', 2.0), tileGridSize=(8,8))
-    enhanced = clahe.apply(gray)
-    blurred = cv2.GaussianBlur(enhanced, tuple(img_params.get('gaussian_kernel_size', (3,3))), 0)
-    
+
     margin = int(h * margin_fraction)
     pip_x = max(0, min(w, int(pipette_x)))
-    
-    # 1. Protrusion Mask 
-    _, bin_prot = cv2.threshold(blurred, threshold_prot, 255, cv2.THRESH_BINARY)
+
+    # 1. Protrusion Mask
+    bin_prot = threshold_membrane(image, threshold_prot, params)
     mask_prot = _clean_mask_internal(bin_prot, fill_holes, pip_x)
     if margin > 0:
         mask_prot[:margin, :] = 0
         mask_prot[h-margin:, :] = 0
     mask_prot[:, pip_x:] = 0
-    
-    # 2. Body Mask 
-    _, bin_body = cv2.threshold(blurred, threshold_body, 255, cv2.THRESH_BINARY)
+
+    # 2. Body Mask
+    bin_body = bin_prot if threshold_body == threshold_prot else threshold_membrane(image, threshold_body, params)
     mask_body = _clean_mask_internal(bin_body, fill_holes, pip_x)
     mask_body[:, :pip_x] = 0
     mask_body = _keep_blob_nearest_to_x(mask_body, pip_x)

@@ -193,8 +193,9 @@ class LineDetectionMFA:
         w = ref_image.shape[1]
         pipette_x = max(1, min(w - 1, pipette_x))
         
-        # 3. Determine Threshold (Otsu)
-        img_8bit = utils.normalize_to_8bit(ref_image)
+        # 3. Determine Threshold (Otsu) on the same prepared image the
+        #    segmentation thresholds (enhanced membrane image or legacy CLAHE).
+        img_8bit = utils.prepare_membrane_for_threshold(ref_image, self.params)
         h, w = img_8bit.shape[:2]
         margin = int(h * self.wall_clip_margin)
         
@@ -558,24 +559,17 @@ class LineDetectionMFA:
         Can operate in Protrusion Mode (clip_walls=True) or Body Mode (clip_walls=False).
         Includes mouse interaction for dragging the threshold line.
         """
-        test_image_8bit = utils.normalize_to_8bit(test_image)
-
         # --- Align preview with pipeline processing ---
-        # _segment_mask always applies CLAHE before thresholding. Without this
-        # block, the histogram shown here is computed from the raw 8-bit image,
-        # so the threshold the user picks is calibrated against signal that the
-        # pipeline never actually sees. Applying the same CLAHE here fixes that
-        # mismatch and makes the histogram a true representation of what gets
-        # thresholded — especially helpful for dim or unevenly-lit cells where
-        # the raw histogram has a wide, flat cell peak that gives Otsu a poor
-        # starting guess.
+        # The histogram and the overlay are built from exactly the image the
+        # pipeline thresholds (utils.prepare_membrane_for_threshold): the
+        # background-referenced SNR image when membrane_enhancement is on,
+        # otherwise the legacy percentile-stretch + CLAHE image.
         image_params = self.params.get('image_processing', {})
-        if image_params.get('threshold_preview_clahe', True):
-            _clahe_preview = cv2.createCLAHE(
-                clipLimit=image_params.get('clahe_clip_limit', 2.0),
-                tileGridSize=tuple(image_params.get('clahe_tile_grid_size', (8, 8)))
-            )
-            test_image_8bit = _clahe_preview.apply(test_image_8bit)
+        enhanced_mode = utils.membrane_enhancement_enabled(self.params)
+        if enhanced_mode or image_params.get('threshold_preview_clahe', True):
+            test_image_8bit = utils.prepare_membrane_for_threshold(test_image, self.params)
+        else:
+            test_image_8bit = utils.normalize_to_8bit(test_image)
 
         h, w = test_image_8bit.shape[:2]
         
@@ -644,20 +638,27 @@ class LineDetectionMFA:
             current_threshold = state['threshold'] # Read latest value from state
 
             # 3. Generate Mask
+            # Same calls as _process_all_frames, so the preview shows exactly
+            # the mask that batch processing will produce for this threshold.
             if clip_walls:
                 # PROTRUSION: Clip everything to the RIGHT (keep left)
                 binary_mask = self._segment_mask(test_image, current_threshold, clip_walls=True, limit_x_max=pipette_start_x)
+                binary_mask = self._keep_closest_blob(binary_mask, pipette_start_x, is_protrusion=True)
             else:
-                # BODY: Generate full mask, then manually zero out the LEFT side (keep right)
-                binary_mask = self._segment_mask(test_image, current_threshold, clip_walls=False, limit_x_max=None)
-                binary_mask[:, :pipette_start_x] = 0
+                # BODY: right of the entrance, full height
+                _, binary_mask = utils.generate_dual_masks(
+                    test_image, pipette_start_x, current_threshold, current_threshold, self.params)
+                binary_mask = self._keep_closest_blob(binary_mask, pipette_start_x, is_protrusion=False)
             
             # 4. Create Panels
             panel_height = self.window_height
             
             # Left: Image Overlay
+            # In enhanced mode show the enhanced image, so the user judges the
+            # mask against the signal that is actually thresholded.
             display_img = self._create_overlay_panel(
-                test_image, binary_mask, pipette_start_x, clip_walls, 
+                test_image_8bit if enhanced_mode else test_image,
+                binary_mask, pipette_start_x, clip_walls,
                 width=img_panel_w, height=panel_height
             )
             
@@ -670,8 +671,11 @@ class LineDetectionMFA:
             # 5. Combine and Display
             combined_display = np.hstack((display_img, hist_img))
             
+            thr_label = f"Threshold: {current_threshold}"
+            if enhanced_mode:
+                thr_label += f" (~{utils.threshold_to_snr(current_threshold, self.params):.1f} sigma above bg)"
             utils.add_text_overlay(combined_display, [
-                f"Threshold: {current_threshold}",
+                thr_label,
                 "Mouse: Drag yellow line to adjust",
                 "W/S: +/- 10 | A/D: +/- 1",
                 "ENTER: Confirm | R: Restart"
@@ -733,9 +737,14 @@ class LineDetectionMFA:
             return hist_img
             
         # Calculate histogram
-        hist = cv2.calcHist([image], [0], None, [256], [0, 256])
-        # Normalize to fit in the window height, leaving space for labels
-        cv2.normalize(hist, hist, alpha=0, beta=height-80, norm_type=cv2.NORM_MINMAX)
+        hist = cv2.calcHist([image], [0], None, [256], [0, 256]).ravel()
+        # Normalize to fit in the window height, leaving space for labels.
+        # Bins 0 and 255 are excluded from the scaling: on the enhanced
+        # membrane image all background is clipped to 0 (and bright cell to
+        # 255), and those two spikes would otherwise flatten everything else.
+        inner_max = float(hist[1:255].max()) if hist[1:255].size else 0.0
+        scale = (height - 80) / inner_max if inner_max > 0 else 0.0
+        hist = np.minimum(hist * scale, height - 80)
         
         # Draw gray histogram bars
         bin_w = width / 256
@@ -793,26 +802,11 @@ class LineDetectionMFA:
             else:
                 return self._segment_guv_body_by_edges(image, pip_x)
 
-        image_8bit = utils.normalize_to_8bit(image)
-        
-        # 1. Pre-processing (Common)
-        gray = image_8bit if len(image_8bit.shape) == 2 else cv2.cvtColor(image_8bit, cv2.COLOR_BGR2GRAY)
-        
-        image_params = self.params.get('image_processing', {})
-        clahe = cv2.createCLAHE(
-            clipLimit=image_params.get('clahe_clip_limit', 2.0), 
-            tileGridSize=tuple(image_params.get('clahe_tile_grid_size', (8, 8)))
-        )
-        enhanced = clahe.apply(gray)
-        blurred = cv2.GaussianBlur(
-            enhanced, 
-            tuple(image_params.get('gaussian_kernel_size', (5, 5))), 
-            0
-        )
-        
-        # 2. Thresholding (User Controlled)
-        # We use the global 'threshold' variable so the UI slider works.
-        _, binary = cv2.threshold(blurred, threshold, 255, cv2.THRESH_BINARY)
+        # 1-2. Pre-processing + thresholding (user controlled).
+        # Shared with utils.generate_dual_masks and the interactive preview so
+        # all three see identical signal. With membrane_enhancement on this is
+        # the background-referenced SNR image plus hole filling.
+        binary = utils.threshold_membrane(image, threshold, self.params)
         
         # 3. Geometric Constraints
         h, w = binary.shape
