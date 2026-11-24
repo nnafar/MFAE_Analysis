@@ -287,3 +287,61 @@ def test_protrusion_mask_does_not_leak_into_faint_glow_ahead():
     cut = det._cut_protrusion_leak(m, utils.prepare_membrane_for_threshold(img, params), PIP)
     assert not cut[:, :3].any()
     assert abs(det._measure_protrusion_from_mask(cut, PIP)[0] - L) <= 3
+
+
+def _cell_sequence(lengths):
+    """Frames with a cell body at the entrance and a protrusion of the given length [px]."""
+    yy, xx = np.mgrid[0:H, 0:W]
+    rois = []
+    for k, L in enumerate(lengths):
+        rng = np.random.default_rng(200 + k)
+        sig = np.where(np.hypot(xx - PIP - 24, yy - 36) <= 23, 500.0, 0.0)
+        if L:
+            sig += np.where((xx >= PIP - L) & (xx < PIP) & (np.abs(yy - 36) <= 6), 500.0, 0.0)
+        img = 400 + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2) + rng.normal(0, 20, (H, W))
+        rois.append(np.clip(img, 0, 65535).astype(np.uint16))
+    return rois
+
+
+def _run_cells(lengths, pulse_idx=None):
+    from LineDetection_MFA import LineDetectionMFA
+    params = _params()
+    params['image_processing']['membrane_temporal_window'] = 1
+    params['rupture_detection'] = {'enable_smoothing': False, 'pulse_frame_idx': pulse_idx}
+    params['dye_uptake_parameters'] = {'has_pulse': pulse_idx is not None}
+    params['experiment_parameters'] = {'scale_factor': 0.1}
+    det = LineDetectionMFA(_cell_sequence(lengths), [PIP, 0], params)
+    return det.run_detection_with_parameters(PIP, 100, threshold_body=100)
+
+
+def test_pass_through_then_pulsed_second_cell_is_analysed():
+    # cell 1 grows to the edge for 1 frame and passes through; cell 2 arrives and gets the pulse
+    lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] + [20, 25, 30, 35, 40, 45, 50, 55, 60, 62, 64]
+    second = lengths.index(PIP) + 1
+    res = _run_cells(lengths, pulse_idx=len(lengths) - 4)
+    assert len(res['cell_segments']) == 2
+    assert res['selected_cell'] == 2 and res['cell_at_pulse'] is True
+    assert second - 1 <= res['entry_frame_index'] <= second
+    assert all(np.isnan(v) for v in res['protrusion_lengths_um'][:second - 1])   # cell 1 not measured
+    assert np.isfinite(res['protrusion_lengths_um'][-1])
+
+
+def test_cell_leaving_roi_then_new_cell_before_pulse():
+    # like Trap 14: tip at the edge for several frames, empty trap, new cell present at the pulse
+    lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] * 4 + [0] * 3 + [20, 30, 40, 45, 50, 52, 54, 56]
+    res = _run_cells(lengths, pulse_idx=len(lengths) - 3)
+    assert res['cell_segments'][0][2] == 'left ROI'
+    assert res['selected_cell'] == 2 and res['cell_at_pulse'] is True
+
+
+def test_without_pulse_the_longest_cell_is_analysed():
+    lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] + [20, 25, 30, 35]
+    res = _run_cells(lengths, pulse_idx=None)
+    assert res['selected_cell'] == 1 and res['cell_at_pulse'] is None
+
+
+def test_no_cell_at_pulse_keeps_last_cell_before_and_flags_it():
+    # like Trap 12: cell leaves before the pulse, trap empty at the pulse
+    lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] * 4 + [0] * 8
+    res = _run_cells(lengths, pulse_idx=len(lengths) - 3)
+    assert res['selected_cell'] == 1 and res['cell_at_pulse'] is False

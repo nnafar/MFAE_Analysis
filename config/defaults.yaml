@@ -96,6 +96,7 @@ rupture_detection:
   exit_protrusion_threshold_um: 0.5  # Length below which the cell has left
   exit_drop_ratio: 0.05              # Length below this fraction of the previous frame = slip
   exit_sustained_frames: 3           # Consecutive frames the drop must last
+  cell_change_drop_ratio: 0.5         # Length drops below half its recent level and stays = the cell left / a new one came (0 = off)
   exit_at_roi_edge_frames: 3         # Stop tracking once the tip stays at the left ROI edge this many frames (0 = off)
   roi_edge_margin_px: 3              # Tip within this many px of the edge counts as at the edge
   pulse_exit_blanking_frames: 5      # Frames after the pulse ignored for exit detection

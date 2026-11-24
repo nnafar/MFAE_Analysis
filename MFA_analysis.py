@@ -205,6 +205,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             params['dye_uptake_parameters']['pulse_frame_idx'] = pf_idx
 
         det_full = LineDetectionMFA(rois, [pip_x, 0], params)
+        det_full.trap_label = f"Trap {trap_index + 1}"
         det_res = det_full.run_detection_with_parameters(pip_x, thr_prot, threshold_body=config_dict.get('tuned_threshold_body'))
 
         # --- Extract Key Timing Data ---
@@ -416,7 +417,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 all_dye_frames = np.memmap(dye_config['path'], dtype=dye_config['dtype'], mode='r', shape=dye_config['shape'])
                 dye_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_dye_frames]
 
-                uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params, frame_masks=det_res.get('frame_masks', []), start_idx=det_res.get('entry_frame_index', 0))
+                uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params, frame_masks=det_res.get('frame_masks', []), start_idx=det_res.get('entry_frame_index', 0),
+                                                    end_idx=det_res.get('exit_frame_index'))
                 dye_results = uptake_analyzer.run(time_data)
                 for key in ('dye_traces', 'dye_kymo', 'dye_movies'):
                     dirs[key].mkdir(parents=True, exist_ok=True)
@@ -460,7 +462,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                     config_dict['tuned_threshold_body'],
                     params,
                     frame_masks=det_res.get('frame_masks', []),
-                    start_idx=det_res.get('entry_frame_index', 0)
+                    start_idx=det_res.get('entry_frame_index', 0),
+                    end_idx=det_res.get('exit_frame_index'),
                 )
                 actin_results = actin_analyzer.run(time_data)
                 for key in ('actin_traces', 'actin_kymo', 'actin_movies'):

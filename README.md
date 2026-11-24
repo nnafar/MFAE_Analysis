@@ -373,14 +373,26 @@ wrong, the movie shows whether the mask lost the tip, picked up debris, or the c
 The bulk analysis reads both this layout and the older flat one (CSVs directly in
 `Full protrusion detection/`, `Dye Uptake/`, `Actin Quantification/`).
 
-**When tracking stops.** A trap is tracked from cell entry until the cell exits. Exit is either a
-slip (the protrusion collapses for 3 frames) or the **protrusion tip leaving the box**: once the
-tip has stayed at the left edge of the trap box for 3 consecutive frames, its true length is
-unknown and the cell usually moves on while the next one arrives. Tracking then stops at the last
-frame before the tip reached the edge, and later frames are left empty (NaN) in every CSV and
-plot (`rupture_detection.exit_at_roi_edge_frames`, 0 = off). The per-trap CSV has a `Tracked`
-column and an `Exit_Reason` (`left ROI` or `slip`) on the last tracked frame. If many traps stop
-this way, draw a wider trap box.
+**Several cells in one trap.** A trap often holds more than one cell during a recording: a cell
+passes through the channel and the next one arrives. Each trap is therefore split into cells, and
+a cell ends when
+
+- its protrusion tip stays at the left edge of the trap box for 3 frames (`left ROI`; the true
+  length is unknown from then on, `rupture_detection.exit_at_roi_edge_frames`),
+- the protrusion collapses for 3 frames (`slip`), or
+- the length falls below half its recent level and stays there, i.e. the cell passed through and
+  a new, shorter protrusion appears (`cell change`, `rupture_detection.cell_change_drop_ratio`).
+
+After a cell ends, the next entry is searched from there. **The analysed cell is the one in the
+trap at the pulse**, since that is the one that was electroporated; for aspiration-only runs it is
+the longest-tracked cell. If the trap is empty at the pulse, the last cell before it is kept and the
+log warns that it was not pulsed. All measurements (length, areas, rupture, dye uptake, actin)
+cover only the analysed cell, from its own entry to its exit; other frames are empty (NaN). The log
+lists every cell found, e.g. `Trap 4 held 2 cells (cell 1: frames 2-150 (cell change); cell 2:
+frames 151-504). Analysing cell 2 (in the trap at the pulse).` The per-trap CSV has a `Cell`
+column (which cell was in the trap in each frame), `Tracked` (the analysed cell's frames) and
+`Exit_Reason`, and the tracking movie labels the other cells as "not analysed". If many cells leave
+through the left edge, draw a wider trap box.
 
 Rupture markers on the plots come from the automatic rupture detection, which is not reliable
 enough to cut data on. All CSVs therefore contain every frame; treat the markers as hints.

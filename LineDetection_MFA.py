@@ -113,7 +113,10 @@ class LineDetectionMFA:
             'entry_frame_index': None,      # Cell enters trap
             'entry_confirmed': True,        # False when protrusion never sustained a valid window
             'exit_frame_index': None,       # Cell Exit Handling (last tracked frame)
-            'exit_reason': None,            # 'slip' | 'left ROI' | None (tracked to the end)
+            'exit_reason': None,            # 'slip' | 'cell change' | 'left ROI' | None (tracked to the end)
+            'cell_segments': [],            # (entry, exit, reason) for every cell seen in the trap
+            'selected_cell': None,          # 1-based index of the analysed cell
+            'cell_at_pulse': None,          # True/False for pulsed runs, None otherwise
             # Rupture Detection
             'downstream_intensities': [],   # Brightness values inside the pipette (for rupture)'
             'rupture_detected': False,      # Boolean flag for rupture event
@@ -1591,142 +1594,186 @@ class LineDetectionMFA:
         #   without imposing any cell-size dependency.
         entry_sustained_n = _r_params_entry.get('entry_confirmed_frames', 3)
 
-        # 1. Entry: first run of N consecutive frames satisfying ALL conditions.
-        #    first_candidate tracks the start of the current valid run so we can
-        #    step back one frame once confirmation is reached, keeping the last
-        #    empty-channel frame inside the pre-entry haze baseline.
-        entry_idx = 0
-        entry_confirmed = False
-        consecutive_valid = 0
-        first_candidate = None
+        # 1-3. Cells: a trap can hold several cells during a recording (one
+        #      passes through the channel, the next arrives). Each cell is a
+        #      segment entry..exit; the one in the trap at the pulse (or, without
+        #      a pulse, the longest-tracked one) is analysed.
+        p_idx = self._resolve_pulse_frame_idx()
+        r_cfg = self.params.get('rupture_detection', {})
+        pulse_blanking = r_cfg.get('pulse_exit_blanking_frames', 5)
+        blanked_frames = (set(range(max(0, p_idx - 1), p_idx + pulse_blanking + 1))
+                          if p_idx is not None else set())
+        exit_sustained_frames = int(r_cfg.get('exit_sustained_frames', 3))
+        edge_frames = int(r_cfg.get('exit_at_roi_edge_frames', 3))
+        change_ratio = float(r_cfg.get('cell_change_drop_ratio', 0.5))
+        n_frames = len(protrusions)
+        label = getattr(self, 'trap_label', 'This trap')
 
-        for i, p in enumerate(protrusions):
-            # --- Check all conditions ---
-            valid = True
+        def frame_valid(i: int) -> bool:
+            """Entry conditions for one frame (all cell-size independent)."""
+            p = protrusions[i]
+            if not np.isfinite(p) or p <= entry_thresh or p >= max_valid_prot_um:
+                return False   # too short, or clamped (debris / channel-filling object)
+            if i < len(tip_at_edge) and tip_at_edge[i]:
+                return False   # tip at the box edge: true length unknown
+            body_a = body_areas[i] if i < len(body_areas) else 0.0
+            if isinstance(body_a, float) and np.isnan(body_a):
+                body_a = 0.0
+            return body_a >= entry_body_noise_floor_um2   # a body at the entrance
 
-            if p <= entry_thresh:
-                valid = False
+        def find_entry(start: int) -> Optional[int]:
+            """First run of entry_sustained_n valid frames from `start`; one frame before it."""
+            run, first = 0, None
+            for i in range(start, n_frames):
+                if frame_valid(i):
+                    if run == 0:
+                        first = i
+                    run += 1
+                    if run >= entry_sustained_n:
+                        # Step back one frame so the last empty-channel frame stays
+                        # in the pre-entry haze baseline (never into the previous cell).
+                        return max(start, first - 1)
+                else:
+                    run, first = 0, None
+            return None
 
-            elif p >= max_valid_prot_um:
-                valid = False   # clamped — still inside debris / channel-filling object
+        def find_exit(entry: int) -> Tuple[int, Optional[str]]:
+            """Last frame of the cell that entered at `entry`, and why it ended."""
+            candidates = []
+            # a) Slip: protrusion collapses (below exit threshold or to a small
+            #    fraction of the previous frame) for exit_sustained_frames frames.
+            run, cand = 0, None
+            for i in range(entry + 5, n_frames):
+                if i in blanked_frames:
+                    run, cand = 0, None
+                    continue
+                p, p_prev = protrusions[i], protrusions[i - 1]
+                if p < exit_thresh or (p_prev > 3.0 and p < exit_ratio * p_prev):
+                    if run == 0:
+                        cand = i
+                    run += 1
+                    if run >= exit_sustained_frames:
+                        candidates.append((cand, 'slip'))
+                        break
+                else:
+                    run, cand = 0, None
+            # b) Cell change: length falls below change_ratio x its recent level
+            #    (median of the 5 frames before) and stays there - the cell passed
+            #    through and a new, shorter protrusion is being measured.
+            if change_ratio > 0:
+                run, cand, ref = 0, None, None
+                for i in range(entry + entry_sustained_n + 1, n_frames):
+                    if i in blanked_frames:
+                        run, cand = 0, None
+                        continue
+                    if run == 0:
+                        prev = [v for v in protrusions[max(entry, i - 5):i] if np.isfinite(v)]
+                        ref = float(np.median(prev)) if prev else None
+                    p = protrusions[i]
+                    if ref and ref > 2 * exit_thresh and np.isfinite(p) and p < change_ratio * ref:
+                        if run == 0:
+                            cand = i
+                        run += 1
+                        if run >= exit_sustained_frames:
+                            last = cand - 1
+                            # frames with the tip at the box edge just before the
+                            # drop belong to the cell leaving, not to the cell
+                            while last > entry and last < len(tip_at_edge) and tip_at_edge[last]:
+                                last -= 1
+                            candidates.append((last, 'cell change'))
+                            break
+                    else:
+                        run, cand = 0, None
+            # c) Tip left the ROI: at the box edge for edge_frames frames.
+            if edge_frames > 0:
+                run, start_run = 0, None
+                for i in range(entry, min(n_frames, len(tip_at_edge))):
+                    if tip_at_edge[i]:
+                        if run == 0:
+                            start_run = i
+                        run += 1
+                        if run >= edge_frames:
+                            candidates.append((max(entry, start_run - 1), 'left ROI'))
+                            break
+                    else:
+                        run = 0
+            if not candidates:
+                return n_frames - 1, None
+            # earliest wins; on a tie the more specific reason is reported
+            priority = {'left ROI': 0, 'slip': 1, 'cell change': 2}
+            return min(candidates, key=lambda c: (c[0], priority[c[1]]))
 
+        segments: List[Tuple[int, int, Optional[str]]] = []
+        start = 0
+        while start < n_frames:
+            e = find_entry(start)
+            if e is None:
+                break
+            x, why = find_exit(e)
+            segments.append((e, x, why))
+            if why is None or x >= n_frames - 1:
+                break
+            start = x + 1
+
+        cell_at_pulse: Optional[bool] = None
+        if segments:
+            entry_confirmed = True
+            if p_idx is not None:
+                at_pulse = [k for k, (e, x, _) in enumerate(segments) if e <= p_idx <= x]
+                if at_pulse:
+                    sel, cell_at_pulse = at_pulse[0], True
+                else:
+                    before = [k for k, (e, _, _) in enumerate(segments) if e <= p_idx]
+                    sel = before[-1] if before else 0
+                    cell_at_pulse = False
+                    logger.warning(
+                        "%s: no cell was in the trap at the pulse (frame %d); keeping cell %d "
+                        "(frames %d-%d), which did NOT receive the pulse.",
+                        label, p_idx, sel + 1, segments[sel][0], segments[sel][1])
             else:
-                body_a = body_areas[i] if i < len(body_areas) else 0.0
-                if isinstance(body_a, float) and np.isnan(body_a):
-                    body_a = 0.0
-                if body_a < entry_body_noise_floor_um2:
-                    valid = False   # no body signal — no cell at the entrance
-
-            # --- Count run / reset ---
-            if valid:
-                if consecutive_valid == 0:
-                    first_candidate = i      # remember where this run started
-                consecutive_valid += 1
-                if consecutive_valid >= entry_sustained_n:
-                    # Confirmed.  Step back to one frame before the run started.
-                    entry_idx = max(0, first_candidate - 1)
-                    entry_confirmed = True
-                    break
-            else:
-                consecutive_valid = 0
-                first_candidate = None
-
-        # --- FAILURE MODE: loop exhausted without finding a valid entry ---
-        #
-        #   This happens when the protrusion is clamped at the ROI boundary for
-        #   the entire recording (e.g. a very stiff or large cell that fills the
-        #   channel from the start, or a cell that was never properly aspirated).
-        #
-        #   Defaulting silently to entry_idx = 0 is worse than no result because
-        #   the rupture detectors then scan the full trace from frame 0 and almost
-        #   always fire a false positive.  Instead, flag the trap so downstream
-        #   code can exclude it from analysis, and keep entry_idx = 0 as a safe
-        #   placeholder (it is never used for analysis when the flag is set).
-        if not entry_confirmed:
+                sel = max(range(len(segments)), key=lambda k: segments[k][1] - segments[k][0])
+            entry_idx, exit_idx, exit_reason = segments[sel]
+            if len(segments) > 1:
+                desc = "; ".join(f"cell {k + 1}: frames {e}-{x}" + (f" ({w})" if w else "")
+                                 for k, (e, x, w) in enumerate(segments))
+                why_sel = ("in the trap at the pulse" if cell_at_pulse
+                           else "longest tracked" if p_idx is None else "last before the pulse")
+                logger.info("%s held %d cells (%s). Analysing cell %d (%s).",
+                            label, len(segments), desc, sel + 1, why_sel)
+            elif exit_reason == 'left ROI':
+                logger.info("%s: protrusion tip left the ROI; tracking stops after frame %d.",
+                            label, exit_idx)
+        else:
+            # --- No entry found ---
+            #   The protrusion was clamped at the ROI boundary for the whole
+            #   recording (e.g. debris filling the channel), or never sustained
+            #   a valid window. Flag the trap so downstream code can exclude it;
+            #   entry 0 is only a placeholder.
+            entry_confirmed = False
+            sel = None
+            entry_idx = 0
+            exit_idx, exit_reason = find_exit(0)
             # The interactive setup runs detection on a single frame, where a
             # sustained entry of N frames can never be confirmed; only warn
             # when there were enough frames for the check to mean something.
-            _log_entry = logger.warning if len(protrusions) >= entry_sustained_n else logger.debug
+            _log_entry = logger.warning if n_frames >= entry_sustained_n else logger.debug
             _log_entry(
-                "Entry not confirmed for this trap: protrusion was either always "
-                "clamped at the ROI boundary or never sustained a valid tracking "
-                "window for %d consecutive frames.  Rupture detection will be "
-                "disabled and this trap will be flagged as indeterminate.",
-                entry_sustained_n,
-            )
+                "%s: entry not confirmed: the protrusion was either always clamped at the "
+                "ROI boundary or never sustained a valid tracking window for %d consecutive "
+                "frames. Rupture detection is disabled and the trap is flagged as indeterminate.",
+                label, entry_sustained_n)
             self.results['rupture_detected']    = False
             self.results['rupture_frame_index'] = None
             self.results['rupture_reason']      = 'Entry indeterminate: no sustained valid protrusion found'
 
         self.results['entry_frame_index'] = entry_idx
         self.results['entry_confirmed']   = entry_confirmed
-        
-        # 2. Exit: Detect cell slip or massive loss after stable period.
-        pulse_blanking = self.params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
-        p_idx = self._resolve_pulse_frame_idx()
-
-        if p_idx is not None:
-            blanked_frames = set(range(max(0, p_idx - 1), p_idx + pulse_blanking + 1))
-        else:
-            blanked_frames = set()
-
-        exit_idx = len(protrusions)
-        exit_sustained_frames = self.params.get('rupture_detection', {}).get('exit_sustained_frames', 3)
-        consecutive_exits = 0
-        exit_candidate_idx = None
-
-        for i in range(entry_idx + 5, len(protrusions)):
-            if i in blanked_frames:
-                consecutive_exits = 0  # Reset counter if entering a blanked window
-                continue  
-            
-            p = protrusions[i]
-            p_prev = protrusions[i-1]
-            
-            if p < exit_thresh or (p_prev > 3.0 and p < exit_ratio * p_prev):
-                if consecutive_exits == 0:
-                    exit_candidate_idx = i  # Mark the frame where the drop started
-                consecutive_exits += 1
-                
-                if consecutive_exits >= exit_sustained_frames:
-                    exit_idx = exit_candidate_idx
-                    break
-            else:
-                consecutive_exits = 0
-                exit_candidate_idx = None
-        exit_reason = 'slip' if exit_idx < len(protrusions) else None
-
-        # 3. Exit when the protrusion tip leaves the ROI.
-        #    Once the tip reaches the left edge of the trap box, the true length
-        #    is unknown (the mask is cut by the box), and typically the cell
-        #    then moves on through the channel and the next cell arrives, which
-        #    would otherwise be tracked as if it were the same cell. Tracking
-        #    stops at the last frame before the tip stayed at the edge for
-        #    exit_at_roi_edge_frames consecutive frames (the protrusion mask
-        #    reaching within roi_edge_margin_px of the left edge).
-        r_cfg = self.params.get('rupture_detection', {})
-        edge_frames = int(r_cfg.get('exit_at_roi_edge_frames', 3))
-        if edge_frames > 0:
-            run, run_start = 0, None
-            for i in range(entry_idx, min(exit_idx + 1, len(tip_at_edge))):
-                if tip_at_edge[i]:
-                    if run == 0:
-                        run_start = i
-                    run += 1
-                    if run >= edge_frames:
-                        exit_idx = max(entry_idx, run_start - 1)
-                        exit_reason = 'left ROI'
-                        logger.info(
-                            "Protrusion tip left the ROI at frame %d (stayed at the edge for "
-                            "%d+ frames): tracking stops after frame %d.",
-                            run_start, edge_frames, exit_idx)
-                        break
-                else:
-                    run = 0
-
         self.results['exit_frame_index'] = exit_idx
         self.results['exit_reason'] = exit_reason
-        
+        self.results['cell_segments'] = segments
+        self.results['selected_cell'] = (sel + 1) if sel is not None else None
+        self.results['cell_at_pulse'] = cell_at_pulse
+
         # Nullify out-of-bounds data physically isolated to the active period
         for i in range(len(protrusions)):
             if i < entry_idx or i > exit_idx:
@@ -2432,6 +2479,10 @@ class LineDetectionMFA:
                 for i in range(num_frames))],
             'Exit_Reason': [(self.results.get('exit_reason') or '') if i == self.results.get('exit_frame_index') else ''
                             for i in range(num_frames)],
+            # Which cell (1, 2, ...) was in the trap in each frame; 0 = none tracked.
+            # Only the selected cell (Tracked = True) has measurements.
+            'Cell': [next((k + 1 for k, (e, x, _) in enumerate(self.results.get('cell_segments') or [])
+                           if e <= i <= x), 0) for i in range(num_frames)],
         })
 
         created_files = []

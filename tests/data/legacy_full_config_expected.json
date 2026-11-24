@@ -126,6 +126,7 @@
   "anchored_baseline_frames": 5,
   "anchored_fold_threshold": 2.5,
   "anchored_scan_window": 7,
+  "cell_change_drop_ratio": 0.5,
   "cusum_baseline_lag": 2,
   "cusum_baseline_len": 5,
   "cusum_drift_tolerance_factor": 0.5,

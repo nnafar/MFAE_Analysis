@@ -176,7 +176,7 @@ def save_tracking_movie(rois: Sequence[Optional[np.ndarray]],
     rupture = det_results.get('rupture_frame_index') if det_results.get('rupture_detected') else None
     entry_ok = det_results.get('entry_confirmed', True)
     marks = {'entry': entry if entry_ok else None,
-             'exit': exit_ if (exit_ is not None and exit_ < n) else None,
+             'exit': exit_ if (exit_ is not None and det_results.get('exit_reason')) else None,
              'pulse': pulse_idx, 'rupture': rupture}
 
     # Fixed, clearly distinct colours (BGR): magenta protrusion, cyan body.
@@ -217,17 +217,25 @@ def save_tracking_movie(rois: Sequence[Optional[np.ndarray]],
         # --- status line ---
         t = times[i] if i < len(times) else float('nan')
         L_um = lengths_um[i] if i < lengths_um.size else np.nan
+        segs = det_results.get('cell_segments') or []
+        sel_cell = det_results.get('selected_cell')
+        other = next((k + 1 for k, (e, x, _) in enumerate(segs)
+                      if e <= i <= x and (k + 1) != sel_cell), None)
         if not entry_ok:
             state, s_col = "ENTRY NOT CONFIRMED", (60, 160, 255)
+        elif other is not None:
+            state, s_col = f"cell {other} (not analysed)", (170, 170, 170)
         elif entry is not None and i < entry:
             state, s_col = "pre-entry", (170, 170, 170)
         elif exit_ is not None and i > exit_:
             reason = det_results.get('exit_reason')
             state = {"left ROI": "tip left the ROI - tracking stopped",
-                     "slip": "cell exited - tracking stopped"}.get(reason, "exited")
+                     "slip": "cell exited - tracking stopped",
+                     "cell change": "cell left - tracking stopped"}.get(reason, "exited")
             s_col = (170, 170, 170)
         else:
-            state, s_col = "tracking", (120, 220, 120)
+            state = f"tracking cell {sel_cell}" if len(segs) > 1 else "tracking"
+            s_col = (120, 220, 120)
         y0 = img_h + 18
         txt = f"Trap {trap_number:02d} | frame {i + 1}/{n} | t = {t:.1f} s | L = " + \
               (f"{L_um:.2f} um" if np.isfinite(L_um) else "--")

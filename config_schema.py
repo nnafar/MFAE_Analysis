@@ -253,6 +253,7 @@ class RuptureDetectionConfig(_StrictModel):
     exit_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length drop (um) to mark cell exit")
     exit_drop_ratio: float = Field(default=0.2, ge=0.0, le=1.0, description="Fractional drop to mark cell exit")
     exit_sustained_frames: int = Field(default=3, ge=1, description="Consecutive frames the length must remain dropped to trigger exit")
+    cell_change_drop_ratio: float = Field(default=0.5, ge=0.0, lt=1.0, description="A new cell: length falls below this fraction of its recent level (median of the 5 frames before) for exit_sustained_frames frames (0 = off)")
     exit_at_roi_edge_frames: int = Field(default=3, ge=0, description="Stop tracking when the protrusion tip stays at the left ROI edge for this many consecutive frames (0 = off)")
     roi_edge_margin_px: float = Field(default=3.0, ge=0.0, le=20.0, description="Tip within this many pixels of the left ROI edge counts as 'at the edge'")
 

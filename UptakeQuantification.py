@@ -35,7 +35,8 @@ class DyeUptakeAnalyzer:
                  rupture_idx: Optional[int],
                  params: Dict[str, Any],
                  start_idx: int = 0,
-                 frame_masks: List[Tuple] = None):
+                 frame_masks: List[Tuple] = None,
+                 end_idx: Optional[int] = None):
         
         self.mem_imgs = membrane_rois
         self.dye_imgs = dye_rois
@@ -48,6 +49,9 @@ class DyeUptakeAnalyzer:
         self.rupture_idx = rupture_idx if rupture_idx is not None else len(membrane_rois)
         self.params = params
         self.start_idx = start_idx
+        # Last frame of the analysed cell (None = end of recording); frames
+        # after it belong to the next cell or an empty trap.
+        self.end_idx = end_idx
 
         # Pre-computed per-frame masks from LineDetection — same source used by
         # protrusion length, kymograph, and actin quantification.
@@ -203,6 +207,8 @@ class DyeUptakeAnalyzer:
         # Cover the full acquisition (both channels).  rupture_idx is retained
         # on self so plots can still draw a red marker line.
         valid_frames = min(len(self.mem_imgs), len(self.dye_imgs))
+        if self.end_idx is not None:
+            valid_frames = min(valid_frames, int(self.end_idx) + 1)
         
         # 2. Calculate Baseline (Cell-Specific F0 for each region)
         dye_params = self.params.get('dye_uptake_parameters', {})
@@ -211,7 +217,8 @@ class DyeUptakeAnalyzer:
         if has_pulse:
             # Use frames immediately before the shock
             baseline_end = self.pulse_frame
-            baseline_start = max(0, baseline_end - self.baseline_len)
+            # only frames of the analysed cell (it may enter shortly before the pulse)
+            baseline_start = max(self.start_idx, baseline_end - self.baseline_len)
         else:
             # For control experiments, use the first few frames after entry
             baseline_start = self.start_idx
