@@ -204,15 +204,10 @@ class DyeUptakeAnalyzer:
         dye_params = self.params.get('dye_uptake_parameters', {})
         has_pulse = dye_params.get('enable', False) and dye_params.get('has_pulse', True)
         
-        if has_pulse:
-            # Use frames immediately before the shock
-            baseline_end = self.pulse_frame
-            # only frames of the analysed cell (it may enter shortly before the pulse)
-            baseline_start = max(self.start_idx, baseline_end - self.baseline_len)
-        else:
-            # For control experiments, use the first few frames after entry
-            baseline_start = self.start_idx
-            baseline_end = min(self.start_idx + self.baseline_len, valid_frames)
+        # Baseline frames: just before the pulse (or the first frames without
+        # one), always inside the tracked cell's own frames [start_idx, exit]
+        baseline_start, baseline_end = utils.baseline_window(
+            self.start_idx, valid_frames, self.pulse_frame, self.baseline_len, has_pulse)
         
         base_vals_prot = []
         base_vals_body = []
@@ -255,7 +250,7 @@ class DyeUptakeAnalyzer:
         bg_tip  = np.mean(base_vals_tip)  if base_vals_tip  else bg_prot
 
         if bg_total == 0.0:
-            logger.warning("Complete baseline failure. Fallback to global mean.")
+            logger.warning("Complete baseline failure. Fallback to the mean of the baseline frames.")
             valid_imgs = [img for img in self.dye_imgs[baseline_start:baseline_end] if img is not None]
             fallback = np.mean([np.mean(img) for img in valid_imgs]) if valid_imgs else 0.0
             bg_total = bg_body = bg_prot = bg_tip = fallback

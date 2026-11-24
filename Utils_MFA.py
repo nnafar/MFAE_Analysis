@@ -277,6 +277,28 @@ def get_ui_color(element_type: str) -> Tuple[int, int, int]:
     """Returns the standardized BGR color for a UI element."""
     return UI_COLORS.get(element_type, (255, 255, 255))
 
+def baseline_window(start_idx: int, end_excl: int, pulse_idx: Optional[int],
+                    n: int, has_pulse: bool) -> Tuple[int, int]:
+    """
+    Frames [b0, b1) for the F0 baseline of dye/actin, inside the tracked cell
+    only (start_idx = its entry, end_excl = its exit + 1).
+
+    With a pulse: the n frames just before the pulse, clipped to the cell
+    (a cell that left before the pulse gets its own last n frames). Without
+    a pulse, or if that window is empty (cell entered at the pulse): the
+    cell's first n frames.
+    """
+    start_idx, end_excl, n = int(start_idx), int(end_excl), max(1, int(n))
+    if has_pulse and pulse_idx is not None:
+        b1 = min(int(pulse_idx), end_excl)
+        b0 = max(start_idx, b1 - n)
+        if b1 > b0:
+            return b0, b1
+        logger.warning("Baseline: the tracked cell has no frames before the pulse; "
+                       "using its first %d frames instead.", n)
+    return start_idx, min(start_idx + n, end_excl)
+
+
 # Outline colours (BGR) of the LineDetection masks, shared by the tracking
 # movie and the dye/actin debug movies so the same mask looks the same in all.
 MASK_OUTLINE_PROT = (220, 80, 255)   # magenta

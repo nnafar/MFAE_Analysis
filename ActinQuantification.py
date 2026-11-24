@@ -229,13 +229,10 @@ class ActinAnalyzer:
         # whether or not the dye channel is analysed.
         has_pulse = dye_params.get('has_pulse', True)
         
-        if has_pulse:
-            baseline_end   = min(self.pulse_frame, valid_frames)
-            baseline_start = max(self.start_idx, baseline_end - self.baseline_len)
-        else:
-            # Anchor to cell entry, not frame 0
-            baseline_start = self.start_idx
-            baseline_end   = min(self.start_idx + self.baseline_len, valid_frames)
+        # Baseline frames: just before the pulse (or the first frames without
+        # one), always inside the tracked cell's own frames [start_idx, exit]
+        baseline_start, baseline_end = utils.baseline_window(
+            self.start_idx, valid_frames, self.pulse_frame, self.baseline_len, has_pulse)
 
         # Collect mean values across the baseline window for each region/zone.
         base_prot, base_body, base_total      = [], [], []

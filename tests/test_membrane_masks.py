@@ -584,3 +584,57 @@ def test_downstream_never_resegments_a_frame_without_a_linedetection_mask(monkey
     dye.save_debug_video(1, tmp_path)
     assert res_d['mask_count_prot'][4] == 0 and res_d['mask_count_prot'][3] > 0
     assert len(res_a['time_s']) == n
+
+
+def test_masks_exist_only_for_the_tracked_cell():
+    """Two cells in one trap: only the selected (pulsed) cell's frames keep masks, so dye,
+    actin and the movies never see the other cell."""
+    lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] + [20, 25, 30, 35, 40, 45, 50, 55, 60, 62, 64]
+    res = _run_cells(lengths, pulse_idx=len(lengths) - 4)
+    e, x = res['entry_frame_index'], res['exit_frame_index']
+    fm = res['frame_masks']
+    assert all(fm[i] == (None, None) for i in range(len(fm)) if i < e or i > x)
+    assert all(fm[i][0] is not None for i in range(e, x + 1))
+
+
+def test_dye_and_actin_only_measure_the_tracked_cell(tmp_path):
+    """Frames outside entry..exit (another cell, empty trap) are never measured or
+    used for the baseline, even if they are bright."""
+    from ActinQuantification import ActinAnalyzer
+    from UptakeQuantification import DyeUptakeAnalyzer
+
+    img, _, _ = _trap_image()
+    n, entry, exit_ = 12, 3, 7
+    bright = np.full_like(img, 60000)                 # 'other cell' frames: would wreck F0
+    # cell frames get +100 per frame, so which frames went into F0 is visible
+    dye = [bright if (i < entry or i > exit_) else (img + 100 * i).astype(np.uint16) for i in range(n)]
+    params = _params()
+    params.update({
+        'experiment_parameters': {'scale_factor': 0.629},
+        'dye_uptake_parameters': {'enable': True, 'has_pulse': True, 'pulse_frame_idx': 10,
+                                  'baseline_frames': 3},
+        'actin_parameters': {},
+    })
+    mp, mb = utils.generate_dual_masks(img, PIP, 100, 100, params)
+    masks = [((mp, mb) if entry <= i <= exit_ else (None, None)) for i in range(n)]
+    times = [float(i) for i in range(n)]
+    d = DyeUptakeAnalyzer([img] * n, dye, PIP, 100, 100, None, params, frame_masks=masks,
+                          start_idx=entry, end_idx=exit_)
+    rd = d.run(times)
+    a = ActinAnalyzer([img] * n, dye, PIP, 100, 100, params, frame_masks=masks,
+                      start_idx=entry, end_idx=exit_)
+    ra = a.run(times)
+    # cell left before the pulse (frame 10): baseline = its own last 3 frames, not frames 7-9
+    assert d.f0['body'] == pytest.approx(float(img[mb > 0].mean()) + 600, rel=1e-6)   # frames 5, 6, 7
+    assert list(rd['time_s']) == times[entry:exit_ + 1]
+    assert list(ra['time_s']) == times[entry:exit_ + 1]
+    assert max(rd['raw_mean_body']) < 30000 and max(ra['actin_body_mean']) < 30000
+
+
+def test_baseline_window_stays_inside_the_cell():
+    bw = utils.baseline_window
+    assert bw(0, 100, 50, 5, True) == (45, 50)       # just before the pulse
+    assert bw(48, 100, 50, 5, True) == (48, 50)      # entered just before the pulse
+    assert bw(0, 20, 50, 5, True) == (15, 20)        # left before the pulse: its last frames
+    assert bw(50, 100, 50, 5, True) == (50, 55)      # entered at the pulse: its first frames
+    assert bw(10, 100, None, 5, False) == (10, 15)   # no pulse: first frames after entry
