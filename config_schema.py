@@ -504,6 +504,14 @@ class ImageProcessingConstants(_StrictModel):
         default=0.25, ge=0.0, le=1.0,
         description="Holes larger than this fraction of the ROI are not filled (0 = no limit)."
     )
+    membrane_relative_level: float = Field(
+        default=0.3, ge=0.0, lt=1.0,
+        description=(
+            "Mask pixels must also reach this fraction of the brightest signal across the channel "
+            "around them (above background). Removes the out-of-focus halo around bright cells "
+            "so masks follow the cell outline (0 = off)."
+        )
+    )
     threshold_preview_clahe: bool = Field(
         default=True,
         description=(

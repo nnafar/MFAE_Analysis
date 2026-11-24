@@ -485,6 +485,8 @@ def _membrane_enhancement_settings(params: Optional[Dict[str, Any]]) -> Dict[str
         'snr_full_scale':  float(img_p.get('membrane_snr_full_scale', 40.0)),
         'fill_holes':      bool(img_p.get('membrane_fill_holes', True)),
         'max_hole_frac':   float(img_p.get('membrane_max_hole_fraction', 0.25)),
+        'relative_level':  float(img_p.get('membrane_relative_level', 0.3)),
+        'wall_margin':     float(img_p.get('wall_clip_margin', 0.25)),
     }
 
 
@@ -718,20 +720,55 @@ def temporal_median_frame(frames: List[Optional[np.ndarray]], idx: int, window: 
     return np.median(np.stack(stack, axis=0), axis=0).astype(np.float32)
 
 
+def relative_level_mask(snr: np.ndarray, level: float, wall_margin: float = 0.25) -> np.ndarray:
+    """
+    Pixels at least `level` x as bright (above background) as the brightest
+    signal across the channel around them (255 = keep; all 255 if level <= 0).
+
+    The noise threshold alone cannot tell a bright cell's out-of-focus halo
+    from the cell: around a bright body or protrusion the halo is 10-20 % of
+    the cell's brightness but still 5-10 noise units above background, so the
+    masks came out wider and blobbier than the cell. Comparing each pixel with
+    the local maximum puts the mask edge on the cell's own intensity edge.
+
+    The reference is a maximum over a tall, narrow window (5 px along the
+    channel x one channel height across it): across the channel, each pixel
+    is compared with the protrusion/body centre in its column, which sets the
+    width; along the channel only 2 px either side count, so the dim shaft
+    next to a bright spot inside the protrusion is not cut away.
+    """
+    if level <= 0:
+        return np.full(np.asarray(snr).shape[:2], 255, np.uint8)
+    s = np.clip(np.asarray(snr, dtype=np.float32), 0, None)
+    h = s.shape[0]
+    kh = max(9, int(round(h * max(1.0 - 2.0 * wall_margin, 0.2)))) | 1
+    ref = cv2.dilate(s, cv2.getStructuringElement(cv2.MORPH_RECT, (5, kh)))
+    return ((s >= level * ref) & (s > 0)).astype(np.uint8) * 255
+
+
 def threshold_membrane(image: np.ndarray, threshold: int, params: Optional[Dict[str, Any]] = None) -> np.ndarray:
     """
     Full-frame binary mask of the membrane channel: threshold the prepared
-    image and (with enhancement on) fill enclosed holes. Hole filling is done
+    image and (with enhancement on) also require membrane_relative_level x the
+    local cell signal, then fill enclosed holes. Hole filling is done
     on the full frame, before the ROI is split at the pipette entrance, so a
     membrane ring cut by the entrance line is still closed.
     """
-    prepared = prepare_membrane_for_threshold(image, params)
+    if not membrane_enhancement_enabled(params):
+        prepared = prepare_membrane_for_threshold(image, params)
+        _, binary = cv2.threshold(prepared, int(threshold), 255, cv2.THRESH_BINARY)
+        return binary
+    cfg = _membrane_enhancement_settings(params)
+    snr = membrane_snr_image(image, params)
+    gain = 255.0 / max(cfg['snr_full_scale'], 1e-3)
+    prepared = np.clip(snr * gain, 0, 255).astype(np.uint8)
     _, binary = cv2.threshold(prepared, int(threshold), 255, cv2.THRESH_BINARY)
-    if membrane_enhancement_enabled(params):
-        cfg = _membrane_enhancement_settings(params)
-        if cfg['fill_holes']:
-            max_area = int(cfg['max_hole_frac'] * binary.size) if cfg['max_hole_frac'] > 0 else None
-            binary = fill_small_holes(binary, max_area)
+    # keep only pixels that are also a fair fraction of the local cell signal
+    # (drops the out-of-focus halo around bright cells; see relative_level_mask)
+    binary = cv2.bitwise_and(binary, relative_level_mask(snr, cfg['relative_level'], cfg['wall_margin']))
+    if cfg['fill_holes']:
+        max_area = int(cfg['max_hole_frac'] * binary.size) if cfg['max_hole_frac'] > 0 else None
+        binary = fill_small_holes(binary, max_area)
     return binary
 
 
