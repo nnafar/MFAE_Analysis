@@ -167,30 +167,20 @@ class DyeUptakeAnalyzer:
             'pipette_x_px': pipette_x,
         }
         
-    def _get_masks(self, frame_idx: int, mem_img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _get_masks(self, frame_idx: int, mem_img: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
-        Returns (mask_prot, mask_body) for a given frame index.
+        (mask_prot, mask_body) of this frame exactly as LineDetection built them.
 
-        Uses the pre-computed masks from LineDetection when available so that
-        all modules (LineDetection, DyeUptake, ActinQuantification) operate on
-        identical cell regions. Falls back to recomputing only if no pre-computed
-        masks were supplied.
+        Masks are never re-segmented here: every module (protrusion length,
+        dye uptake, actin) works on the same LineDetection mask. A frame without
+        one returns (None, None) and is skipped.
         """
         if self.frame_masks and frame_idx < len(self.frame_masks):
             mp, mb = self.frame_masks[frame_idx]
             if mp is not None and mb is not None:
                 return mp, mb
-        
-        # Check is_guv before triggering the threshold fallback
-        is_guv = self.params.get('guv_settings', {}).get('enable', False)
-        if is_guv:
-            logger.warning(f"Missing pre-computed masks for GUV at frame {frame_idx}. Skipping frame fallback.")
-            return None, None
-        
-        return utils.generate_dual_masks(
-            mem_img, self.pipette_x,
-            self.threshold_prot, self.threshold_body, self.params
-        )
+        logger.debug(f"No LineDetection mask for frame {frame_idx}; frame skipped.")
+        return None, None
 
     def run(self, time_data: List[float]) -> Dict[str, Any]:
         """
@@ -240,6 +230,8 @@ class DyeUptakeAnalyzer:
 
             # Define the masks for baseline
             mask_prot_ref, mask_body_ref = self._get_masks(k, mem_ref_img)
+            if mask_prot_ref is None or mask_body_ref is None:
+                continue
 
             # Define mask_total for the baseline period
             mask_total_ref = cv2.bitwise_or(mask_prot_ref, mask_body_ref)
@@ -302,6 +294,9 @@ class DyeUptakeAnalyzer:
             
             # Call centralized utility
             mask_prot, mask_body = self._get_masks(i, current_mem)
+            if mask_prot is None or mask_body is None:
+                self._record_empty_frame()
+                continue
             mask_total = cv2.bitwise_or(mask_prot, mask_body)
                         
             # B. Quantify Pixel Counts (N) - Required for SEM calculation
@@ -525,6 +520,8 @@ class DyeUptakeAnalyzer:
                 continue
 
             mask_prot, mask_body = self._get_masks(actual_idx, mem_img)
+            if mask_prot is None or mask_body is None:
+                continue
 
             norm_dye = cv2.normalize(dye_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             display = cv2.cvtColor(norm_dye, cv2.COLOR_GRAY2BGR)

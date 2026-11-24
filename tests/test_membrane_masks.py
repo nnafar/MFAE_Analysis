@@ -551,3 +551,36 @@ def test_actin_times_start_at_the_cell_entry():
                             frame_masks=[(mp, mb)] * n, start_idx=start).run(times)
     assert list(act['time_s']) == times[start:]
     assert list(act['time_s']) == list(dye['time_s'])
+
+
+def test_downstream_never_resegments_a_frame_without_a_linedetection_mask(monkeypatch, tmp_path):
+    """Dye and actin only use LineDetection's masks; a frame without one is skipped."""
+    from ActinQuantification import ActinAnalyzer
+    from UptakeQuantification import DyeUptakeAnalyzer
+
+    img, _, _ = _trap_image()
+    n = 6
+    rois = [img] * n
+    params = _params()
+    params.update({
+        'experiment_parameters': {'scale_factor': 0.629},
+        'dye_uptake_parameters': {'enable': True, 'has_pulse': False, 'baseline_frames': 2},
+        'actin_parameters': {},
+    })
+    mp, mb = utils.generate_dual_masks(img, PIP, 100, 100, params)
+    masks = [(mp, mb)] * n
+    masks[4] = (None, None)                       # LineDetection had no mask here
+
+    def boom(*a, **k):
+        raise AssertionError("downstream module re-segmented the membrane image")
+    monkeypatch.setattr(utils, 'generate_dual_masks', boom)
+    monkeypatch.setattr(utils, 'threshold_membrane', boom)
+
+    act = ActinAnalyzer(rois, rois, PIP, 100, 100, params, frame_masks=masks, start_idx=0)
+    res_a = act.run(list(range(n)))
+    act.save_zones_debug_video(1, tmp_path); act.save_cortex_debug_video(1, tmp_path)
+    dye = DyeUptakeAnalyzer(rois, rois, PIP, 100, 100, None, params, frame_masks=masks, start_idx=0)
+    res_d = dye.run(list(range(n)))
+    dye.save_debug_video(1, tmp_path)
+    assert res_d['mask_count_prot'][4] == 0 and res_d['mask_count_prot'][3] > 0
+    assert len(res_a['time_s']) == n
