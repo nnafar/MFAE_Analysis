@@ -741,6 +741,23 @@ class BulkMFAAnalyzer:
             return trap_number in self.selected_traps[exp_id]
         return False
 
+
+    def _protrusion_folder(self, experiment_folder):
+        """Full-detection CSV folder: new layout first, then the old flat layout."""
+        for cand in (Path(experiment_folder) / "Protrusion Length Detection" / self.protrusion_dir_name,
+                     Path(experiment_folder) / self.protrusion_dir_name):
+            if cand.is_dir():
+                return cand
+        return Path(experiment_folder) / "Protrusion Length Detection" / self.protrusion_dir_name
+
+    def _dye_folder(self, experiment_folder):
+        """Uptake CSV folder: new layout (Dye Uptake/Uptake traces) first, then the old one."""
+        for cand in (Path(experiment_folder) / self.dye_uptake_dir_name / "Uptake traces",
+                     Path(experiment_folder) / self.dye_uptake_dir_name):
+            if cand.is_dir():
+                return cand
+        return Path(experiment_folder) / self.dye_uptake_dir_name / "Uptake traces"
+
     def find_experiment_folders(self) -> List[Path]:
         folders = []
         for item in self.base_folder.iterdir():
@@ -756,7 +773,7 @@ class BulkMFAAnalyzer:
         return folders
 
     def find_trap_files(self, experiment_folder: Path) -> List[Path]:
-        protrusion_folder = experiment_folder / self.protrusion_dir_name
+        protrusion_folder = self._protrusion_folder(experiment_folder)
         if not protrusion_folder.is_dir():
             return []
             
@@ -783,7 +800,7 @@ class BulkMFAAnalyzer:
 
     def load_dye_data_df(self, experiment_folder: Path, trap_number: int) -> Optional[pd.DataFrame]:
         """Loads the full dye uptake CSV file for ensemble averaging."""
-        dye_folder = experiment_folder / self.dye_uptake_dir_name
+        dye_folder = self._dye_folder(experiment_folder)
         expected_filename = f"Trap_{trap_number:02d}_Uptake_Data.csv"
         file_path = dye_folder / expected_filename
         
@@ -809,7 +826,7 @@ class BulkMFAAnalyzer:
 
     def load_and_summarize_dye_uptake(self, experiment_folder: Path, trap_number: int) -> Dict[str, Any]:
         """Loads processed dye uptake data (CSV) and returns key summary metrics."""
-        dye_folder = experiment_folder / self.dye_uptake_dir_name
+        dye_folder = self._dye_folder(experiment_folder)
         expected_filename = f"Trap_{trap_number:02d}_Uptake_Data.csv"
         file_path = dye_folder / expected_filename
         
@@ -888,7 +905,7 @@ class BulkMFAAnalyzer:
         # Plot individual dye uptake if required
         if generate_plots and dye_summary.get('Dye_Data_Available'):
             # Find the path robustly again to pass to the plotting function
-            dye_folder = exp_folder / self.dye_uptake_dir_name
+            dye_folder = self._dye_folder(exp_folder)
             dye_file_path = dye_folder / f"Trap_{trap_number:02d}_Uptake_Data.csv"
             if not dye_file_path.exists():
                 dye_files = list(dye_folder.glob(f"Trap_{trap_number}*_Uptake_Data.*"))

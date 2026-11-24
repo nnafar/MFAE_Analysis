@@ -30,6 +30,7 @@ import yaml
 import multiprocessing
 import traceback
 import logging
+import logging.handlers
 import cv2
 
 # Belt-and-braces: also mute OpenCV's Python-facing logger. The env var
@@ -59,6 +60,8 @@ from Fitting_MFA import FittingMFA
 from Kymograph_MFA import create_kymograph_for_trap
 from UptakeQuantification import DyeUptakeAnalyzer
 from ActinQuantification import ActinAnalyzer
+from TrackingMovie_MFA import save_tracking_movie
+import output_layout
 from config_schema import MFAConfig, validate_config, format_validation_error
 import config_loader
 import experiment_naming
@@ -91,6 +94,16 @@ def default_output_root() -> Path:
 # TOP-LEVEL STATIC WORKER FUNCTION (Optimized for Shared Memory)
 # =============================================================================
 
+def _init_worker_logging(log_queue) -> None:
+    """Pool initializer: route every log record of this worker to the main process."""
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(logging.handlers.QueueHandler(log_queue))
+    root.setLevel(logging.DEBUG)
+    for noisy in ('matplotlib', 'PIL', 'fontTools'):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
 def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Processes a single trap in an independent process with guaranteed cleanup.
@@ -107,7 +120,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     all_actin_frames = None
     
     # Unpack Output Directories
-    dirs = config_dict['output_dirs']
+    # Fill in every sub-folder of the output layout (see output_layout.py).
+    dirs = output_layout.complete(config_dict['output_dirs'])
     worker_logger = logging.getLogger(f"Worker-{trap_index+1:02d}")
     
     try:
@@ -265,7 +279,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                     time_points=np.array(time_data),
                     protrusions=np.array(det_res['protrusion_lengths_um']),
                     trap_index=trap_index + 1,
-                    save_path=dirs['tracking_visuals'] / f"trap_{trap_index+1:02d}_detection_trace.png",
+                    save_path=dirs['protrusion'] / f"trap_{trap_index+1:02d}_detection_trace.png",
                     params=params,
                     rupture_time=rupture_time,
                     intensities=det_res.get('downstream_intensities'),
@@ -284,8 +298,9 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         if params.get('workflow_settings', {}).get('create_kymographs', True):
             try:
                 kymo = create_kymograph_for_trap(
-                    rois, det_res, params, dirs['tracking_visuals'],
+                    rois, det_res, params, dirs['protrusion'],
                     trap_index + 1, time_data, save_plot=save_singles,
+                    csv_dir=dirs['membrane_kymo'],
                 )
                 if kymo.display_matrix is not None:
                     plot_data['membrane_kymo'] = {
@@ -297,6 +312,18 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                     f"Trap {trap_index+1}: Kymograph generation failed.",
                     exc_info=True,
                 )
+
+        # 6b. Tracking movie: membrane image with the masks, tip and length
+        # trace, frame by frame (Protrusion Length Detection/Movies).
+        if params.get('workflow_settings', {}).get('save_tracking_movies', True):
+            try:
+                save_tracking_movie(
+                    rois, det_res, time_data, params,
+                    dirs['movies'] / f"Trap_{trap_index+1:02d}_Tracking.avi",
+                    trap_number=trap_index + 1, pulse_idx=pf_idx,
+                )
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Tracking movie failed.", exc_info=True)
 
         # 7. Viscoelastic Fitting
         # Default: protrusion was detected but fitting was not performed.
@@ -383,8 +410,10 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
 
                 uptake_analyzer = DyeUptakeAnalyzer(rois, dye_rois, det_res['pipette_start_x_used'], thr_prot, config_dict['tuned_threshold_body'], rupture_idx, params, frame_masks=det_res.get('frame_masks', []), start_idx=det_res.get('entry_frame_index', 0))
                 dye_results = uptake_analyzer.run(time_data)
-                uptake_analyzer.export_csv(trap_index + 1, dirs['dye'])
-                uptake_analyzer.export_kymograph_csv(trap_index + 1, dirs['dye'])
+                for key in ('dye_traces', 'dye_kymo', 'dye_movies'):
+                    dirs[key].mkdir(parents=True, exist_ok=True)
+                uptake_analyzer.export_csv(trap_index + 1, dirs['dye_traces'])
+                uptake_analyzer.export_kymograph_csv(trap_index + 1, dirs['dye_kymo'])
                 
                 # Pass pulse_time AND rupture_time down.  Uptake analysis
                 # no longer truncates at rupture; the dashboard now marks
@@ -398,7 +427,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                     )
                 
                 # Add the missing debug video call here
-                uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])
+                uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye_movies'])
                 
             except Exception:
                 worker_logger.warning(f"Trap {trap_index+1}: Dye uptake analysis failed.", exc_info=True)
@@ -426,10 +455,12 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                     start_idx=det_res.get('entry_frame_index', 0)
                 )
                 actin_results = actin_analyzer.run(time_data)
-                actin_analyzer.export_csv(trap_index + 1, dirs['actin'])
-                actin_analyzer.export_kymograph_csv(trap_index + 1, dirs['actin'])
-                actin_analyzer.save_zones_debug_video(trap_index + 1, dirs['actin'])
-                actin_analyzer.save_cortex_debug_video(trap_index + 1, dirs['actin'])
+                for key in ('actin_traces', 'actin_kymo', 'actin_movies'):
+                    dirs[key].mkdir(parents=True, exist_ok=True)
+                actin_analyzer.export_csv(trap_index + 1, dirs['actin_traces'])
+                actin_analyzer.export_kymograph_csv(trap_index + 1, dirs['actin_kymo'])
+                actin_analyzer.save_zones_debug_video(trap_index + 1, dirs['actin_movies'])
+                actin_analyzer.save_cortex_debug_video(trap_index + 1, dirs['actin_movies'])
                 # Retained plots: kymograph (image) and zone dynamics.
                 # Removed plots: dashboard (_Ratio), cortex-structure, profiles.
                 if save_singles:
@@ -552,21 +583,16 @@ class MFAAnalysis:
         results_dir = output_base / self.experiment_id
         results_dir.mkdir(parents=True, exist_ok=True)
         
-        # Define subfolders
-        subdirs = {
-            'root': results_dir,
-            'full_csv': results_dir / "Full protrusion detection",
-            'tracking_visuals': results_dir / "Tracking visuals", 
-            'morphology': results_dir / "Cell Morphology",
-            'fitting': results_dir / "Fitting results",
-            'dye': results_dir / "Dye Uptake",
-            'actin': results_dir / "Actin Quantification" 
-        }
-        
-        # Create core CSV folders immediately
-        subdirs['full_csv'].mkdir(parents=True, exist_ok=True)
-        subdirs['tracking_visuals'].mkdir(parents=True, exist_ok=True)
-        subdirs['morphology'].mkdir(parents=True, exist_ok=True)
+        # Folder layout is defined in output_layout.py:
+        #   Protrusion Length Detection/{Full protrusion detection, Kymographs, Movies}
+        #   Dye Uptake/{Uptake traces, Uptake Kymographs, Uptake Movies}
+        #   Actin Quantification/{Actin traces, Actin Kymographs, Actin Movies}
+        #   Cell Morphology/, Fitting results/
+        subdirs = output_layout.build(results_dir)
+
+        # Create core folders immediately (dye/actin/fitting are created on demand)
+        for key in ('protrusion', 'full_csv', 'membrane_kymo', 'morphology'):
+            subdirs[key].mkdir(parents=True, exist_ok=True)
             
         return results_dir, subdirs
     
@@ -834,8 +860,21 @@ class MFAAnalysis:
             else:
                 # Parallel execution
                 n_workers = min(n_workers, len(worker_args), (os.cpu_count() or 1))
-                with multiprocessing.Pool(n_workers) as pool:
-                    all_results = list(tqdm(pool.map(static_parallel_worker, worker_args), total=len(worker_args)))
+                # Worker processes have no log handlers of their own (on Windows
+                # they start fresh), so without this their messages - warnings
+                # about failed steps included - never reached the log file.
+                # Workers send records through a queue; the main process writes
+                # them with its own handlers (console + <experiment>_analysis.log).
+                log_queue = multiprocessing.Queue(-1)
+                listener = logging.handlers.QueueListener(
+                    log_queue, *logging.getLogger().handlers, respect_handler_level=True)
+                listener.start()
+                try:
+                    with multiprocessing.Pool(n_workers, initializer=_init_worker_logging,
+                                              initargs=(log_queue,)) as pool:
+                        all_results = list(tqdm(pool.map(static_parallel_worker, worker_args), total=len(worker_args)))
+                finally:
+                    listener.stop()
 
             # --- Phase 3: Export ---
             logger.info("\n== PHASE 3: AGGREGATION & EXPORT ==")

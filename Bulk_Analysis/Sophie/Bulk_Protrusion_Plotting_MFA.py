@@ -469,6 +469,15 @@ class BulkProtrusionAnalyzer:
             return trap_number in self.selected_traps[exp_id]
         return False
 
+
+    def _protrusion_folder(self, experiment_folder):
+        """Full-detection CSV folder: new layout first, then the old flat layout."""
+        for cand in (Path(experiment_folder) / "Protrusion Length Detection" / self.protrusion_dir_name,
+                     Path(experiment_folder) / self.protrusion_dir_name):
+            if cand.is_dir():
+                return cand
+        return Path(experiment_folder) / "Protrusion Length Detection" / self.protrusion_dir_name
+
     def find_experiment_folders(self):
         folders = []
         for item in self.base_folder.iterdir():
@@ -481,7 +490,7 @@ class BulkProtrusionAnalyzer:
         return folders
 
     def find_trap_files(self, experiment_folder):
-        protrusion_folder = experiment_folder / self.protrusion_dir_name
+        protrusion_folder = self._protrusion_folder(experiment_folder)
         if not protrusion_folder.is_dir():
             return []
         trap_files = []

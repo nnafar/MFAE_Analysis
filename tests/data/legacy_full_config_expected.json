@@ -197,7 +197,10 @@
   "interactive_window_width": 1000,
   "max_cache_size": 25,
   "n_workers": 3,
+  "save_tracking_movies": true,
   "selection_frame_fraction": 0.3,
+  "tracking_movie_fps": 10,
+  "tracking_movie_width_px": 900,
   "trap_spacing_factor": 1.5,
   "verify_traps_interactively": true,
   "window_scale_factor": 1.0

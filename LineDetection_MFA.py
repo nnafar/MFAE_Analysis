@@ -1571,7 +1571,11 @@ class LineDetectionMFA:
         #   code can exclude it from analysis, and keep entry_idx = 0 as a safe
         #   placeholder (it is never used for analysis when the flag is set).
         if not entry_confirmed:
-            logger.warning(
+            # The interactive setup runs detection on a single frame, where a
+            # sustained entry of N frames can never be confirmed; only warn
+            # when there were enough frames for the check to mean something.
+            _log_entry = logger.warning if len(protrusions) >= entry_sustained_n else logger.debug
+            _log_entry(
                 "Entry not confirmed for this trap: protrusion was either always "
                 "clamped at the ROI boundary or never sustained a valid tracking "
                 "window for %d consecutive frames.  Rupture detection will be "
