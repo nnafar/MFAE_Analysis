@@ -1,15 +1,23 @@
-For the batch analysis, name your data folders like the following:
+Experiment folder naming (required by the bulk analysis)
+========================================================
 
-Date_CellType_Treatment_ExperimentNumber-Pressure[Pa]-Voltage[V]-PulseDuration[ms|us|s]-Pulseframe
+Name each experiment's data folder (and its experiment_id in the config) as:
 
-For cells that are eltroporated, the data folder name should be formatted as:
+    YYMMDD_CellType_Treatment_Chip_Experiment-<Pressure>Pa-<Voltage>V-<Duration><unit>-frame<PulseFrame>
 
-```
-YYMMDD_MDAMB231_Control_Experiment271-1100Pa-100V-5ms-frame10
-```
+  * exactly five underscore-separated fields before the first '-'
+    (no extra '_' or '-' inside a field)
+  * whole numbers only; unit is ms, us or s
+  * Pa, V and frame are literal text
 
-For cells that are just aspirated (no electrporation), the data folder name should be formatted as:
+Electroporated cells:
 
-```
-YYMMDD_MDAMB231_Control_Experiment271-1100Pa-0V-0ms-frame0
-```
+    260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10
+
+Aspiration only (no pulse): use 0V, 0ms and frame0:
+
+    260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0
+
+Folders that don't match are skipped by Bulk_Analysis. Check a name with:
+
+    python MFA_analysis.py my_config.yaml --check

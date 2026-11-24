@@ -47,11 +47,34 @@ logging.getLogger('fontTools').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+# Per-experiment results written by MFA_analysis.py (repo-level "Output" folder).
+DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent.parent / "Output"
+
+
+def _parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="python Bulk_Analysis/master_bulk_pipeline.py",
+        description="Pool per-experiment MFA results into condition-level statistics and figures.",
+    )
+    parser.add_argument(
+        "--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT,
+        help="Folder holding the per-experiment result folders from MFA_analysis.py "
+             f"(default: %(default)s). Results go to <output-root>/Bulk_Analysis_results/<YYMMDD>.",
+    )
+    return parser.parse_args()
+
+
 def main():
     # ------------------------------------------------------------------
     # Path configuration
     # ------------------------------------------------------------------
-    output_root_dir = Path(r"C:\GitHub\MFAE_Analysis\Output")
+    args = _parse_args()
+    output_root_dir = args.output_root
+    if not output_root_dir.is_dir():
+        logger.error(f"Output folder not found: {output_root_dir}. "
+                     "Run MFA_analysis.py on your experiments first, or pass --output-root.")
+        return
 
     # NEW: Create a date-stamped subfolder for today's run.
     # Format: YYMMDD (e.g. "250701").  Each run gets its own folder so

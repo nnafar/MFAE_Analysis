@@ -549,8 +549,32 @@ def validate_config(config_dict: Dict[str, Any]) -> 'MFAConfig':
     as self.params for worker dispatch.  Everything upstream of that boundary
     should use the typed object.
     """
-    try:
-        return MFAConfig(**config_dict)
-    except ValidationError as e:
-        logger.error(f"Configuration Validation Failed!\n{e}")
-        raise e
+    if not isinstance(config_dict, dict):
+        raise ValueError("The config file is empty or is not a YAML mapping of sections.")
+    return MFAConfig(**config_dict)
+
+
+def format_validation_error(error: ValidationError) -> str:
+    """
+    Turn a pydantic ValidationError into short, plain-language lines that
+    point at the exact config entry, e.g.
+
+        rupture_detection.enable_lenght_veto: unknown setting (typo, or not supported)
+        experiment_parameters.scale_factor: Input should be greater than 0
+    """
+    lines = []
+    for err in error.errors():
+        location = ".".join(str(part) for part in err.get("loc", ())) or "(top level)"
+        kind = err.get("type", "")
+        if kind == "extra_forbidden":
+            message = "unknown setting (typo, or not supported by this version)"
+        elif kind == "missing":
+            message = "required setting is missing"
+        else:
+            message = err.get("msg", "invalid value")
+            if message.startswith("Value error, "):
+                message = message[len("Value error, "):]
+        value = err.get("input")
+        shown = "" if kind in ("missing", "extra_forbidden") or isinstance(value, dict) else f"  (got: {value!r})"
+        lines.append(f"  - {location}: {message}{shown}")
+    return "\n".join(lines)

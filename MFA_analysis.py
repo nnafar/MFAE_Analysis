@@ -13,6 +13,7 @@ This is the main entry point. It coordinates the entire workflow:
 
 import atexit
 import os
+import sys
 
 # ---------------------------------------------------------------------------
 # Silence noisy libtiff/OpenCV C++ warnings BEFORE cv2 is imported.
@@ -58,11 +59,26 @@ from Fitting_MFA import FittingMFA
 from Kymograph_MFA import create_kymograph_for_trap
 from UptakeQuantification import DyeUptakeAnalyzer
 from ActinQuantification import ActinAnalyzer
-from config_schema import MFAConfig, validate_config
+from config_schema import MFAConfig, validate_config, format_validation_error
 import Plotting_MFA
 import Utils_MFA as utils
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+# Ready-made config files a new user can start from (see README.md).
+CONFIG_TEMPLATES: Dict[str, str] = {
+    'ep':    'config.yaml',        # electroporation, 5 ms pulse, all analyses on
+    'asp':   'config_asp.yaml',    # aspiration only (no pulse) controls
+    '5ms':   'config_5ms.yaml',    # electroporation, 5 ms pulse
+    '100us': 'config_100us.yaml',  # electroporation, 100 us pulse
+}
+
+
+def default_output_root() -> Path:
+    """Folder that per-experiment results are written to by default."""
+    return PROJECT_ROOT / "Output"
 
 # =============================================================================
 # TOP-LEVEL STATIC WORKER FUNCTION (Optimized for Shared Memory)
@@ -413,11 +429,26 @@ class MFAAnalysis:
     """
 
     def __init__(self, path: Path, experiment_id: str,
-                 params: Optional[Union['MFAConfig', Dict[str, Any]]] = None) -> None:
+                 params: Optional[Union['MFAConfig', Dict[str, Any]]] = None,
+                 output_root: Optional[Path] = None,
+                 use_session_cache: bool = True) -> None:
+        """
+        Args:
+            path: Folder containing the raw .tif image sequence.
+            experiment_id: Name of the results folder created under output_root.
+            params: Validated MFAConfig (preferred) or a plain config dict.
+            output_root: Where result folders are written. Defaults to the
+                'Output' folder next to this script (the bulk analysis
+                scripts read from there by default).
+            use_session_cache: If False, ignore any saved session_cache.json
+                and run the interactive trap setup again.
+        """
         if not path.exists():
             raise FileNotFoundError(f"The specified data path does not exist: {path}")
         self.path = path
         self.experiment_id = experiment_id
+        self.output_root = Path(output_root) if output_root is not None else None
+        self.use_session_cache = use_session_cache
         
         # Accept a validated MFAConfig object (typed) or a plain dict (backward compat).
         if hasattr(params, 'model_dump'):
@@ -472,12 +503,7 @@ class MFAAnalysis:
 
     def _setup_output_directory(self) -> Tuple[Path, Dict[str, Path]]:
         """Creates the structured folder hierarchy for results."""
-        try:
-            project_root = Path(__file__).resolve().parent
-        except NameError:
-            project_root = Path.cwd()
-            
-        output_base = project_root / "Output"
+        output_base = self.output_root if self.output_root is not None else default_output_root()
         results_dir = output_base / self.experiment_id
         results_dir.mkdir(parents=True, exist_ok=True)
         
@@ -604,7 +630,12 @@ class MFAAnalysis:
             # skipped automatically and the pipeline jumps to Phase 2.
             # Delete session_cache.json to force a fresh interactive setup.
             logger.info("\n== PHASE 1: INTERACTIVE TRAP SETUP ==")
-            existing_cache = self._load_session_cache()
+            existing_cache = self._load_session_cache() if self.use_session_cache else None
+            if existing_cache is not None:
+                logger.info(
+                    "Re-using the trap setup saved in session_cache.json "
+                    "(run with --fresh to redo the interactive setup)."
+                )
 
             if existing_cache is not None:
                 # ── Restore cropper state from cache ──────────────────────────
@@ -939,41 +970,246 @@ class MFAAnalysis:
             self.subdirs['fitting'] / f"{self.experiment_id}_shear_analysis_card.png"
         )
         
-def main() -> bool:
-    utils.setup_logging(debug_mode=False) 
-    parser = argparse.ArgumentParser(description="Run MFA analysis from a configuration file.")
-    parser.add_argument("config_path", type=str, help="Path to the config.yaml file.")
-    args = parser.parse_args()
-    config_path = Path(args.config_path)
+# =============================================================================
+# COMMAND-LINE INTERFACE
+# =============================================================================
 
-    raw_config = {}
-    
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python MFA_analysis.py",
+        description="Microfluidic aspiration (MFA) analysis of one experiment folder.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Typical workflow:\n"
+            "  1. python MFA_analysis.py --init-config my_exp.yaml --template ep --data-folder D:/data/260128_...\n"
+            "  2. python MFA_analysis.py my_exp.yaml --check     (no windows; checks config and images)\n"
+            "  3. python MFA_analysis.py my_exp.yaml             (interactive setup, then analysis)\n"
+            "\n"
+            f"Templates: {', '.join(CONFIG_TEMPLATES)}. See README.md for details."
+        ),
+    )
+    parser.add_argument("config_path", nargs="?", type=Path,
+                        help="Path to the YAML config file.")
+    parser.add_argument("--data-folder", type=Path,
+                        help="Override paths.data_folder (folder with the .tif images).")
+    parser.add_argument("--experiment-id",
+                        help="Override paths.experiment_id (name of the results folder). "
+                             "Defaults to the data folder's name when --data-folder is given.")
+    parser.add_argument("--output-dir", type=Path,
+                        help=f"Where result folders are written (default: {default_output_root()}).")
+    parser.add_argument("--check", action="store_true",
+                        help="Validate the config and scan the images, then exit. Opens no windows.")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Ignore a saved session_cache.json and redo the interactive trap setup.")
+    parser.add_argument("--debug", action="store_true",
+                        help="Show detailed (DEBUG) log messages on screen.")
+    parser.add_argument("--init-config", type=Path, metavar="NEW_CONFIG",
+                        help="Create a new config file from a template and exit.")
+    parser.add_argument("--template", choices=sorted(CONFIG_TEMPLATES), default="ep",
+                        help="Template used by --init-config (default: ep).")
+    return parser
+
+
+def _set_yaml_path_value(text: str, key: str, value: str) -> str:
+    """Replace `  key: ...` inside the paths section, keeping all comments."""
+    import re
+    quoted = "'" + value.replace("'", "''") + "'"
+    pattern = re.compile(rf"^(\s+{key}:)[^\n#]*", re.MULTILINE)
+    if not pattern.search(text):
+        raise ValueError(f"Template has no '{key}' entry.")
+    return pattern.sub(lambda m: f"{m.group(1)} {quoted}", text, count=1)
+
+
+def init_config(dest: Path, template: str, data_folder: Optional[Path],
+                experiment_id: Optional[str]) -> bool:
+    """Copy a template config, optionally filling in the data folder and experiment id."""
+    if dest.exists():
+        logger.error(f"{dest} already exists; choose another name or delete it first.")
+        return False
+    text = (PROJECT_ROOT / CONFIG_TEMPLATES[template]).read_text(encoding="utf-8")
+    if data_folder is not None:
+        text = _set_yaml_path_value(text, "data_folder", str(data_folder))
+        experiment_id = experiment_id or data_folder.name
+    if experiment_id:
+        text = _set_yaml_path_value(text, "experiment_id", experiment_id)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+    logger.info(f"Created {dest} from template '{template}' ({CONFIG_TEMPLATES[template]}).")
+    if data_folder is None:
+        logger.info("Next: open it and set paths.data_folder and paths.experiment_id.")
+    logger.info(f"Then check it with:  python MFA_analysis.py {dest} --check")
+    return True
+
+
+def load_config(config_path: Path, data_folder: Optional[Path] = None,
+                experiment_id: Optional[str] = None) -> Optional[MFAConfig]:
+    """Read, override and validate a config file. Logs a readable error and returns None on failure."""
+    if not config_path.exists():
+        logger.error(f"Config file not found: {config_path}")
+        return None
     try:
-        with open(config_path, 'r') as f: raw_config = yaml.safe_load(f)
-    except Exception as e:
-        logger.error(f"Error parsing config: {e}"); return False
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        logger.error(f"{config_path} is not valid YAML (check indentation and quotes):\n{e}")
+        return None
 
-    config = None                            
-    try: 
-        config = validate_config(raw_config)
+    if isinstance(raw, dict):
+        paths = raw.setdefault("paths", {}) or {}
+        raw["paths"] = paths
+        if data_folder is not None:
+            paths["data_folder"] = str(data_folder)
+            if experiment_id is None:
+                experiment_id = data_folder.name
+        if experiment_id is not None:
+            paths["experiment_id"] = experiment_id
+
+    try:
+        return validate_config(raw)
     except ValidationError as e:
-        logger.error(f"Invalid configuration: {e}"); return False
-    
+        logger.error(f"{config_path} has {e.error_count()} problem(s):\n{format_validation_error(e)}")
+    except ValueError as e:
+        logger.error(f"{config_path}: {e}")
+    return None
+
+
+def _bulk_folder_pattern():
+    """The folder-name pattern the bulk analysis expects (single source of truth)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "bulk_file_handling", PROJECT_ROOT / "Bulk_Analysis" / "bulk_file_handling.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.BulkDataLoader.FOLDER_PATTERN
+
+
+def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
+    """
+    Dry run for new users: scans the image folder with the same code the
+    pipeline uses and reports what it found, without opening any windows
+    or writing results. Returns False if a problem would stop the analysis.
+    """
+    params = config.model_dump()
+    problems: List[str] = []
+    notes: List[str] = []
+
+    reader = FileRead(config.paths.data_folder, params)
+    try:
+        reader.run()
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        return False
+
+    dye = params["dye_uptake_parameters"]
+    actin = params["actin_parameters"]
+    n = len(reader.tif_files)
+
+    logger.info("== SETUP CHECK ==")
+    logger.info(f"Data folder   : {config.paths.data_folder}")
+    logger.info(f"Results folder: {(output_root or default_output_root()) / config.paths.experiment_id}")
+    logger.info(f"Membrane      : {n} frames (pattern '{dye['membrane_channel_pattern']}')")
+    if dye["enable"]:
+        logger.info(f"Dye           : {len(reader.dye_files)} frames (pattern '{dye['dye_channel_pattern']}')")
+        if not reader.dye_files:
+            problems.append(f"Dye analysis is enabled but no file names contain "
+                            f"'{dye['dye_channel_pattern']}' (dye_uptake_parameters.dye_channel_pattern).")
+    if actin["enable"]:
+        logger.info(f"Actin         : {len(reader.actin_files)} frames (pattern '{actin['channel_pattern']}')")
+        if not reader.actin_files:
+            problems.append(f"Actin analysis is enabled but no file names contain "
+                            f"'{actin['channel_pattern']}' (actin_parameters.channel_pattern).")
+        elif actin["channel_pattern"] == dye["membrane_channel_pattern"]:
+            notes.append("Actin and membrane use the same channel pattern; actin is measured "
+                         "on the membrane images. Change actin_parameters.channel_pattern if "
+                         "you have a separate actin channel.")
+
+    if n < 2:
+        problems.append("Fewer than 2 membrane frames found; nothing to analyse.")
+    else:
+        dt = (reader.time_data[-1] - reader.time_data[0]) / (n - 1)
+        logger.info(f"Frame interval: {dt:.4f} s ({reader.metadata_method_used})")
+        cfg_dt = params["experiment_parameters"]["frame_interval"]
+        if reader.metadata_method_used and not reader.metadata_method_used.startswith("Manual"):
+            if abs(dt - cfg_dt) > 0.1 * cfg_dt:
+                notes.append(f"Image metadata says {dt:.4f} s per frame but the config's "
+                             f"frame_interval is {cfg_dt} s. The metadata value is used.")
+
+    first = utils.get_first_frame_number(reader.tif_files)
+    logger.info(f"First frame number in file names: {first}")
+    if dye["enable"] and dye["has_pulse"]:
+        idx = utils.pulse_frame_to_index(dye["pulse_frame"], first)
+        if 0 <= idx < n:
+            logger.info(f"Pulse         : frame {dye['pulse_frame']:g} -> position {idx} "
+                        f"(t = {reader.time_data[idx]:.2f} s)")
+        else:
+            problems.append(f"pulse_frame {dye['pulse_frame']:g} is outside the recording "
+                            f"(only {n} frames).")
+    elif dye["enable"]:
+        logger.info("Pulse         : none (has_pulse: False, aspiration-only control)")
+
+    if not _bulk_folder_pattern().match(config.paths.experiment_id):
+        notes.append(
+            "experiment_id does not follow the naming rule the bulk analysis uses "
+            "(YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>), so "
+            "Bulk_Analysis will skip this experiment. See README.md.")
+
+    cache = (output_root or default_output_root()) / config.paths.experiment_id / "session_cache.json"
+    if cache.exists():
+        notes.append(f"A saved trap setup exists ({cache.name}); it will be reused. "
+                     "Add --fresh to redo the interactive setup.")
+
+    for note in notes:
+        logger.warning(f"NOTE: {note}")
+    for problem in problems:
+        logger.error(f"PROBLEM: {problem}")
+    if problems:
+        logger.error(f"Setup check found {len(problems)} problem(s). Fix them before running.")
+        return False
+    logger.info("Setup check passed. Run again without --check to start the analysis.")
+    return True
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Command-line entry point. Returns a process exit code (0 = success)."""
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    utils.setup_logging(debug_mode=args.debug)
+
+    if args.init_config is not None:
+        return 0 if init_config(args.init_config, args.template,
+                                args.data_folder, args.experiment_id) else 1
+
+    if args.config_path is None:
+        parser.print_help()
+        return 2
+
+    config = load_config(args.config_path, args.data_folder, args.experiment_id)
+    if config is None:
+        return 1
+
+    if args.check:
+        return 0 if check_setup(config, args.output_dir) else 1
+
+    if args.debug:
+        config.workflow_settings.debug_mode = True
+
     analysis = None
     try:
-        analysis = MFAAnalysis(config.paths.data_folder, str(config.paths.experiment_id), config)
-        success = analysis.run_analysis()
-        return success
+        analysis = MFAAnalysis(config.paths.data_folder, str(config.paths.experiment_id), config,
+                               output_root=args.output_dir,
+                               use_session_cache=not args.fresh)
+        return 0 if analysis.run_analysis() else 1
     except KeyboardInterrupt:
         logger.warning("Analysis interrupted by user.")
-        return False
+        return 130
     except Exception:
         logger.error("Fatal error", exc_info=True)
-        return False
+        return 1
     finally:
         if analysis:
             analysis.cleanup()
 
+
 if __name__ == "__main__":
-    multiprocessing.freeze_support() 
-    main()
+    multiprocessing.freeze_support()
+    sys.exit(main())

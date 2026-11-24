@@ -197,7 +197,7 @@ def compute_shear_metrics(width_um: float, height_um: float, length_um: float,
 # =============================================================================
 
 def jeffreys_length(t: np.ndarray, r_eff: float, delta_p: float, C: float, E: float, eta1: float, eta2: float) -> np.ndarray:
-    """
+    r"""
     3-Parameter Jeffreys Model (Viscoelastic Liquid).
     Structure: (Spring E // Dashpot eta1) --series-- (Dashpot eta2)
     

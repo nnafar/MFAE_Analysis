@@ -1,0 +1,5 @@
+# Tool configuration. The pipeline itself is run as scripts (see README.md).
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
