@@ -477,10 +477,14 @@ class ImageProcessingConstants(_StrictModel):
             "T * membrane_snr_full_scale / 255 noise units above background."
         )
     )
+    max_tip_refinement_px: float = Field(
+        default=2.0, ge=0.0, le=30.0,
+        description="The sub-pixel tip refinement may move the tip at most this far from the mask edge [px]."
+    )
     protrusion_leak_fraction: float = Field(
         default=0.4, ge=0.0, lt=1.0,
         description=(
-            "Cut the protrusion mask where it runs into faint signal ahead of the tip: at the first "
+            "When the protrusion mask runs on to the left edge of the box, cut it at the first "
             "stretch of 3+ columns whose signal stays below this fraction of the protrusion's own "
             "level (0 = off). Stops single frames from reading the full box length."
         )

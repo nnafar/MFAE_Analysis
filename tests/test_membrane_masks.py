@@ -368,3 +368,43 @@ def test_leak_cut_works_with_a_high_threshold_on_a_bright_protrusion():
     cut = det._cut_protrusion_leak(m, utils.membrane_snr_image(img, params), PIP)
     assert not cut[:, :3].any()
     assert abs(det._measure_protrusion_from_mask(cut, PIP)[0] - L) <= 3
+
+
+def test_tip_refinement_stays_near_the_mask_edge():
+    """Faint signal ahead of the tip must not pull the refined tip far past the mask edge (Trap 6)."""
+    params = _params()
+    det = _detector(params)
+    img = np.full((H, W), 40, np.uint8)
+    edge = 60
+    img[30:42, edge:PIP] = 200          # protrusion (mask starts at `edge`)
+    img[30:42, edge - 24:edge] = 150    # faint band ahead of it, above 50 % of the protrusion
+    img[30:42, edge - 26] = 40          # one dark column far ahead
+    stat = np.array([edge, 30, PIP - edge, 12, (PIP - edge) * 12])
+    refined = det._refine_edge_subpixel(img, edge, stat)
+    assert edge - 2 <= refined <= edge + 2   # unclamped, it was ~edge - 25
+
+
+def test_thin_tip_inside_the_box_is_not_cut():
+    """A narrow dim tip (Trap 15) is real protrusion; the leak cut only acts at the box edge."""
+    from LineDetection_MFA import LineDetectionMFA
+    yy, xx = np.mgrid[0:H, 0:W]
+    rng = np.random.default_rng(5)
+    sig = np.where((xx >= PIP - 30) & (xx < PIP) & (np.abs(yy - 36) <= 8), 900.0, 0.0)   # wide bright base
+    sig += np.where((xx >= PIP - 50) & (xx < PIP - 30) & (np.abs(yy - 36) <= 2), 250.0, 0.0)  # thin dim tip
+    img = 300 + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.0) + rng.normal(0, 15, (H, W))
+    img = np.clip(img, 0, 65535).astype(np.uint16)
+    params = _params()
+    det = LineDetectionMFA([img], [PIP, 0], params)
+    m = det._keep_closest_blob(det._segment_mask(img, 40, True, PIP), PIP, True)
+    cut = det._cut_protrusion_leak(m, utils.membrane_snr_image(img, params), PIP)
+    assert np.array_equal(cut, m)
+    assert det._measure_protrusion_from_mask(cut, PIP)[0] >= 47
+
+
+def test_cell_leaving_at_the_pulse_is_separated():
+    """Trap 12: the cell leaves right at the pulse; the pulse window must not hide the cell change."""
+    lengths = [0] * 3 + list(range(30, 100, 5)) + [100, 100] + [8] * 12 + [20, 30, 40, 45, 50, 52, 54]
+    drop = lengths.index(8)
+    res = _run_cells(lengths, pulse_idx=drop)          # the drop falls inside the pulse window
+    assert len(res['cell_segments']) >= 2
+    assert res['cell_segments'][0][1] < drop
