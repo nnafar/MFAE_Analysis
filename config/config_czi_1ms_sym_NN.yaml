@@ -36,8 +36,7 @@ experiment_parameters:
   #   COLIBRI: 10x = 0.629, 20x = 0.315, 40x = 0.158; 
   #   ANDOR: 20x = 1.954
   scale_factor: 1.954
-  # Aspiration pressure [Pa] = (P_inlet - P_waste_outlet) x 0.55
-  # (factor from Jessy's COMSOL simulation)
+  # Based on COMSOL simulations, the pressure in the trap is ~1.9 kPa when filled.
   constant_pressure: 1900
   # Seconds between frames; used only if the images have no timing metadata
   frame_interval: 1.75
@@ -80,8 +79,8 @@ workflow_settings:
   # Frame shown during setup, as a fraction of the recording (0.5 = middle)
   selection_frame_fraction: 0.3
   # Starting size of the trap box [µm]; adjust it during setup as needed
-  default_roi_width_um: 115.0
-  default_roi_height_um: 45.0
+  default_roi_width_um: 1150.0
+  default_roi_height_um: 450.0
 
   # ---------------------------------------------------------------
   # COMPUTER
