@@ -42,25 +42,26 @@ with your data folder filled in:
 python MFA_analysis.py --init-config configs/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10"
 ```
 
-The experiment name defaults to the folder's name. To start from one of your other configs instead,
-add `--from config_asp.yaml` (or any config file). You can also just copy a config file by hand.
+The experiment name defaults to the folder's name, and `experiment_type` is set from its voltage.
+To start from one of your other configs instead, add `--from config_asp.yaml` (or any config file).
+You can also just copy a config file by hand.
 
-A config file is short (about 45 lines). It holds what changes between experiments: the data
-folder, experiment name, microscope scale, pressure, frame interval, which analyses to run (dye
-uptake and actin on/off), the channel names and the number of CPU cores. Open it and check the values.
+A user config holds everything about one experiment, and nothing else:
+
+| Section | Settings |
+|---|---|
+| Experiment type | `experiment_type: ep` (electroporation) or `asp` (aspiration only) |
+| Experiment | data folder, experiment name, microscope scale, pressure, frame interval, max traps |
+| Analyses (True / False) | dye uptake, actin, rupture detection, length smoothing, outlier rejection, viscoelastic fitting, kymographs; plus the channel names |
+| Interactive setup | which frame is shown during setup, starting trap-box size |
+| Computer | number of CPU cores |
+
+Every one of these must be present (copy from `config.yaml` if one is missing). Open the file and
+check the values.
 
 **The pulse is read from the experiment name** (see [Naming experiment folders](#5-naming-experiment-folders)):
-`…-100V-1ms-frame10` means a 100 V, 1 ms pulse at file number 10, and `0V` means no pulse. Any
-voltage or duration works; you never type them into the config.
-
-Rupture detection is **off** by default. To switch it on for an experiment, add to its config:
-
-```yaml
-rupture_detection:
-  enable: True
-```
-
-See [How settings work](#how-settings-work) for everything else.
+`…-100V-1ms-frame10` means a 100 V, 1 ms pulse at file number 10. Any voltage or duration works; you
+never type them into the config. `experiment_type` must agree with the name (`asp` needs `0V`).
 
 **Step 2 – check the setup** (opens no windows, writes no results):
 
@@ -102,28 +103,24 @@ python MFA_analysis.py configs/ep_5ms.yaml --data-folder "D:/MFAE/260129_MDAMB23
 
 ### How settings work
 
-Each setting has one owner:
+Settings live in two files that **never share a setting**, so either can be rewritten without
+affecting the other:
 
-| File | Owns | Who edits it |
+| File | Contains | Who edits it |
 |---|---|---|
-| Your config (e.g. `config.yaml`) | The experiment settings: data folder, experiment name, scale, pressure, frame interval, max traps, dye/actin on/off and channel names, CPU cores. **Required**; a run won't start if one is missing. | You, per experiment |
-| `config/defaults.yaml` | Advanced algorithm settings that stay the same between experiments, each explained. Never contains experiment settings. | Developers |
+| Your user config (e.g. `config.yaml`) | Exactly the user settings listed above. | You, per experiment |
+| `config/defaults.yaml` | Pipeline settings: image processing, detection thresholds, fitting, figures. | Developers only |
 
-- **To change an advanced setting for one experiment**, copy it from `config/defaults.yaml` into
-  that experiment's config under the same section name, e.g.
+The pipeline refuses to start if a user config is missing a user setting or contains a pipeline
+setting (a typo also ends up here), or if `config/defaults.yaml` contains a user setting. The list of
+user settings is `USER_KEYS` in `config_loader.py`.
 
-  ```yaml
-  image_processing:
-    wall_clip_margin: 0.3
-  ```
-
-  Don't edit `config/defaults.yaml` for a single experiment; it changes the defaults for everyone.
 - **To see exactly what a run will use:** `python MFA_analysis.py my.yaml --show-config`. Every
-  value that doesn't come from the defaults is marked with the file that set it.
+  value that doesn't come from `config/defaults.yaml` is marked with where it came from.
 - **Every run saves its complete settings** to `Output/<experiment_id>/effective_config.yaml`. That
-  file is itself a full config, so you can rerun an old analysis with exactly the same settings even
-  after the defaults have changed.
-- Old full-length config files (every setting listed) still work unchanged.
+  file is a *full config* (it lists every setting and has no `experiment_type`), so you can rerun an
+  old analysis with exactly the same settings even after the defaults have changed. Old full-length
+  config files work the same way.
 
 ## 3. The interactive setup
 
@@ -178,8 +175,9 @@ Output/<experiment_id>/
 
 Each plot type is one multipanel PDF with every trap as a panel. Panels share their axes and,
 for kymographs, one colour scale, so traps can be compared at a glance. To also get one PDF per
-trap (e.g. for a slide), set `plotting_parameters.save_individual_trap_plots: True`; the number
-of panels per row is `plotting_parameters.multipanel_columns`.
+trap (e.g. for a slide), set `plotting_parameters.save_individual_trap_plots: True` in
+`config/defaults.yaml`; the number of panels per row is `plotting_parameters.multipanel_columns`
+(both are pipeline settings).
 
 Rupture markers on the plots come from the automatic rupture detection, which is not reliable
 enough to cut data on. All CSVs therefore contain every frame; treat the markers as hints.
@@ -228,8 +226,8 @@ live elsewhere.
 | `No .tif files found` | Check `paths.data_folder`. |
 | `Dye analysis is enabled but no file names contain 'C2'` | Set `dye_channel_pattern` to the text that identifies your dye images. |
 | The setup windows don't appear on a re-run | A saved setup is being reused; add `--fresh`. |
-| Windows are too small on a high-resolution screen | Raise `workflow_settings.window_scale_factor` (e.g. 1.5). |
-| The computer becomes sluggish | Lower `workflow_settings.n_workers`. |
+| Windows are too small on a high-resolution screen | Raise `workflow_settings.window_scale_factor` (e.g. 1.5) in `config/defaults.yaml`. |
+| The computer becomes sluggish | Lower `workflow_settings.n_workers` in your config. |
 
 ## 8. For developers
 
@@ -258,6 +256,6 @@ every push (`.github/workflows/tests.yml`).
 | `Bulk_Analysis/` | Multi-experiment pooling, statistics and thesis figures |
 
 When you add a config setting, define it in `config_schema.py` (unknown keys are rejected, so typos
-can't be silently ignored). Then either document it with its value in `config/defaults.yaml`
-(advanced setting) or, if every experiment must choose it, add it to `EXPERIMENT_KEYS` in
-`config_loader.py` and to the experiment configs, starting with `config.yaml`.
+can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value and an
+explanation, in `config/defaults.yaml`; a user setting goes in `USER_KEYS` in `config_loader.py`
+and in every user config, starting with `config.yaml`.

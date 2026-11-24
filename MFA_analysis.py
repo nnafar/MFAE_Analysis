@@ -1047,10 +1047,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _set_yaml_value(text: str, key: str, value: str) -> str:
-    """Replace the value of the first `  key: ...` line, keeping comments and layout."""
+    """Replace the value of the first `key: ...` line, keeping comments and layout."""
     import re
-    quoted = "'" + str(value).replace("'", "''") + "'"
-    pattern = re.compile(rf"^(\s+{key}:)[^\n]*", re.MULTILINE)
+    quoted = value if key == "experiment_type" else "'" + str(value).replace("'", "''") + "'"
+    pattern = re.compile(rf"^(\s*{key}:)[^\n]*", re.MULTILINE)
     if not pattern.search(text):
         raise ValueError(f"no '{key}:' entry to fill in")
     return pattern.sub(lambda m: f"{m.group(1)} {quoted}", text, count=1)
@@ -1060,8 +1060,9 @@ def init_config(dest: Path, source: Path, data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
     """
     Copy an existing config (by default config.yaml) to `dest`, replacing its
-    data folder and experiment name. All other settings are kept, so copying
-    the config of a similar experiment is the quickest way to start a new one.
+    data folder and experiment name, and setting experiment_type from the
+    voltage in the new name (0 V = asp). All other settings are kept, so
+    copying the config of a similar experiment is the quickest way to start.
     """
     if dest.exists():
         logger.error(f"{dest} already exists; choose another name or delete it first.")
@@ -1078,6 +1079,9 @@ def init_config(dest: Path, source: Path, data_folder: Optional[Path],
             text = _set_yaml_value(text, "data_folder", str(data_folder))
         if experiment_id:
             text = _set_yaml_value(text, "experiment_id", experiment_id)
+            name = experiment_naming.parse_experiment_name(experiment_id)
+            if name is not None and "experiment_type:" in text:
+                text = _set_yaml_value(text, "experiment_type", "ep" if name.has_pulse else "asp")
     except ValueError as e:
         logger.error(f"Cannot fill in {source.name}: {e}.")
         return False

@@ -37,7 +37,7 @@ def test_bulk_loader_uses_the_same_rule():
     assert bulk_file_handling.BulkDataLoader.FOLDER_PATTERN is experiment_naming.FOLDER_PATTERN
 
 
-EXPERIMENT_SETTINGS = """
+USER_SETTINGS = """
 experiment_parameters:
   scale_factor: 0.315
   constant_pressure: 1100
@@ -50,15 +50,27 @@ dye_uptake_parameters:
 actin_parameters:
   enable: False
   channel_pattern: 'C3'
+rupture_detection:
+  enable: False
+  enable_smoothing: False
+  enable_outlier_rejection: False
+model_parameters:
+  perform_fitting: False
 workflow_settings:
+  create_kymographs: True
+  selection_frame_fraction: 0.3
+  default_roi_width_um: 115.0
+  default_roi_height_um: 45.0
   n_workers: 1
 """
 
 
-def _write(tmp_path, experiment_id, extra=""):
-    """A minimal valid experiment config; `extra` is merged in as more YAML."""
+def _write(tmp_path, experiment_id, extra="", experiment_type=None):
+    """A minimal valid user config; `extra` is merged in as more YAML."""
     import yaml
-    data = yaml.safe_load(EXPERIMENT_SETTINGS)
+    data = yaml.safe_load(USER_SETTINGS)
+    name = parse_experiment_name(experiment_id)
+    data["experiment_type"] = experiment_type or ("asp" if name and not name.has_pulse else "ep")
     data["paths"] = {"data_folder": tempfile.gettempdir(), "experiment_id": experiment_id}
     data = config_loader.deep_merge(data, yaml.safe_load(extra) or {})
     path = tmp_path / "exp.yaml"
@@ -91,25 +103,36 @@ def test_matching_explicit_value_is_fine(tmp_path):
 
 
 def test_name_without_naming_rule_uses_config_values(tmp_path):
-    path = _write(tmp_path, "my_test_run",
-                  "dye_uptake_parameters:\n  has_pulse: True\n  pulse_frame: 7\n")
+    path = _write(tmp_path, "my_test_run", "dye_uptake_parameters:\n  pulse_frame: 7\n")
     config = MFAConfig(**config_loader.load_layers(path).data)
+    assert config.dye_uptake_parameters.has_pulse is True
     assert config.dye_uptake_parameters.pulse_frame == 7
 
 
-def test_name_without_naming_rule_must_state_the_pulse(tmp_path):
-    with pytest.raises(config_loader.ConfigFileError, match="has_pulse"):
-        config_loader.load_layers(_write(tmp_path, "my_test_run"))
-    path = _write(tmp_path, "my_test_run", "dye_uptake_parameters:\n  has_pulse: True\n")
+def test_name_without_naming_rule_needs_pulse_frame_for_ep(tmp_path):
     with pytest.raises(config_loader.ConfigFileError, match="pulse_frame"):
-        config_loader.load_layers(path)
+        config_loader.load_layers(_write(tmp_path, "my_test_run"))
+    # asp needs no pulse frame
+    path = _write(tmp_path, "my_test_run", experiment_type="asp")
+    assert MFAConfig(**config_loader.load_layers(path).data).dye_uptake_parameters.has_pulse is False
+
+
+@pytest.mark.parametrize("experiment_type, name", [("asp", EP_1MS), ("ep", ASP)])
+def test_experiment_type_must_match_the_voltage(tmp_path, experiment_type, name):
+    with pytest.raises(config_loader.ConfigFileError, match="experiment_type"):
+        config_loader.load_layers(_write(tmp_path, name, experiment_type=experiment_type))
+
+
+def test_invalid_experiment_type(tmp_path):
+    with pytest.raises(config_loader.ConfigFileError, match="'ep'"):
+        config_loader.load_layers(_write(tmp_path, EP_1MS, experiment_type="electro"))
 
 
 # -----------------------------------------------------------------------------
-# Experiment settings live in the experiment config, never in defaults.yaml
+# The user config and defaults.yaml never share a setting
 # -----------------------------------------------------------------------------
 
-def test_missing_experiment_setting_is_reported(tmp_path):
+def test_missing_user_setting_is_reported(tmp_path):
     path = _write(tmp_path, EP_1MS)
     text = path.read_text(encoding="utf-8").replace("  n_workers: 1\n", "")
     path.write_text(text, encoding="utf-8")
@@ -117,21 +140,28 @@ def test_missing_experiment_setting_is_reported(tmp_path):
         config_loader.load_layers(path)
 
 
-def test_defaults_file_holds_no_experiment_settings():
+def test_developer_setting_in_user_config_is_refused(tmp_path):
+    path = _write(tmp_path, EP_1MS, "image_processing:\n  wall_clip_margin: 0.3\n")
+    with pytest.raises(config_loader.ConfigFileError, match="image_processing.wall_clip_margin"):
+        config_loader.load_layers(path)
+
+
+def test_defaults_file_holds_no_user_settings():
     defaults = config_loader.read_yaml(config_loader.DEFAULTS_FILE)
-    assert not set(config_loader._leaf_keys(defaults)) & set(config_loader.EXPERIMENT_KEYS)
+    user_owned = set(config_loader.USER_KEYS) | set(config_loader.OPTIONAL_USER_KEYS)
+    assert not set(config_loader._leaf_keys(defaults)) & user_owned
 
 
-def test_experiment_setting_in_defaults_is_refused(tmp_path, monkeypatch):
+def test_user_setting_in_defaults_is_refused(tmp_path, monkeypatch):
     bad = tmp_path / "defaults.yaml"
     bad.write_text("workflow_settings:\n  n_workers: 2\n", encoding="utf-8")
     monkeypatch.setattr(config_loader, "DEFAULTS_FILE", bad)
-    with pytest.raises(config_loader.ConfigFileError, match="belong in each"):
+    with pytest.raises(config_loader.ConfigFileError, match="belong in the experiment"):
         config_loader.load_layers(_write(tmp_path, EP_1MS))
 
 
 @pytest.mark.parametrize("name", ["config.yaml", "config_5ms.yaml",
                                   "config_100us.yaml", "config_asp.yaml"])
-def test_shipped_configs_set_every_experiment_setting(name):
+def test_shipped_configs_hold_exactly_the_user_settings(name):
     keys = set(config_loader._leaf_keys(config_loader.read_yaml(ROOT / name)))
-    assert set(config_loader.EXPERIMENT_KEYS) <= keys
+    assert keys == set(config_loader.USER_KEYS)

@@ -75,15 +75,23 @@ def test_invalid_config_gives_readable_error(tmp_path, data_folder, capsys):
     dest = tmp_path / "bad.yaml"
     mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
     text = dest.read_text(encoding="utf-8")
-    text = text.replace("scale_factor: 0.315", "scale_factor: -1")
-    text += "\nrupture_detection:\n  enable_spike_chek: True\n"
-    dest.write_text(text, encoding="utf-8")
-
+    dest.write_text(text.replace("scale_factor: 0.315", "scale_factor: -1"), encoding="utf-8")
     assert mfa.main([str(dest), "--check"]) == 1
     # setup_logging() replaces the root handlers, so read the console output.
-    log = capsys.readouterr().out
-    assert "experiment_parameters.scale_factor" in log
-    assert "rupture_detection.enable_spike_chek: unknown setting" in log
+    assert "experiment_parameters.scale_factor: Input should be greater than 0" \
+        in capsys.readouterr().out
+
+
+def test_developer_setting_in_user_config_is_refused(tmp_path, data_folder, capsys):
+    """User configs may only contain user settings (typos land here too)."""
+    dest = tmp_path / "bad.yaml"
+    mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
+    text = dest.read_text(encoding="utf-8").replace(
+        "  n_workers:", "  max_cache_size: 30\n  n_workers:")
+    dest.write_text(text, encoding="utf-8")
+    assert mfa.main([str(dest), "--check"]) == 1
+    out = capsys.readouterr().out
+    assert "not user settings" in out and "workflow_settings.max_cache_size" in out
 
 
 def test_missing_config_file(tmp_path):
@@ -98,12 +106,10 @@ def test_no_arguments_prints_help(capsys):
 def test_show_config_marks_where_values_come_from(tmp_path, data_folder, capsys):
     dest = tmp_path / "my.yaml"
     mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)])
-    dest.write_text(dest.read_text(encoding="utf-8")
-                    + "\nimage_processing:\n  wall_clip_margin: 0.3\n", encoding="utf-8")
     capsys.readouterr()
     assert mfa.main([str(dest), "--show-config"]) == 0
     out = capsys.readouterr().out
-    assert "wall_clip_margin: 0.3  # my.yaml" in out
+    assert "has_pulse: true  # experiment_type" in out
     assert "pulse_frame: 10.0  # experiment name" in out
     assert "scale_factor: 0.315  # my.yaml" in out
     assert "min_area_threshold: 100\n" in out          # from defaults: no comment

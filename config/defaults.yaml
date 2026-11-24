@@ -4,19 +4,23 @@
 # Algorithm settings that stay the same between experiments, with the lab's
 # tuned values. Users don't need to read or edit this file.
 #
-# Experiment settings are NOT here: every experiment config (e.g. config.yaml)
-# must set them itself, and the pipeline refuses to start if one is missing
-# or if one is added here. They are:
+# This file and the user configs (e.g. config.yaml) never share a setting, so
+# either can be rewritten without affecting the other:
+#   - user settings live ONLY in the user configs (each must set all of them),
+#   - the settings here can NOT be changed from a user config.
+# The pipeline refuses to start if either rule is broken. The user settings
+# (USER_KEYS in config_loader.py) are:
+#     experiment_type        ep / asp
 #     paths                  data_folder, experiment_id
 #     experiment_parameters  scale_factor, constant_pressure, frame_interval, max_traps
 #     dye_uptake_parameters  enable, membrane_channel_pattern, dye_channel_pattern
 #     actin_parameters       enable, channel_pattern
-#     workflow_settings      n_workers
-# (the list is EXPERIMENT_KEYS in config_loader.py). The pulse is read from the
-# experiment name.
+#     rupture_detection      enable, enable_smoothing, enable_outlier_rejection
+#     model_parameters       perform_fitting
+#     workflow_settings      create_kymographs, n_workers, selection_frame_fraction,
+#                            default_roi_width_um, default_roi_height_um
+# The pulse voltage, duration and frame are read from the experiment name.
 #
-# An experiment config can still override any setting below for that
-# experiment: copy the line, with its section header, into the config.
 # Changing a value HERE changes it for every experiment.
 #
 # Each run saves the complete combined settings to
@@ -38,11 +42,8 @@ actin_parameters:
 # ===================================================================
 # 2. DEVICE GEOMETRY & VISCOELASTIC FITTING
 # ===================================================================
+# Whether fitting runs is a user setting (model_parameters.perform_fitting).
 model_parameters:
-  # Fit viscoelastic models to the protrusion length. Skipped automatically
-  # for pulsed experiments (electroporation breaks the model assumptions).
-  perform_fitting: False
-
   # Channel cross-section (from the mask design or SEM).
   channel_width_um: 6.7        # [µm]
   channel_height_um: 5.0       # [µm]
@@ -78,13 +79,9 @@ fitting_parameters:
 # ===================================================================
 # 3. CELL ENTRY, EXIT & RUPTURE DETECTION
 # ===================================================================
-# Rupture/DOA detection is a heuristic and is OFF by default. The detector
-# settings below are the tuned values used when it is switched on.
+# Rupture/DOA detection is switched on or off in each experiment config
+# (rupture_detection.enable). These are the tuned detector values used when on.
 rupture_detection:
-  # Master switch for rupture/DOA detection. False = no rupture is ever
-  # reported (entry/exit detection and all measurements still run).
-  enable: False
-
   # --- Monitoring window (inside the pipette, ahead of the cell tip) ---
   rupture_offset_from_tip_px: 7      # Gap between tip and window [px]
   rupture_window_width_px: 5         # Window width [px]
@@ -160,10 +157,9 @@ rupture_detection:
   veto_global_bypass_abs_threshold: 3.0
 
   # --- Protrusion-length cleaning ---
-  enable_smoothing: False            # 3-frame rolling median on the length trace
+  # (enable_smoothing and enable_outlier_rejection are set per experiment.)
   # The following only affect viscoelastic fitting:
   exclude_early_fraction: 0.03
-  enable_outlier_rejection: False
   outlier_rejection_window: 11       # Odd number of frames
   outlier_rejection_std_dev: 2.5
 
@@ -173,7 +169,6 @@ rupture_detection:
 workflow_settings:
   verify_traps_interactively: True
   debug_mode: True                   # Detailed messages in the log file
-  create_kymographs: True
 
   max_cache_size: 25                 # Frames kept in memory during setup
 
@@ -184,14 +179,7 @@ workflow_settings:
   interactive_window_width: 1000
   interactive_window_height: 800
   window_scale_factor: 1.0           # Raise (1.5-2.0) on high-resolution screens
-
-  # Starting size of the trap box.
-  default_roi_width_um: 115.0        # [µm]
-  default_roi_height_um: 45.0        # [µm]
-
-  # Frame shown during setup, as a fraction of the recording (0.5 = middle).
-  # Ignored in GUV mode (guv_settings.selection_frame_index is used).
-  selection_frame_fraction: 0.3
+  # (Trap-box size and the setup frame are set per experiment.)
 
 # ===================================================================
 # 5. FIGURES

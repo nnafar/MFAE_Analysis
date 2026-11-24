@@ -60,10 +60,10 @@ def test_settings_from_each_layer_reach_the_pipeline():
 
 def test_unknown_key_in_section_is_rejected(tmp_path):
     cfg = tmp_path / 'typo.yaml'
-    cfg.write_text((ROOT / 'config.yaml').read_text(encoding='utf-8')
-                   + "\nrupture_detection:\n  enable_lenght_veto: False\n", encoding='utf-8')
-    with pytest.raises(ValidationError):
-        MFAConfig(**_load_config(str(cfg)))
+    text = (ROOT / 'config.yaml').read_text(encoding='utf-8')
+    cfg.write_text(text.replace("  enable_smoothing:", "  enable_smoothin:"), encoding='utf-8')
+    with pytest.raises(config_loader.ConfigFileError, match="enable_smoothin"):
+        _load_config(str(cfg))
 
 
 def test_unimplemented_keys_are_dropped_with_warning(caplog):

@@ -1,10 +1,9 @@
 # ===================================================================
-# MFA EXPERIMENT CONFIG
+# MFA USER CONFIG: one experiment
 # ===================================================================
-# The settings for one experiment. Everything not listed here comes from
-# config/defaults.yaml (the full, commented reference). To change any other
-# setting for this experiment, copy it from there into this file under the
-# same section name.
+# Your experiment, which analyses to run, and your computer. Pipeline
+# settings are in config/defaults.yaml (developers only); the two files never
+# share a setting, and every setting below must be present.
 #
 # Start a new experiment by copying a config, with the paths filled in:
 #   python MFA_analysis.py --init-config my_exp.yaml --data-folder "D:/MFAE/<folder>"
@@ -13,11 +12,18 @@
 # Check a config:      python MFA_analysis.py <this file> --check
 # See all settings:    python MFA_analysis.py <this file> --show-config
 
+# ep  = electroporation (pulse voltage, duration and frame are read from the
+#       experiment name, e.g. ...-100V-1ms-frame10)
+# asp = aspiration only (experiment name has 0V)
+experiment_type: ep
+
+# -------------------------------------------------------------------
+# EXPERIMENT
+# -------------------------------------------------------------------
 paths:
   # Folder with this experiment's .tif images.
   data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10'
-  # Name of the results folder. The pulse voltage, duration and frame are read
-  # from it, so follow the naming rule:
+  # Name of the results folder; must follow the naming rule:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
   #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
   experiment_id: '260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10'
@@ -30,10 +36,13 @@ experiment_parameters:
   constant_pressure: 1100
   # Seconds between frames; used only if the images have no timing metadata
   frame_interval: 0.14
+  # Maximum number of traps to set up
   max_traps: 18
 
-# Which analyses to run (True / False). The membrane channel is always analysed.
-# Whether there was a pulse is read from the experiment name (0V = no pulse).
+# -------------------------------------------------------------------
+# ANALYSES (True / False) AND CHANNELS
+# -------------------------------------------------------------------
+# The membrane channel is always analysed (protrusion length and shape).
 dye_uptake_parameters:
   enable: True
   # Text in the file names that identifies each channel
@@ -44,6 +53,33 @@ actin_parameters:
   enable: True
   channel_pattern: 'C1'
 
+rupture_detection:
+  # Rupture / dead-on-arrival detection (a heuristic; results are hints)
+  enable: False
+  # 3-frame rolling median on the protrusion length trace
+  enable_smoothing: False
+  # Remove outlier length points before viscoelastic fitting
+  enable_outlier_rejection: False
+
+model_parameters:
+  # Viscoelastic fitting (skipped automatically for pulsed experiments)
+  perform_fitting: False
+
 workflow_settings:
+  # Membrane kymographs (CSV + multipanel figure)
+  create_kymographs: True
+
+  # ---------------------------------------------------------------
+  # INTERACTIVE SETUP
+  # ---------------------------------------------------------------
+  # Frame shown during setup, as a fraction of the recording (0.5 = middle)
+  selection_frame_fraction: 0.3
+  # Starting size of the trap box [µm]; adjust it during setup as needed
+  default_roi_width_um: 115.0
+  default_roi_height_um: 45.0
+
+  # ---------------------------------------------------------------
+  # COMPUTER
+  # ---------------------------------------------------------------
   # CPU cores to use; lower it if the computer becomes slow
   n_workers: 3
