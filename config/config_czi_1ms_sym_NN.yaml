@@ -25,11 +25,11 @@ paths:
   image_format: czi
   # The .czi file, or the folder holding it: in a folder with several .czi files,
   # the one named after experiment_id is used.
-  data_folder: 'D:\MFAE\260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10.czi'
+  data_folder: 'E:\Data\MFAE_Symmetric'
   # Name of the results folder (defaults to the .czi file name); must follow the naming rule:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
   #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
-  experiment_id: '260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10'
+  experiment_id: '261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304'
 
 experiment_parameters:
   # Microns per pixel: 
