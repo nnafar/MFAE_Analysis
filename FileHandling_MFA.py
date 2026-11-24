@@ -66,7 +66,14 @@ class FileRead():
 
         all_files = self.find_tif_filenames(self.data_folder)
         if not all_files:
-            raise FileNotFoundError(f"No .tif files found in {self.data_folder}")
+            hint = ""
+            try:
+                if any(p.is_dir() and self.find_tif_filenames(p) for p in Path(self.data_folder).iterdir()):
+                    hint = (" Its sub-folders contain .tif files: to analyse each of them as an "
+                            "experiment, add --batch.")
+            except OSError:
+                pass
+            raise FileNotFoundError(f"No .tif files found in {self.data_folder}.{hint}")
         
         # --- CHANNEL IDENTIFIERS ---
         # Defaults to "C1" and "C2" if not specified in config
@@ -428,7 +435,8 @@ def resolve_czi_file(data_folder: Union[str, Path], experiment_id: Optional[str]
     raise FileNotFoundError(
         f"{len(found)} .czi files in {data_folder} and none is named after the experiment "
         f"('{experiment_id}.czi'). Set experiment_id to one of these file names (without .czi), "
-        f"or data_folder to the file itself: " + ", ".join(p.name for p in found))
+        f"or data_folder to the file itself, or add --batch to analyse all of them: "
+        + ", ".join(p.name for p in found))
 
 
 def valid_timestamps(values, n_frames: int) -> Optional[List[float]]:

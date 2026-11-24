@@ -120,6 +120,9 @@ would follow `python MFA_analysis.py` in a terminal:
 runfile('C:/GitHub/MFAE_Analysis/MFA_analysis.py', args='config/my_experiment.yaml --check', wdir='C:/GitHub/MFAE_Analysis')
 ```
 
+For a batch run, put the parent folder and `--batch` in the same field, e.g.
+`config/my_series.yaml --data-folder "E:/Data/MFAE_Symmetric/1ms_50V" --batch`.
+
 Typing `python MFA_analysis.py ...` in the console gives `SyntaxError: invalid syntax`.
 
 ### Command-line options
@@ -127,6 +130,7 @@ Typing `python MFA_analysis.py ...` in the console gives `SyntaxError: invalid s
 | Option | What it does |
 |---|---|
 | `--check` | Validate config and images, then exit |
+| `--batch` | Analyse every experiment in the data folder with this config (see below) |
 | `--fresh` | Ignore the saved trap setup and redo the interactive steps |
 | `--data-folder PATH` | Use this image folder instead of the one in the config |
 | `--experiment-id NAME` | Name of the results folder (default: the data folder's name) |
@@ -141,6 +145,38 @@ experiments recorded with the same settings:
 ```bash
 python MFA_analysis.py config/my_5ms_series.yaml --data-folder "D:/MFAE/260129_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
 ```
+
+### Many experiments at once (`--batch`)
+
+To analyse every experiment in one folder with one config, point the data folder at the
+**parent** folder and add `--batch`:
+
+| Image format | Parent folder holds | Example |
+|---|---|---|
+| CZI | the `.czi` files | `E:\Data\MFAE_Symmetric\1ms_50V\261119_..._Experiment5-1100Pa-50V-1ms-frame300.czi` |
+| TIFF | one sub-folder per experiment, with its `.tif` files | `E:\Data\MFAE\100us_100V\260114_..._Experiment1-1100Pa-100V-100us-frame10\C1_t001.tif` |
+
+```bash
+python MFA_analysis.py config/my_series.yaml --data-folder "E:/Data/MFAE_Symmetric/1ms_50V" --batch
+```
+
+(Or set `data_folder` in the config to the parent folder and leave out `--data-folder`.)
+
+- **Per experiment, from its name:** the experiment ID (results folder), the pulse, and `ep` / `asp`
+  (a 0 V name is analysed as aspiration only, whatever `experiment_type` says), so one folder can
+  mix both. Everything else (`scale_factor`, channels, analyses, …) comes from the one config, so
+  only batch experiments that were recorded the same way.
+- **Setups first, then analyses:** the interactive setup windows for all experiments come one after
+  another at the start; the long processing then runs without you. Saved setups are reused
+  (`--fresh` redoes them). `Esc` during a setup stops the batch; setups finished so far are kept,
+  so running the batch again continues where you left off.
+- **Skipped:** files or folders whose name doesn't follow the [naming rule](#5-naming-experiment-folders),
+  and sub-folders without `.tif` files.
+- **One failure doesn't stop the batch.** A summary at the end lists each experiment's result; it is
+  also saved as `Output/batch_summary_<date>_<time>.txt`. Each experiment still gets its own results
+  folder and log.
+- `--batch --check` checks every experiment without analysing; `--batch --show-config` prints
+  each experiment's settings.
 
 ### How settings work
 
