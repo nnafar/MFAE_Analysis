@@ -6,8 +6,8 @@
 # share a setting, and every setting below must be present.
 #
 # Start a new experiment by copying a config, with the paths filled in:
-#   python MFA_analysis.py --init-config my_exp.yaml --data-folder "D:/MFAE/<folder>"
-#   (add  --from config_asp.yaml  to copy a different config)
+#   python MFA_analysis.py --init-config config/my_exp.yaml --data-folder "D:/MFAE/<folder>"
+#   (add  --from config/config_asp.yaml  to copy a different config)
 #
 # Check a config:      python MFA_analysis.py <this file> --check
 # See all settings:    python MFA_analysis.py <this file> --show-config

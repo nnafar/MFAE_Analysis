@@ -35,15 +35,17 @@ on Linux install it with your package manager (e.g. `sudo apt install python3-tk
 
 ## 2. Quick start (one experiment)
 
-**Step 1 – create a config file** by copying `config.yaml`, the lab's standard experiment config,
+All config files live in the `config/` folder.
+
+**Step 1 – create a config file** by copying `config/config.yaml`, the lab's standard experiment config,
 with your data folder filled in:
 
 ```bash
-python MFA_analysis.py --init-config configs/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10"
+python MFA_analysis.py --init-config config/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10"
 ```
 
 The experiment name defaults to the folder's name, and `experiment_type` is set from its voltage.
-To start from one of your other configs instead, add `--from config_asp.yaml` (or any config file).
+To start from one of your other configs instead, add `--from config/config_asp.yaml` (or any config file).
 You can also just copy a config file by hand.
 
 A user config holds everything about one experiment, and nothing else:
@@ -56,7 +58,7 @@ A user config holds everything about one experiment, and nothing else:
 | Interactive setup | which frame is shown during setup, starting trap-box size |
 | Computer | number of CPU cores |
 
-Every one of these must be present (copy from `config.yaml` if one is missing). Open the file and
+Every one of these must be present (copy from `config/config.yaml` if one is missing). Open the file and
 check the values.
 
 **The pulse is read from the experiment name** (see [Naming experiment folders](#5-naming-experiment-folders)):
@@ -66,7 +68,7 @@ never type them into the config. `experiment_type` must agree with the name (`as
 **Step 2 – check the setup** (opens no windows, writes no results):
 
 ```bash
-python MFA_analysis.py configs/my_experiment.yaml --check
+python MFA_analysis.py config/my_experiment.yaml --check
 ```
 
 This validates every setting and scans the images with the same code the analysis uses. It reports
@@ -76,7 +78,7 @@ name will be recognised by the bulk analysis. Fix anything marked `PROBLEM` befo
 **Step 3 – run the analysis:**
 
 ```bash
-python MFA_analysis.py configs/my_experiment.yaml
+python MFA_analysis.py config/my_experiment.yaml
 ```
 
 Results are written to `Output/<experiment_id>/`.
@@ -92,13 +94,13 @@ Results are written to `Output/<experiment_id>/`.
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
 | `--show-config` | Print every setting the run would use, and which file set it |
 | `--debug` | Show detailed log messages |
-| `--init-config FILE` | Create a new config by copying `config.yaml` (or `--from OTHER.yaml`) |
+| `--init-config FILE` | Create a new config by copying `config/config.yaml` (or `--from OTHER.yaml`) |
 
 Because `--data-folder` overrides the config, one config can be reused for a whole series of
 experiments recorded with the same settings:
 
 ```bash
-python MFA_analysis.py configs/ep_5ms.yaml --data-folder "D:/MFAE/260129_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
+python MFA_analysis.py config/config_5ms.yaml --data-folder "D:/MFAE/260129_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
 ```
 
 ### How settings work
@@ -108,7 +110,7 @@ affecting the other:
 
 | File | Contains | Who edits it |
 |---|---|---|
-| Your user config (e.g. `config.yaml`) | Exactly the user settings listed above. | You, per experiment |
+| Your user configs (`config/config.yaml`, `config/config_5ms.yaml`, …) | Exactly the user settings listed above. | You, per experiment |
 | `config/defaults.yaml` | Pipeline settings: image processing, detection thresholds, fitting, figures. | Developers only |
 
 The pipeline refuses to start if a user config is missing a user setting or contains a pipeline
@@ -246,7 +248,8 @@ every push (`.github/workflows/tests.yml`).
 |---|---|
 | `MFA_analysis.py` | Entry point and orchestration (command line, setup, parallel workers, export) |
 | `config_schema.py` | Config validation (pydantic); every allowed setting is defined here |
-| `config_loader.py`, `config/defaults.yaml` | Combining the defaults with the user's config |
+| `config_loader.py` | Combining `config/defaults.yaml` with a user config |
+| `config/` | `defaults.yaml` (pipeline settings) and the user configs |
 | `FileHandling_MFA.py` | Finding images, channel matching, timestamps |
 | `ImageProcessing_MFA.py` | Interactive rotation, ROI and trap selection |
 | `LineDetection_MFA.py` | Segmentation, protrusion length, entry/exit and rupture detection |
@@ -258,4 +261,4 @@ every push (`.github/workflows/tests.yml`).
 When you add a config setting, define it in `config_schema.py` (unknown keys are rejected, so typos
 can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value and an
 explanation, in `config/defaults.yaml`; a user setting goes in `USER_KEYS` in `config_loader.py`
-and in every user config, starting with `config.yaml`.
+and in every user config, starting with `config/config.yaml`.

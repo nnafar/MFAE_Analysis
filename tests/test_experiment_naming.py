@@ -163,5 +163,5 @@ def test_user_setting_in_defaults_is_refused(tmp_path, monkeypatch):
 @pytest.mark.parametrize("name", ["config.yaml", "config_5ms.yaml",
                                   "config_100us.yaml", "config_asp.yaml"])
 def test_shipped_configs_hold_exactly_the_user_settings(name):
-    keys = set(config_loader._leaf_keys(config_loader.read_yaml(ROOT / name)))
+    keys = set(config_loader._leaf_keys(config_loader.read_yaml(ROOT / "config" / name)))
     assert keys == set(config_loader.USER_KEYS)

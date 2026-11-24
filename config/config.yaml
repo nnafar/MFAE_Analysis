@@ -6,8 +6,8 @@
 # share a setting, and every setting below must be present.
 #
 # Start a new experiment by copying a config, with the paths filled in:
-#   python MFA_analysis.py --init-config my_exp.yaml --data-folder "D:/MFAE/<folder>"
-#   (add  --from config_asp.yaml  to copy a different config)
+#   python MFA_analysis.py --init-config config/my_exp.yaml --data-folder "D:/MFAE/<folder>"
+#   (add  --from config/config_asp.yaml  to copy a different config)
 #
 # Check a config:      python MFA_analysis.py <this file> --check
 # See all settings:    python MFA_analysis.py <this file> --show-config
@@ -22,11 +22,11 @@ experiment_type: ep
 # -------------------------------------------------------------------
 paths:
   # Folder with this experiment's .tif images.
-  data_folder: 'D:\MFAE\5ms_100V\260114_MDAMB231_WT_Chip1_Experiment5-1100Pa-100V-5ms-frame10'
+  data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10'
   # Name of the results folder; must follow the naming rule:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
   #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
-  experiment_id: '260114_MDAMB231_WT_Chip1_Experiment5-1100Pa-100V-5ms-frame10'
+  experiment_id: '260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10'
 
 experiment_parameters:
   # Microns per pixel: 10x = 0.629, 20x = 0.315, 40x = 0.158
@@ -35,7 +35,7 @@ experiment_parameters:
   # (factor from Jessy's COMSOL simulation)
   constant_pressure: 1100
   # Seconds between frames; used only if the images have no timing metadata
-  frame_interval: 1.75
+  frame_interval: 0.14
   # Maximum number of traps to set up
   max_traps: 18
 
@@ -73,7 +73,7 @@ workflow_settings:
   # INTERACTIVE SETUP
   # ---------------------------------------------------------------
   # Frame shown during setup, as a fraction of the recording (0.5 = middle)
-  selection_frame_fraction: 0.1
+  selection_frame_fraction: 0.3
   # Starting size of the trap box [µm]; adjust it during setup as needed
   default_roi_width_um: 115.0
   default_roi_height_um: 45.0

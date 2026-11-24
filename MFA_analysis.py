@@ -73,7 +73,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 # The lab's standard experiment config; also the template for --init-config.
-DEFAULT_CONFIG = PROJECT_ROOT / "config.yaml"
+DEFAULT_CONFIG = config_loader.CONFIG_DIR / "config.yaml"
 
 
 def default_output_root() -> Path:
@@ -1070,7 +1070,7 @@ def _set_yaml_value(text: str, key: str, value: str) -> str:
 def init_config(dest: Path, source: Path, data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
     """
-    Copy an existing config (by default config.yaml) to `dest`, replacing its
+    Copy an existing config (by default config/config.yaml) to `dest`, replacing its
     data folder and experiment name, and setting experiment_type from the
     voltage in the new name (0 V = asp). All other settings are kept, so
     copying the config of a similar experiment is the quickest way to start.
