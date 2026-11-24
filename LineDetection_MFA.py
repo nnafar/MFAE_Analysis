@@ -820,8 +820,17 @@ class LineDetectionMFA:
             safe_limit = max(0, min(w, limit_x_max))
             binary[:, safe_limit:] = 0
             
-        # 4. Mode-Specific Cleaning (Cell mode only — GUV is handled above)
-        return self._clean_binary_mask(binary)
+        # 4. Protrusion mode: strip thin vertical structures (channel-end
+        #    edge, wall fragments). The protrusion is elongated horizontally,
+        #    so an opening with a 1x5 horizontal kernel keeps it intact while
+        #    removing lines narrower than 5 px that would otherwise merge with
+        #    the protrusion tip.
+        if clip_walls and utils.membrane_enhancement_enabled(self.params):
+            binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN,
+                                      cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1)))
+
+        # 5. Mode-Specific Cleaning (Cell mode only — GUV is handled above)
+        return self._clean_binary_mask(binary, pipette_x=limit_x_max if clip_walls else None)
         
     def _segment_guv_body_by_edges(self, image: np.ndarray, pip_x: int) -> np.ndarray:
         """
@@ -1024,9 +1033,11 @@ class LineDetectionMFA:
             
         return out
     
-    def _clean_binary_mask(self, binary_mask: np.ndarray) -> np.ndarray:
+    def _clean_binary_mask(self, binary_mask: np.ndarray, pipette_x: Optional[int] = None) -> np.ndarray:
         """
         Standard morphological cleaning for non-GUV cells.
+        pipette_x (protrusion mode) protects blobs that span from the left
+        border to the pipette entrance from the left-border removal.
         """
         # --- Step 1: Remove tiny specks (noise) ---
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask)
@@ -1040,7 +1051,10 @@ class LineDetectionMFA:
         filled = cv2.morphologyEx(filtered, cv2.MORPH_CLOSE, kernel_close)
 
         # --- Step 3: Remove any blob touching the left image border ---
-        cleaned = self._remove_left_border_objects(filled)
+        # ...unless it also reaches the pipette entrance: that is a protrusion
+        # long enough to fill the channel (or touching the faint vertical
+        # structure at the channel end), not a wall artefact.
+        cleaned = self._remove_left_border_objects(filled, keep_if_reaches_x=pipette_x)
 
         # --- Step 4: Final gentle cleanup ---
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -1214,7 +1228,8 @@ class LineDetectionMFA:
 
         return output
 
-    def _remove_left_border_objects(self, binary_image: np.ndarray) -> np.ndarray:
+    def _remove_left_border_objects(self, binary_image: np.ndarray,
+                                    keep_if_reaches_x: Optional[int] = None) -> np.ndarray:
         """
         Removes blobs touching the left edge of the image (wall/border artifacts).
 
@@ -1228,6 +1243,18 @@ class LineDetectionMFA:
         Why not just zero-out the left column directly? That would only delete the
         border pixel itself, not the entire connected blob attached to it.
         """
+        if keep_if_reaches_x is not None:
+            # Keep border-touching blobs whose right edge reaches the pipette
+            # entrance: that is the protrusion itself, filling the channel.
+            n, labels, stats, _ = cv2.connectedComponentsWithStats(binary_image)
+            out = binary_image.copy()
+            gap = int(self.params.get('image_processing', {}).get('max_body_entrance_gap_px', 8))
+            for i in range(1, n):
+                x, _, bw, _, _ = stats[i]
+                if x == 0 and x + bw < keep_if_reaches_x - gap:
+                    out[labels == i] = 0
+            return out
+
         padded = np.pad(binary_image, ((0, 0), (1, 0)), mode='constant', constant_values=255)
         h, w = padded.shape
         mask = np.zeros((h + 2, w + 2), np.uint8)
