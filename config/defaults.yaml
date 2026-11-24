@@ -96,6 +96,7 @@ rupture_detection:
   exit_protrusion_threshold_um: 0.5  # Length below which the cell has left
   exit_drop_ratio: 0.05              # Length below this fraction of the previous frame = slip
   exit_sustained_frames: 3           # Consecutive frames the drop must last
+  cell_change_drop_ratio: 0.5         # Length drops below half its recent level and stays = the cell left / a new one came (0 = off)
   exit_at_roi_edge_frames: 3         # Stop tracking once the tip stays at the left ROI edge this many frames (0 = off)
   roi_edge_margin_px: 3              # Tip within this many px of the edge counts as at the edge
   pulse_exit_blanking_frames: 5      # Frames after the pulse ignored for exit detection
@@ -233,6 +234,7 @@ image_processing:
                                      # this value is only used when no per-trap choice exists.
   membrane_temporal_window: 3        # Masks from the median of 3 consecutive frames (1 = off); steadier tips
   membrane_snr_full_scale: 40.0      # SNR shown as 255; threshold T = T*40/255 sigma above background
+  protrusion_leak_fraction: 0.4      # Cut the mask where signal ahead of the tip is < 40 % of the protrusion's (0 = off)
   membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
   membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI
 

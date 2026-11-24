@@ -43,7 +43,7 @@ import logging
 import numpy as np
 import pandas as pd
 import cv2
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 
 import Utils_MFA as utils
@@ -61,7 +61,8 @@ class ActinAnalyzer:
                  threshold_body: int,
                  params:         Dict[str, Any],
                  frame_masks:    List[Tuple] = None,
-                 start_idx:      int = 0):
+                 start_idx:      int = 0,
+                 end_idx:        Optional[int] = None):
 
         self.mem_imgs       = membrane_rois
         self.actin_imgs     = actin_rois
@@ -78,6 +79,7 @@ class ActinAnalyzer:
         # (e.g. when called from older code paths).
         self.frame_masks = frame_masks or []
         self.start_idx = int(start_idx)
+        self.end_idx = end_idx      # last frame of the analysed cell (None = end of recording)
 
         # Pull sub-sections once so callers don't repeat .get() chains.
         exp_p   = params.get('experiment_parameters', {})
@@ -208,6 +210,8 @@ class ActinAnalyzer:
         Returns self.results.
         """
         valid_frames = min(len(self.mem_imgs), len(self.actin_imgs))
+        if self.end_idx is not None:
+            valid_frames = min(valid_frames, int(self.end_idx) + 1)
         if valid_frames == 0:
             return self.results
 
@@ -227,7 +231,7 @@ class ActinAnalyzer:
         
         if has_pulse:
             baseline_end   = min(self.pulse_frame, valid_frames)
-            baseline_start = max(0, baseline_end - self.baseline_len)
+            baseline_start = max(self.start_idx, baseline_end - self.baseline_len)
         else:
             # Anchor to cell entry, not frame 0
             baseline_start = self.start_idx

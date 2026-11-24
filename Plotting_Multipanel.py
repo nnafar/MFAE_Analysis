@@ -246,7 +246,8 @@ def _membrane_kymographs(traps, ncols, scale, **_):
         pd_ = r['plot_data']
         k = pd_['membrane_kymo']
         pm.draw_membrane_kymograph(ax, np.asarray(k['matrix']), pd_['pipette_x'],
-                                   k['protrusions_px'], pd_['trace']['time'], scale)
+                                   k['protrusions_px'], pd_['trace']['time'], scale,
+                                   pulse_time=pd_.get('pulse_time'))
         _title(ax, r)
     _unify_image_limits(axes)
     fig.supxlabel(pm.POSITION_LABEL)
