@@ -2,11 +2,12 @@
 """
 Layered configuration loading.
 
-A run's settings are built from two YAML files, the second one winning:
+A run's settings are built from two YAML files that own different settings:
 
-    1. config/defaults.yaml            every setting, with the lab's tuned values
-    2. the user's own config file      ~45 lines: paths, microscope, which
-                                       analyses to run, plus any overrides
+    1. config/defaults.yaml            advanced/developer settings (tuned values)
+    2. the user's experiment config    the experiment settings in EXPERIMENT_KEYS
+                                       (required), plus optional overrides of
+                                       any advanced setting
 
 plus any command-line overrides. Finally, the pulse settings are read from the
 experiment name (see experiment_naming.py): 0 V means no pulse, otherwise the
@@ -35,6 +36,24 @@ logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 DEFAULTS_FILE = CONFIG_DIR / "defaults.yaml"
+
+# Settings that belong to the experiment. Every experiment config must set
+# them, and config/defaults.yaml must not contain them, so there is never any
+# doubt about where their value comes from.
+EXPERIMENT_KEYS = (
+    "paths.data_folder",
+    "paths.experiment_id",
+    "experiment_parameters.scale_factor",
+    "experiment_parameters.constant_pressure",
+    "experiment_parameters.frame_interval",
+    "experiment_parameters.max_traps",
+    "dye_uptake_parameters.enable",
+    "dye_uptake_parameters.membrane_channel_pattern",
+    "dye_uptake_parameters.dye_channel_pattern",
+    "actin_parameters.enable",
+    "actin_parameters.channel_pattern",
+    "workflow_settings.n_workers",
+)
 
 
 class ConfigFileError(Exception):
@@ -103,7 +122,14 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> 
             f"was a pulse is read from the experiment name; put any other setting you "
             f"need directly in your config file. You can delete the 'preset:' line.")
 
-    layers = [("defaults", read_yaml(DEFAULTS_FILE)), (user_path.name, user)]
+    defaults = read_yaml(DEFAULTS_FILE)
+    misplaced = [k for k in _leaf_keys(defaults) if k in EXPERIMENT_KEYS]
+    if misplaced:
+        raise ConfigFileError(
+            f"{DEFAULTS_FILE} contains experiment settings, which belong in each "
+            f"experiment's config instead: {', '.join(misplaced)}.")
+
+    layers = [("defaults", defaults), (user_path.name, user)]
     if overrides:
         layers.append(("command line", overrides))
 
@@ -113,6 +139,13 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> 
         data = deep_merge(data, layer)
         for key in _leaf_keys(layer):
             sources[key] = label
+
+    missing = [k for k in EXPERIMENT_KEYS if k not in sources]
+    if missing:
+        raise ConfigFileError(
+            f"{user_path} is missing experiment setting(s) that every config must set:\n"
+            + "\n".join(f"  - {k}" for k in missing)
+            + "\nCopy them from config.yaml (or start from it with --init-config).")
 
     layered = LayeredConfig(data=data, sources=sources,
                             layers=[label for label, _ in layers])
@@ -130,6 +163,17 @@ def _apply_experiment_name(layered: LayeredConfig, user_path: Path, explicit: se
     info = parse_experiment_name(experiment_id) if experiment_id else None
     layered.experiment = info
     if info is None:
+        # Name doesn't follow the rule: the config must say whether there was a pulse.
+        dye = layered.data.get("dye_uptake_parameters") or {}
+        needed = ["dye_uptake_parameters.has_pulse"]
+        if dye.get("has_pulse"):
+            needed.append("dye_uptake_parameters.pulse_frame")
+        missing = [k for k in needed if layered.sources.get(k) not in explicit]
+        if missing:
+            raise ConfigFileError(
+                f"{user_path}: the experiment name '{experiment_id}' doesn't follow the naming "
+                f"rule ({NAMING_RULE}), so the pulse can't be read from it. Rename it, or set "
+                f"{' and '.join(missing)} in the config.")
         return
 
     derived = {"has_pulse": info.has_pulse}

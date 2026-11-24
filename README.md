@@ -102,15 +102,15 @@ python MFA_analysis.py configs/ep_5ms.yaml --data-folder "D:/MFAE/260129_MDAMB23
 
 ### How settings work
 
-A run combines two files; your config wins for every setting it lists:
+Each setting has one owner:
 
-```
-config/defaults.yaml     advanced settings that stay the same between experiments, each explained
-  ⬑ your config file     the experiment's settings, plus anything you choose to change
-```
+| File | Owns | Who edits it |
+|---|---|---|
+| Your config (e.g. `config.yaml`) | The experiment settings: data folder, experiment name, scale, pressure, frame interval, max traps, dye/actin on/off and channel names, CPU cores. **Required**; a run won't start if one is missing. | You, per experiment |
+| `config/defaults.yaml` | Advanced algorithm settings that stay the same between experiments, each explained. Never contains experiment settings. | Developers |
 
-- **To change any other setting**, copy it from `config/defaults.yaml` into your own file under the
-  same section name, e.g.
+- **To change an advanced setting for one experiment**, copy it from `config/defaults.yaml` into
+  that experiment's config under the same section name, e.g.
 
   ```yaml
   image_processing:
@@ -257,6 +257,7 @@ every push (`.github/workflows/tests.yml`).
 | `Plotting_MFA.py`, `Plotting_Multipanel.py`, `Kymograph_MFA.py`, `Utils_MFA.py` | Figures and shared helpers |
 | `Bulk_Analysis/` | Multi-experiment pooling, statistics and thesis figures |
 
-When you add a config setting, add it to `config_schema.py` and document it in
-`config/defaults.yaml`: unknown keys are rejected so typos
-can't be silently ignored.
+When you add a config setting, define it in `config_schema.py` (unknown keys are rejected, so typos
+can't be silently ignored). Then either document it with its value in `config/defaults.yaml`
+(advanced setting) or, if every experiment must choose it, add it to `EXPERIMENT_KEYS` in
+`config_loader.py` and to the experiment configs, starting with `config.yaml`.

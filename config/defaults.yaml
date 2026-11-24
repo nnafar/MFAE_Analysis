@@ -1,66 +1,42 @@
 # ===================================================================
-# MFA PIPELINE: DEFAULT SETTINGS (reference, do not edit)
+# MFA PIPELINE: ADVANCED SETTINGS (for developers)
 # ===================================================================
-# Every setting the pipeline understands, with the lab's tuned values.
+# Algorithm settings that stay the same between experiments, with the lab's
+# tuned values. Users don't need to read or edit this file.
 #
-# How settings are combined for a run: this file first, then your own
-# config file (e.g. config.yaml), which wins for every setting it lists.
+# Experiment settings are NOT here: every experiment config (e.g. config.yaml)
+# must set them itself, and the pipeline refuses to start if one is missing
+# or if one is added here. They are:
+#     paths                  data_folder, experiment_id
+#     experiment_parameters  scale_factor, constant_pressure, frame_interval, max_traps
+#     dye_uptake_parameters  enable, membrane_channel_pattern, dye_channel_pattern
+#     actin_parameters       enable, channel_pattern
+#     workflow_settings      n_workers
+# (the list is EXPERIMENT_KEYS in config_loader.py). The pulse is read from the
+# experiment name.
 #
-# To change a setting for your experiment, copy the line (with its section
-# header) into YOUR config file and edit it there. Changing this file
-# changes the defaults for everyone using this copy of the code.
+# An experiment config can still override any setting below for that
+# experiment: copy the line, with its section header, into the config.
+# Changing a value HERE changes it for every experiment.
 #
 # Each run saves the complete combined settings to
 #     Output/<experiment_id>/effective_config.yaml
 # and you can print them with:  python MFA_analysis.py my.yaml --show-config
-#
-# There is no `paths` section here: every experiment sets its own.
 
 # ===================================================================
-# 1. MICROSCOPE & EXPERIMENT
-# ===================================================================
-experiment_parameters:
-  # Microns per pixel of your objective/camera.
-  scale_factor: 0.315          # [µm/px]  10x = 0.629, 20x = 0.315, 40x = 0.158
-
-  # Pressure difference driving the cell into the pipette:
-  # [P_inlet - P_waste-outlet] * 0.55 (factor from Jessy's COMSOL simulation).
-  constant_pressure: 1100      # [Pa]
-
-  # Time between frames. Used only when the images carry no timing metadata
-  # (run with --check to see which one is used).
-  frame_interval: 0.14         # [s]
-
-  # Upper limit on traps found during setup.
-  max_traps: 18
-
-# ===================================================================
-# 2. CHANNELS, PULSE & DYE UPTAKE
+# 1. DYE UPTAKE & ACTIN
 # ===================================================================
 dye_uptake_parameters:
-  enable: True                 # Analyse the dye channel.
-
-  # Pulse: read from the experiment name (…-100V-1ms-frame10); 0 V = no pulse.
-  # Set these only if your experiment name doesn't follow the naming rule.
-  has_pulse: True
-
-  # Text in the file names that identifies each channel.
-  membrane_channel_pattern: "C1"
-  dye_channel_pattern: "C2"
-
-  pulse_frame: 10              # File number of the frame with the pulse
   baseline_frames: 5           # Frames before the pulse used as dye baseline.
 
 actin_parameters:
-  enable: True
-  channel_pattern: "C1"        # Text in the file names of the actin images.
   cortex_thickness_px: 3       # Cortex shell depth (3 px ≈ 1.9 µm at 60x).
   cortex_cv_threshold: 0.4     # Below = continuous cortex, above = patchy.
   pre_pulse_window_frames: 5   # Frames before the pulse for the remodelling score.
   post_pulse_window_frames: 10 # Frames after the pulse for the remodelling score.
 
 # ===================================================================
-# 3. DEVICE GEOMETRY & VISCOELASTIC FITTING
+# 2. DEVICE GEOMETRY & VISCOELASTIC FITTING
 # ===================================================================
 model_parameters:
   # Fit viscoelastic models to the protrusion length. Skipped automatically
@@ -100,7 +76,7 @@ fitting_parameters:
     eta2: [5000.0, 100000.0]   # [Pa·s]
 
 # ===================================================================
-# 4. CELL ENTRY, EXIT & RUPTURE DETECTION
+# 3. CELL ENTRY, EXIT & RUPTURE DETECTION
 # ===================================================================
 # Rupture/DOA detection is a heuristic and is OFF by default. The detector
 # settings below are the tuned values used when it is switched on.
@@ -192,15 +168,13 @@ rupture_detection:
   outlier_rejection_std_dev: 2.5
 
 # ===================================================================
-# 5. WORKFLOW & PERFORMANCE
+# 4. WORKFLOW & PERFORMANCE
 # ===================================================================
 workflow_settings:
   verify_traps_interactively: True
   debug_mode: True                   # Detailed messages in the log file
   create_kymographs: True
 
-  # CPU cores used in parallel. Lower it if the computer becomes sluggish.
-  n_workers: 3
   max_cache_size: 25                 # Frames kept in memory during setup
 
   # Trap spacing as a multiple of the trap height (adjustable during setup).
@@ -220,7 +194,7 @@ workflow_settings:
   selection_frame_fraction: 0.3
 
 # ===================================================================
-# 6. FIGURES
+# 5. FIGURES
 # ===================================================================
 plotting_parameters:
   # Per-trap plots are saved as multipanel PDFs (one per plot type, every trap a panel).
@@ -231,7 +205,7 @@ kymograph_parameters:
   default_line_width_px: 10          # Thickness of the centre-line slice [px]
 
 # ===================================================================
-# 7. IMAGE PROCESSING (change only if segmentation fails)
+# 6. IMAGE PROCESSING (change only if segmentation fails)
 # ===================================================================
 image_processing:
   min_area_threshold: 100            # Smallest object tracked [px²]
@@ -250,7 +224,7 @@ image_processing:
   threshold_preview_clahe: True
 
 # ===================================================================
-# 8. GUV MODE (giant unilamellar vesicles instead of cells)
+# 7. GUV MODE (giant unilamellar vesicles instead of cells)
 # ===================================================================
 guv_settings:
   enable: False
