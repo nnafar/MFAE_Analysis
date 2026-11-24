@@ -1531,12 +1531,11 @@ class LineDetectionMFA:
         self.results['entry_confirmed']   = entry_confirmed
         
         # 2. Exit: Detect cell slip or massive loss after stable period.
-        pulse_frame = self.params.get('dye_uptake_parameters', {}).get('pulse_frame', None)
         pulse_blanking = self.params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
+        p_idx = self._resolve_pulse_frame_idx()
 
-        if pulse_frame is not None:
-            p_idx = int(pulse_frame)
-            blanked_frames = set(range(p_idx - 1, p_idx + pulse_blanking + 1))
+        if p_idx is not None:
+            blanked_frames = set(range(max(0, p_idx - 1), p_idx + pulse_blanking + 1))
         else:
             blanked_frames = set()
 
@@ -1822,17 +1821,9 @@ class LineDetectionMFA:
                         break 
         
         # F. Pulse Context (Pulse-Induced Rupture)
-        # Primary source: an explicit 'pulse_frame_idx' key under rupture_detection
-        # (allows per-trap overrides in edge cases).
-        # Fallback: dye_uptake_parameters.pulse_frame — the normal place where the
-        # experiment-level pulse frame is stored.  The original code only checked
-        # the primary source, so this detector silently never fired for any
-        # standard experiment configured via the dye_uptake block.
-        pulse_frame_idx = r_params.get('pulse_frame_idx')
-        if pulse_frame_idx is None:
-            _dup = self.params.get('dye_uptake_parameters', {})
-            if _dup.get('enable', False) and _dup.get('has_pulse', False):
-                pulse_frame_idx = _dup.get('pulse_frame')
+        # Only runs when the experiment actually has a pulse (see
+        # _resolve_pulse_frame_idx); never for has_pulse: False controls.
+        pulse_frame_idx = self._resolve_pulse_frame_idx()
         if pulse_frame_idx is not None:
             is_pulse_rupture, pulse_rupt_idx = self._detect_pulse_context_rupture(
                 intensities,      
@@ -1984,6 +1975,32 @@ class LineDetectionMFA:
             self.results['rupture_frame_index'] = None
             self.results['rupture_reason'] = None
         
+    def _resolve_pulse_frame_idx(self) -> Optional[int]:
+        """
+        0-based array index of the electroporation pulse, or None when the
+        experiment has no pulse.
+
+        A pulse exists only when dye_uptake_parameters.enable AND has_pulse are
+        both True. Aspiration-only controls keep a pulse_frame value in their
+        config, so pulse_frame alone must never be treated as a real pulse.
+
+        Primary source: rupture_detection.pulse_frame_idx, injected by the MFA
+        worker after converting the filename-based pulse_frame with the
+        detected first-frame number.
+        Fallback (standalone use): pulse_frame - 1, i.e. assume filenames
+        start at t0001, matching UptakeQuantification / ActinQuantification.
+        """
+        dup = self.params.get('dye_uptake_parameters', {})
+        if not (dup.get('enable', False) and dup.get('has_pulse', True)):
+            return None
+        idx = self.params.get('rupture_detection', {}).get('pulse_frame_idx')
+        if idx is not None:
+            return int(idx)
+        pulse_frame = dup.get('pulse_frame')
+        if pulse_frame is None:
+            return None
+        return max(0, int(pulse_frame) - 1)
+
     def _detect_intensity_anomaly(self, trace: List[float], mode: str = 'spike') -> Tuple[bool, Optional[int]]:
         """
         Unified detector for Spikes (transient) and Steps (sustained).

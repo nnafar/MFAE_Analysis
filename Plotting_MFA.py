@@ -762,8 +762,12 @@ def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Pa
     # Extract pulse timing
     pulse_time = None
     dye_params = params.get('dye_uptake_parameters', {})
-    if dye_params.get('enable', False):
-        pulse_idx = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
+    if dye_params.get('enable', False) and dye_params.get('has_pulse', True):
+        # Prefer the index the worker resolved from the filename numbering;
+        # fall back to the t0001 assumption only if it is missing.
+        pulse_idx = valid_results[0]['data'].get('pulse_idx')
+        if pulse_idx is None:
+            pulse_idx = max(0, int(dye_params.get('pulse_frame', 10)) - 1)
         t_first = valid_results[0]['data']['time']
         if 0 <= pulse_idx < len(t_first):
             pulse_time = t_first[pulse_idx]

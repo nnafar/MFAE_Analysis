@@ -129,16 +129,32 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         # the historical assumption) if the field is missing.
         first_frame_number = int(config_dict.get('first_frame_number', 1))
 
-        # --- Inject pulse frame index so the rupture detector can use it ---
+        # --- Resolve the pulse frame once for this worker ---
+        # A pulse only exists when dye analysis is enabled AND has_pulse is
+        # True. Aspiration-only controls (has_pulse: False) usually still carry
+        # a pulse_frame value in the config; it must not reach the rupture
+        # detector, exit blanking, or the CSV/plot pulse annotations, otherwise
+        # controls get a spurious "Pulse-Induced Rupture" (which also bypasses
+        # the length veto).
         dye_params_pre = params.get('dye_uptake_parameters', {})
-        if dye_params_pre.get('enable', False):
-            pulse_frame_cfg = dye_params_pre.get('pulse_frame', 10)
-            pulse_frame_0based = utils.pulse_frame_to_index(pulse_frame_cfg, first_frame_number)
-            # setdefault creates the 'rupture_detection' dict if it doesn't already exist
-            params.setdefault('rupture_detection', {})['pulse_frame_idx'] = pulse_frame_0based
+        pulse_active = bool(dye_params_pre.get('enable', False)
+                            and dye_params_pre.get('has_pulse', True))
+        # Work on a per-trap copy of the sections we modify so injected keys
+        # never leak between traps (n_workers == 1 shares self.params).
+        params = {**params,
+                  'rupture_detection': dict(params.get('rupture_detection', {})),
+                  'dye_uptake_parameters': dict(dye_params_pre)}
+        params['rupture_detection'].pop('pulse_frame_idx', None)
+        params['dye_uptake_parameters'].pop('pulse_frame_idx', None)
+
+        pf_idx: Optional[int] = None
+        if pulse_active:
+            pf_idx = utils.pulse_frame_to_index(dye_params_pre.get('pulse_frame', 10),
+                                                first_frame_number)
+            params['rupture_detection']['pulse_frame_idx'] = pf_idx
             # Expose the resolved index so downstream analyzers can reuse it
             # without re-doing the offset calculation.
-            params.setdefault('dye_uptake_parameters', {})['pulse_frame_idx'] = pulse_frame_0based
+            params['dye_uptake_parameters']['pulse_frame_idx'] = pf_idx
 
         det_full = LineDetectionMFA(rois, [pip_x, 0], params)
         det_res = det_full.run_detection_with_parameters(pip_x, thr_prot, threshold_body=config_dict.get('tuned_threshold_body'))
@@ -154,32 +170,21 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 rupture_time = time_data[rupture_idx]
         
         pulse_time = None
-        dye_params = params.get('dye_uptake_parameters', {})
-        if dye_params.get('enable', False) and dye_params.get('has_pulse', True):
-            # Convert pulse_frame (filename suffix) -> 0-based array index
-            # using the auto-detected first-frame offset.
-            p_idx = utils.pulse_frame_to_index(dye_params.get('pulse_frame', 10),
-                                               first_frame_number)
-            if 0 <= p_idx < len(time_data):
-                pulse_time = time_data[p_idx]
-        
+        if pf_idx is not None and 0 <= pf_idx < len(time_data):
+            pulse_time = time_data[pf_idx]
+
         # 5. Data Safety Check
         if not (det_res and det_res['protrusion_lengths_um'] and any(p > 0 for p in det_res['protrusion_lengths_um'])):
             return {'trap_index': trap_index, 'status': 'no_detection'}
-        
+
         # --- Build the pulse-window frame set ---
         # Used to annotate exported CSVs with an Is_Pulse_Window flag.
-        pulse_frame_val = dye_params.get('pulse_frame', None)
-        pulse_blanking   = params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
-
-        if pulse_frame_val is not None:
-            # Resolve the 0-based array position from the config value using
-            # the same offset rule everywhere in this worker.
-            pf_idx = utils.pulse_frame_to_index(pulse_frame_val, first_frame_number)
+        # Empty for experiments without a pulse.
+        pulse_blanking = params.get('rupture_detection', {}).get('pulse_exit_blanking_frames', 5)
+        if pf_idx is not None:
             # One frame before the pulse position through the blanking window after it.
             blanked_frames: set = set(range(max(0, pf_idx - 1), pf_idx + pulse_blanking + 1))
         else:
-            pf_idx = None
             blanked_frames = set()
 
         # pulse_idx_for_data: 0-based index stored in trap_data for aggregate plots

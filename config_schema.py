@@ -12,9 +12,11 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Union, Optional, Any
 
+from typing import ClassVar
+
 from pydantic import BaseModel, Field, ValidationError
 from pydantic import ConfigDict
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +79,46 @@ def calculate_recommended_fstar(width_um: float, height_um: float) -> Tuple[floa
 
 
 # =============================================================================
+# STRICT BASE MODEL
+# =============================================================================
+# Pydantic's default is extra='ignore': an unknown key in config.yaml is
+# silently thrown away and the code falls back to its hard-coded default.
+# That hid real problems (e.g. `enable_length_veto: False` had no effect).
+# Every section therefore forbids unknown keys, so a typo or a setting the
+# schema doesn't know about fails loudly at start-up.
+#
+# Keys that existing config files still carry but that the pipeline does not
+# implement (or that were renamed) are listed in _IGNORED_KEYS. They are
+# removed with a warning instead of failing validation, so old configs keep
+# working while the user is told the setting does nothing.
+
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    # section model name -> {key: reason it is ignored}
+    _IGNORED_KEYS: ClassVar[Dict[str, str]] = {}
+
+    @model_validator(mode='before')
+    @classmethod
+    def _drop_ignored_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or not cls._IGNORED_KEYS:
+            return data
+        data = dict(data)
+        for key, reason in cls._IGNORED_KEYS.items():
+            if key in data:
+                data.pop(key)
+                logger.warning(f"Config key '{key}' is ignored: {reason}")
+        return data
+
+
+_NOT_IMPLEMENTED = "this check is not implemented in the pipeline; the setting has no effect."
+
+
+# =============================================================================
 # 1. USER-FACING SETTINGS
 # =============================================================================
 
-class PathsConfig(BaseModel):
+class PathsConfig(_StrictModel):
     """Configuration for input/output paths."""
     data_folder: Path
     experiment_id: str = Field(..., min_length=1)
@@ -94,14 +132,14 @@ class PathsConfig(BaseModel):
             raise ValueError(f"Data folder path is not a directory: {v}")
         return v
 
-class ExperimentConfig(BaseModel):
+class ExperimentConfig(_StrictModel):
     """Core experimental parameters."""
     scale_factor: float = Field(gt=0.0, lt=10.0, description="μm/pixel")
     constant_pressure: float = Field(gt=0.0, lt=50000.0, description="Applied pressure in Pa")
     frame_interval: float = Field(gt=0.0, lt=10.0, description="Time between frames in seconds")
     max_traps: int = Field(gt=0, lt=100)
 
-class ModelConfig(BaseModel):
+class ModelConfig(_StrictModel):
     """Parameters for viscoelastic model fitting."""
     perform_fitting: bool = True
     # -------------------------
@@ -189,7 +227,7 @@ class ModelConfig(BaseModel):
                 )
         return v
 
-class RuptureDetectionConfig(BaseModel):
+class RuptureDetectionConfig(_StrictModel):
     """Parameters for detecting membrane rupture and filtering data."""
     enable: bool = True
     intensity_threshold_std: float = 3.0
@@ -262,7 +300,46 @@ class RuptureDetectionConfig(BaseModel):
         default=5, ge=2,
         description="Size of sliding window used by anchored drift detector"
     )
-    
+
+    # Length-drop veto (read by LineDetectionMFA._generate_comprehensive_results)
+    enable_length_veto: bool = Field(
+        default=True,
+        description="Remove rupture candidates whose protrusion length does not drop afterwards"
+    )
+    length_veto_window: int = Field(
+        default=10, ge=1,
+        description="Frames each side of a candidate averaged for the length-drop veto"
+    )
+    rupture_length_drop_ratio: float = Field(
+        default=0.90, gt=0.0, le=1.0,
+        description="post/pre length ratio below which a candidate counts as a real rupture"
+    )
+    veto_bypass_fold_threshold: float = Field(
+        default=2.0, ge=1.0,
+        description="Local haze fold rise that bypasses the length veto"
+    )
+    veto_bypass_abs_threshold: float = Field(
+        default=5.0, ge=0.0,
+        description="Local absolute haze rise that bypasses the length veto (with the fold threshold)"
+    )
+    veto_global_bypass_fold_threshold: float = Field(
+        default=1.7, ge=1.0,
+        description="Haze fold rise vs. early-entry baseline that bypasses the length veto"
+    )
+    veto_global_bypass_abs_threshold: float = Field(
+        default=3.0, ge=0.0,
+        description="Absolute haze rise vs. early-entry baseline that bypasses the length veto"
+    )
+
+    _IGNORED_KEYS: ClassVar[Dict[str, str]] = {
+        'doa_elevated_entry_factor':    "DOA Pattern A (haze collapse) " + _NOT_IMPLEMENTED,
+        'doa_haze_collapse_ratio':      "DOA Pattern A (haze collapse) " + _NOT_IMPLEMENTED,
+        'doa_elevated_baseline_factor': "DOA pre-contaminated-channel " + _NOT_IMPLEMENTED,
+        'doa_channel_drop_ratio':       "DOA pre-contaminated-channel " + _NOT_IMPLEMENTED,
+        'doa_min_acute_delay_frames':   "DOA arbitration guard " + _NOT_IMPLEMENTED,
+        'absolute_intensity_threshold': "absolute-intensity safety net " + _NOT_IMPLEMENTED,
+    }
+
     @field_validator('outlier_rejection_window')
     @classmethod
     def window_must_be_odd(cls, v: int) -> int:
@@ -270,7 +347,7 @@ class RuptureDetectionConfig(BaseModel):
             raise ValueError(f"Outlier rejection window size must be odd, got {v}")
         return v
 
-class GuvSettings(BaseModel):
+class GuvSettings(_StrictModel):
     """Settings that apply specifically to GUV (Giant Unilamellar Vesicle) experiments.
 
     Set enable=True to activate GUV mode. Segmentation uses edge-gradient
@@ -300,7 +377,7 @@ class GuvSettings(BaseModel):
         )
     )
 
-class WorkflowConfig(BaseModel):
+class WorkflowConfig(_StrictModel):
     """Settings that control the pipeline's execution flow."""
     verify_traps_interactively: bool = True
     create_kymographs: bool = True
@@ -322,7 +399,7 @@ class WorkflowConfig(BaseModel):
 # 2. DEVELOPER-LEVEL ALGORITHM & PLOTTING SETTINGS
 # =============================================================================
 
-class ImageProcessingConstants(BaseModel):
+class ImageProcessingConstants(_StrictModel):
     """Advanced settings for image processing algorithms."""
     wall_clip_margin: float = Field(default=0.40, ge=0.0, lt=0.5)
     clahe_clip_limit: float = Field(default=2.0, ge=1.0, le=5.0)
@@ -354,6 +431,14 @@ class ImageProcessingConstants(BaseModel):
         )
     )
 
+    _IGNORED_KEYS: ClassVar[Dict[str, str]] = {
+        'max_body_centroid_dist_px': (
+            "obsolete name. Passing-cell rejection now uses "
+            "max_body_entrance_gap_px (left-edge gap, default 8 px), which "
+            "measures something different, so the old value is not carried over."
+        ),
+    }
+
     @field_validator('clahe_tile_grid_size')
     @classmethod
     def grid_size_valid(cls, v) -> tuple:
@@ -361,18 +446,18 @@ class ImageProcessingConstants(BaseModel):
             raise ValueError(f"Grid size components must be between 2 and 16, got {v}")
         return v
 
-class KymographConstants(BaseModel):
+class KymographConstants(_StrictModel):
     """Advanced settings for kymograph generation."""
     default_kymograph_width_px: int = Field(default=100)
     default_line_width_px: int = Field(default=10)
 
-class PlottingConstants(BaseModel):
+class PlottingConstants(_StrictModel):
     """Default settings for generating Matplotlib figures."""
     default_dpi: int = Field(default=300, gt=70)
     figure_size_large: Tuple[float, float] = Field(default=(18.0, 12.0))
     figure_size_medium: Tuple[float, float] = Field(default=(10.0, 7.0))
 
-class FittingParameters(BaseModel):
+class FittingParameters(_StrictModel):
     """Advanced settings for the optimization."""
     use_global_optimization: bool = Field(default=False)
     
@@ -392,7 +477,7 @@ class FittingParameters(BaseModel):
         "eta2": (5000.0, 100000.0)
     })
 
-class ValidationParameters(BaseModel):
+class ValidationParameters(_StrictModel):
     """Physical plausibility ranges for validating fitted results."""
     plausible_ranges: Dict[str, Tuple[float, float]] = Field(default={
         "E": (100.0, 50000.0),
@@ -404,7 +489,7 @@ class ValidationParameters(BaseModel):
 # 3. TOP-LEVEL CONFIGURATION MODEL
 # =============================================================================
 
-class DyeUptakeConfig(BaseModel):
+class DyeUptakeConfig(_StrictModel):
     """Configuration for electroporation dye uptake analysis."""
     enable: bool = False
     has_pulse: bool = Field(default=True, description="Set to False for control experiments without electroporation.")
@@ -419,7 +504,7 @@ class DyeUptakeConfig(BaseModel):
     pulse_frame: float = Field(default=10.0, ge=0.1, le=1000.0, description="Frame number where pulse is applied (1-based index)")
     baseline_frames: int = Field(default=5, ge=1, description="Number of pre-pulse frames to average for baseline")
     
-class ActinConfig(BaseModel):
+class ActinConfig(_StrictModel):
     """Configuration for actin distribution analysis."""
     enable: bool = False
     channel_pattern: str = Field(default="C3", description="Substring to identify actin images")

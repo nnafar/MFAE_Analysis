@@ -131,13 +131,13 @@ def test_cusum_detects_synthetic_rupture():
         params={'rupture_detection': {
             'enable': True,
             'cusum_settling_buffer': 5,
-            'cusum_baseline_len': 10,
+            'min_cusum_baseline_frames': 10,
             'min_intensity_noise_floor': 0.5,
             'cusum_threshold_factor': 10.0
         }}
     )
-    
-    detected, detected_frame = detector._detect_rupture_from_haze(trace.tolist())
+
+    detected, detected_frame = detector._detect_cusum_drift(trace.tolist())
     
     assert detected is True
     assert abs(detected_frame - ground_truth['rupture_frame']) <= 5
