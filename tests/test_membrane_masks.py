@@ -207,3 +207,62 @@ def test_per_trap_smoothing_does_not_leak_between_traps():
     det = _detector(params)
     det.params['image_processing']['membrane_denoise_sigma_along'] = 5.0
     assert 'membrane_denoise_sigma_along' not in params['image_processing']
+
+
+def test_temporal_median_frame_skips_missing_and_keeps_input():
+    a = np.full((4, 4), 10, np.uint16)
+    b = np.full((4, 4), 100, np.uint16)
+    c = np.full((4, 4), 20, np.uint16)
+    frames = [a, b, c, None]
+    assert np.all(utils.temporal_median_frame(frames, 1, 3) == 20)   # outlier frame b removed
+    assert np.all(utils.temporal_median_frame(frames, 3, 3) == 20)   # None skipped
+    assert b[0, 0] == 100
+
+
+def test_temporal_window_steadies_faint_protrusion_length():
+    """Faint protrusion: masks from a 3-frame median jitter less than per-frame masks."""
+    from LineDetection_MFA import LineDetectionMFA
+    rois = []
+    for t in range(40):
+        img, _ = _channel_scene(int(70 - t * 0.5), prot_amp=55.0, seed=100 + t)
+        rois.append(img)
+
+    def jitter(window):
+        params = _params()
+        params['image_processing'].update({'membrane_temporal_window': window,
+                                           'membrane_denoise_sigma_along': 3.0})
+        params['rupture_detection'] = {'enable_smoothing': False}
+        det = LineDetectionMFA(rois, [PIP, 0], params)
+        det.run_detection_with_parameters(PIP, 40, threshold_body=40)
+        L = np.array([det._measure_protrusion_from_mask(m[0], PIP)[0] if m[0] is not None else 0
+                      for m in det.results['frame_masks']])
+        return np.abs(np.diff(L)).mean()
+
+    assert jitter(3) < 0.8 * jitter(1)
+
+
+def test_tracking_stops_when_tip_leaves_roi():
+    """Tip at the left ROI edge for 3+ frames: tracking stops before it; the next cell is not tracked."""
+    from LineDetection_MFA import LineDetectionMFA
+    yy, xx = np.mgrid[0:H, 0:W]
+    lengths = [0] * 3 + list(range(20, 110, 10)) + [PIP] * 6 + [25, 30, 35, 40, 45]
+    rois = []
+    for k, L in enumerate(lengths):
+        rng = np.random.default_rng(k)
+        img = np.full((H, W), 400.0)
+        sig = np.where(np.hypot(xx - PIP - 24, yy - 36) <= 23, 500.0, 0.0)
+        if L:
+            sig += np.where((xx >= PIP - L) & (xx < PIP) & (np.abs(yy - 36) <= 6), 500.0, 0.0)
+        img = img + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2) + rng.normal(0, 20, (H, W))
+        rois.append(np.clip(img, 0, 65535).astype(np.uint16))
+    params = _params()
+    params['image_processing']['membrane_temporal_window'] = 1
+    params['rupture_detection'] = {'enable_smoothing': False}
+    params['experiment_parameters'] = {'scale_factor': 0.1}   # keep lengths below the clamp limit
+    det = LineDetectionMFA(rois, [PIP, 0], params)
+    res = det.run_detection_with_parameters(PIP, 100, threshold_body=100)
+    first_edge = lengths.index(PIP)
+    assert res['exit_reason'] == 'left ROI'
+    assert res['exit_frame_index'] == first_edge - 1
+    assert all(np.isnan(v) for v in res['protrusion_lengths_um'][first_edge:])
+    assert np.isfinite(res['protrusion_lengths_um'][first_edge - 1])

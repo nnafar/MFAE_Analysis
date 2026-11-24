@@ -253,6 +253,8 @@ class RuptureDetectionConfig(_StrictModel):
     exit_protrusion_threshold_um: float = Field(default=0.5, ge=0.0, description="Length drop (um) to mark cell exit")
     exit_drop_ratio: float = Field(default=0.2, ge=0.0, le=1.0, description="Fractional drop to mark cell exit")
     exit_sustained_frames: int = Field(default=3, ge=1, description="Consecutive frames the length must remain dropped to trigger exit")
+    exit_at_roi_edge_frames: int = Field(default=3, ge=0, description="Stop tracking when the protrusion tip stays at the left ROI edge for this many consecutive frames (0 = off)")
+    roi_edge_margin_px: float = Field(default=3.0, ge=0.0, le=20.0, description="Tip within this many pixels of the left ROI edge counts as 'at the edge'")
 
     doa_retention_ratio: float = Field(default=0.80, ge=0.0, le=10.0, description="Signal stays above 80% of empty trap")
     doa_solidity_threshold: float = Field(default=0.85, ge=0.0, le=1.0, description="Mask is fragmented")
@@ -456,6 +458,15 @@ class ImageProcessingConstants(_StrictModel):
             "of faint, elongated protrusions without blurring their upper/lower edges. "
             "Normally chosen per trap during setup (auto from brightness, F key); this "
             "default only applies when no per-trap value exists."
+        )
+    )
+    membrane_temporal_window: int = Field(
+        default=3, ge=1, le=9,
+        description=(
+            "Masks are built from the pixel-wise median of this many consecutive membrane "
+            "frames (centred on the current one; 1 = off). Removes frame-to-frame noise at the "
+            "threshold (tip jitter, faint protrusions flickering in and out) and single-frame "
+            "transients. Intensities are always read from the raw frame."
         )
     )
     membrane_snr_full_scale: float = Field(

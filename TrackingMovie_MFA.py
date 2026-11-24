@@ -88,7 +88,7 @@ def _trace_panel(lengths_um: np.ndarray, idx: int, width: int, height: int,
                     (170, 170, 170), 1, cv2.LINE_AA)
 
     # event markers
-    for key, label in (('entry', 'entry'), ('exit', 'exit'), ('pulse', 'pulse'), ('rupture', 'rupture')):
+    for key, label in (('entry', 'entry'), ('exit', 'stop'), ('pulse', 'pulse'), ('rupture', 'rupture')):
         i_ev = marks.get(key)
         if i_ev is None or not (0 <= i_ev < n):
             continue
@@ -222,7 +222,10 @@ def save_tracking_movie(rois: Sequence[Optional[np.ndarray]],
         elif entry is not None and i < entry:
             state, s_col = "pre-entry", (170, 170, 170)
         elif exit_ is not None and i > exit_:
-            state, s_col = "exited", (170, 170, 170)
+            reason = det_results.get('exit_reason')
+            state = {"left ROI": "tip left the ROI - tracking stopped",
+                     "slip": "cell exited - tracking stopped"}.get(reason, "exited")
+            s_col = (170, 170, 170)
         else:
             state, s_col = "tracking", (120, 220, 120)
         y0 = img_h + 18

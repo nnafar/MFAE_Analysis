@@ -112,7 +112,8 @@ class LineDetectionMFA:
             'body_solidity': [],            # Cell body solidity
             'entry_frame_index': None,      # Cell enters trap
             'entry_confirmed': True,        # False when protrusion never sustained a valid window
-            'exit_frame_index': None,       # Cell Exit Handling
+            'exit_frame_index': None,       # Cell Exit Handling (last tracked frame)
+            'exit_reason': None,            # 'slip' | 'left ROI' | None (tracked to the end)
             # Rupture Detection
             'downstream_intensities': [],   # Brightness values inside the pipette (for rupture)'
             'rupture_detected': False,      # Boolean flag for rupture event
@@ -1382,6 +1383,20 @@ class LineDetectionMFA:
         _tip_buf: List[float] = []
         _TIP_BUF_N = 3
 
+        # Temporal median of the membrane frames, used ONLY to build the masks
+        # (and the tip's sub-pixel refinement). Segmenting each frame on its own
+        # lets noise at the threshold make the tip jitter and lets single-frame
+        # transients count; a 3-frame median removes both. Intensity readouts
+        # (rupture haze here, dye/actin downstream) still use the raw frame.
+        # Per frame: does the protrusion mask reach the left ROI edge? (used for
+        # the "tip left the ROI" exit; the sub-pixel length is not reliable at
+        # the border, so the mask itself is checked)
+        edge_margin_px = int(round(float(self.params.get('rupture_detection', {}).get('roi_edge_margin_px', 3))))
+        tip_at_edge: List[bool] = []
+
+        t_win = int(self.params.get('image_processing', {}).get('membrane_temporal_window', 3))
+        use_temporal = utils.membrane_enhancement_enabled(self.params) and t_win > 1
+
         for i, image in enumerate(self.roi_images):
             if image is None:
                 protrusion_px_list.append(0); downstream_int_list.append(0)
@@ -1398,10 +1413,17 @@ class LineDetectionMFA:
                 self.results['debug_images'].append(None)
                 self.results['detection_confidence'].append(0.0)
                 self.results['frame_masks'].append((None, None))
+                tip_at_edge.append(False)
                 continue
 
             image_8bit = utils.normalize_to_8bit(image)
             gray_image = image_8bit if len(image_8bit.shape) == 2 else cv2.cvtColor(image_8bit, cv2.COLOR_BGR2GRAY)
+            raw_image = image
+            if use_temporal:
+                image = utils.temporal_median_frame(self.roi_images, i, t_win)
+                mask_gray = utils.normalize_to_8bit(image)
+            else:
+                mask_gray = gray_image
             
             # 1. GENERATE MASKS & PROTRUSION DETECTION
             thr_prot = self.results.get('threshold_prot', threshold)
@@ -1428,8 +1450,9 @@ class LineDetectionMFA:
             mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
             
             # Measure length and area
-            protrusion_len_px, _ = self._measure_protrusion_from_mask(mask_prot, pipette_start_x, gray_image)
+            protrusion_len_px, _ = self._measure_protrusion_from_mask(mask_prot, pipette_start_x, mask_gray)
             protrusion_px_list.append(protrusion_len_px)
+            tip_at_edge.append(bool(mask_prot[:, :edge_margin_px + 1].any()))
             
             # Measure Morphology (Total Area & Body Solidity) using the un-erased body mask
             (a_prot, a_body, a_tot,
@@ -1458,7 +1481,7 @@ class LineDetectionMFA:
             downstream_int_list.append(self._measure_downstream_intensity(gray_image, tip_x, pipette_start_x))
             
             # 3. DEBUG VISUALIZATION
-            debug_image = self._create_debug_visualization(image, mask_prot, pipette_start_x, protrusion_len_px)
+            debug_image = self._create_debug_visualization(raw_image, mask_prot, pipette_start_x, protrusion_len_px)
             self.results['debug_images'].append(debug_image)
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
             self.results['frame_masks'].append((mask_prot, mask_body_standard))
@@ -1622,8 +1645,38 @@ class LineDetectionMFA:
             else:
                 consecutive_exits = 0
                 exit_candidate_idx = None
-                
+        exit_reason = 'slip' if exit_idx < len(protrusions) else None
+
+        # 3. Exit when the protrusion tip leaves the ROI.
+        #    Once the tip reaches the left edge of the trap box, the true length
+        #    is unknown (the mask is cut by the box), and typically the cell
+        #    then moves on through the channel and the next cell arrives, which
+        #    would otherwise be tracked as if it were the same cell. Tracking
+        #    stops at the last frame before the tip stayed at the edge for
+        #    exit_at_roi_edge_frames consecutive frames (the protrusion mask
+        #    reaching within roi_edge_margin_px of the left edge).
+        r_cfg = self.params.get('rupture_detection', {})
+        edge_frames = int(r_cfg.get('exit_at_roi_edge_frames', 3))
+        if edge_frames > 0:
+            run, run_start = 0, None
+            for i in range(entry_idx, min(exit_idx + 1, len(tip_at_edge))):
+                if tip_at_edge[i]:
+                    if run == 0:
+                        run_start = i
+                    run += 1
+                    if run >= edge_frames:
+                        exit_idx = max(entry_idx, run_start - 1)
+                        exit_reason = 'left ROI'
+                        logger.info(
+                            "Protrusion tip left the ROI at frame %d (stayed at the edge for "
+                            "%d+ frames): tracking stops after frame %d.",
+                            run_start, edge_frames, exit_idx)
+                        break
+                else:
+                    run = 0
+
         self.results['exit_frame_index'] = exit_idx
+        self.results['exit_reason'] = exit_reason
         
         # Nullify out-of-bounds data physically isolated to the active period
         for i in range(len(protrusions)):
@@ -1634,6 +1687,9 @@ class LineDetectionMFA:
                 self.results['body_area_um2'][i] = np.nan
                 self.results['total_area_um2'][i] = np.nan
                 self.results['body_solidity'][i] = np.nan
+                for key in ('linear_size_prot_um', 'linear_size_body_um', 'linear_size_total_um',
+                            'volume_prot_um3', 'volume_body_um3', 'volume_total_um3'):
+                    self.results[key][i] = np.nan
         
         self.results['downstream_intensities'] = downstream_int_list
 
@@ -2319,7 +2375,14 @@ class LineDetectionMFA:
             'Volume_Total_um3': self.results['volume_total_um3'],
             'Body_Solidity': self.results['body_solidity'],
             'Downstream_Intensity': self.results['downstream_intensities'],
-            'Detection_Confidence': self.results['detection_confidence']
+            'Detection_Confidence': self.results['detection_confidence'],
+            # Frames the cell was tracked (entry..exit); exit reason on the exit frame.
+            'Tracked': [bool(e <= i <= x) for i, e, x in (
+                (i, self.results.get('entry_frame_index') or 0,
+                 self.results.get('exit_frame_index') if self.results.get('exit_frame_index') is not None else num_frames)
+                for i in range(num_frames))],
+            'Exit_Reason': [(self.results.get('exit_reason') or '') if i == self.results.get('exit_frame_index') else ''
+                            for i in range(num_frames)],
         })
 
         created_files = []

@@ -96,6 +96,8 @@ rupture_detection:
   exit_protrusion_threshold_um: 0.5  # Length below which the cell has left
   exit_drop_ratio: 0.05              # Length below this fraction of the previous frame = slip
   exit_sustained_frames: 3           # Consecutive frames the drop must last
+  exit_at_roi_edge_frames: 3         # Stop tracking once the tip stays at the left ROI edge this many frames (0 = off)
+  roi_edge_margin_px: 3              # Tip within this many px of the edge counts as at the edge
   pulse_exit_blanking_frames: 5      # Frames after the pulse ignored for exit detection
 
   # --- Dead-on-arrival (DOA) check ---
@@ -229,6 +231,7 @@ image_processing:
   membrane_denoise_sigma_along: 1.0  # Smoothing along the channel (x) [px]. Normally chosen per trap
                                      # in the threshold window (auto from cell brightness, F to change);
                                      # this value is only used when no per-trap choice exists.
+  membrane_temporal_window: 3        # Masks from the median of 3 consecutive frames (1 = off); steadier tips
   membrane_snr_full_scale: 40.0      # SNR shown as 255; threshold T = T*40/255 sigma above background
   membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
   membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI

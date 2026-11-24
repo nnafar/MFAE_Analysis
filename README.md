@@ -83,6 +83,19 @@ python MFA_analysis.py config/my_experiment.yaml
 
 Results are written to `Output/<experiment_id>/`.
 
+### Running from Spyder
+
+The commands above are for a terminal. In Spyder's IPython console, pass the same arguments to
+`runfile` instead (everything after `python MFA_analysis.py` goes into `args`):
+
+```python
+runfile('C:/GitHub/MFAE_Analysis/MFA_analysis.py', args='config/my_experiment.yaml --check', wdir='C:/GitHub/MFAE_Analysis')
+```
+
+Or set them once for the Run button: open `MFA_analysis.py`, **Run → Configuration per file…**
+(Ctrl+F6), tick **Command line options** and enter e.g. `config/my_experiment.yaml --check`, with
+the working directory set to the file's directory; then press F5.
+
 ### Command-line options
 
 | Option | What it does |
@@ -169,6 +182,7 @@ own key hints; the common keys are:
 | `R` | Restart the setup from the beginning |
 | `Esc` | Stop the analysis |
 | `W` `A` `S` `D` | Adjust (rotation / ROI position / pipette position / threshold – depends on the step) |
+| `F` | Threshold windows only: change the faint-cell smoothing (see below) |
 | `J` / `L` | Decrease / increase display contrast (does not affect the analysis) |
 | `I` / `K` | Decrease / increase display brightness (does not affect the analysis) |
 
@@ -179,17 +193,68 @@ The steps are:
 3. **Set the trap spacing** so the boxes line up with every trap.
 4. **Mark the pipette entrance** (click).
 5. **Select traps** to analyse (click to toggle).
-6. **Per trap:** confirm the pipette line, then pick the detection threshold
-   (`W`/`S` ±10, `A`/`D` ±1) so the mask follows the cell.
+6. **Per trap:** confirm the pipette line, then pick two thresholds: one for the **protrusion**
+   (inside the channel, between the two guide lines) and one for the **cell body** (right of the
+   pipette line). Drag the line in the histogram or use `W`/`S` ±10, `A`/`D` ±1 until the red mask
+   follows the cell. The preview shows the mask the analysis will use (the analysis additionally takes the median over
+   neighbouring frames, so its masks are a little steadier).
 
 Your choices are saved to `Output/<experiment_id>/session_cache.json`, so a re-run skips the setup
 and goes straight to the analysis. Use `--fresh` to set up again (or delete that file).
+
+### Choosing the threshold
+
+The threshold windows show a **contrast-enhanced membrane image**, not the raw image: background is
+black and the cell is bright (see [How the masks are made](#how-the-masks-are-made)). The threshold
+is shown both as a number (0–255) and as **noise units above background**, e.g.
+`Threshold: 64 (~10.0 sigma above bg)`.
+
+- The histogram has a background peak on the left and the cell on the right. Put the line in the
+  gap between them; anywhere in that gap gives nearly the same mask. Around 5–15 sigma suits most
+  cells.
+- Too low (below ~3 sigma) and background noise joins the mask; too high and the dim protrusion tip
+  is lost.
+- The starting value is chosen automatically and is usually close.
+
+**Faint cells (`F`).** For dim cells the image is smoothed more along the channel, which raises the
+protrusion's signal-to-noise ratio without blurring its upper and lower edges. Each trap starts at
+a level chosen from how bright its cell is (1 px for bright cells, up to 5 px for very faint ones);
+`F` cycles 1 → 2 → 3 → 5 px and the preview updates. The current level is shown in the window
+(`F: faint-cell smoothing (3 px)`). Use the lowest level at which the mask follows the protrusion:
+more smoothing helps faint cells but slightly rounds the tip of bright ones. The level is saved per
+trap together with the thresholds.
+
+### How the masks are made
+
+The membrane channel is used only to build two masks per frame: the **protrusion** and the
+**cell body**. Because no intensity is measured from it, it is enhanced to make the cell outline
+clear and consistent from frame to frame:
+
+1. Each frame is replaced by the pixel-wise median of itself and its two neighbours, so noise at
+   the threshold doesn't make the tip jitter or a faint protrusion flicker in and out
+   (`membrane_temporal_window`, 1 = off). The image is then smoothed (1 px across the channel;
+   along the channel by the per-trap level above).
+2. In every frame, the background level and its noise are measured from the background peak of
+   the histogram.
+3. Each pixel becomes "noise units above background", so one threshold means the same thing in
+   every frame, regardless of bleaching, exposure, or a very bright protrusion tip.
+4. After thresholding, background enclosed by the cell is filled in (membrane stains are brightest
+   at the rim, which would otherwise give ring-shaped masks), and small specks are removed.
+
+**Dye and actin intensities are always measured on the raw pixels.** They only borrow the masks;
+this also holds when actin is imaged in the same channel as the membrane.
+
+The settings are in `config/defaults.yaml` under `image_processing` (`membrane_enhancement`,
+`membrane_denoise_sigma`, `membrane_denoise_sigma_along`, `membrane_temporal_window`, `membrane_snr_full_scale`,
+`membrane_fill_holes`, `membrane_max_hole_fraction`). Set `membrane_enhancement: False` to return
+to the older CLAHE-based segmentation; thresholds picked in one mode are not comparable with the
+other.
 
 ## 4. Output
 
 ```
 Output/<experiment_id>/
-├── <experiment_id>_analysis.log        full log of the run
+├── <experiment_id>_analysis.log        full log of the run, including every trap's analysis
 ├── session_cache.json                  saved interactive setup
 ├── trap_map.png                        which trap is which
 ├── Protrusion Length Detection/
@@ -221,10 +286,25 @@ trap (e.g. for a slide), set `plotting_parameters.save_individual_trap_plots: Tr
 The tracking movies (`workflow_settings.save_tracking_movies`, on by default) show the membrane
 image with the protrusion (magenta) and body (cyan) masks, the pipette entrance, the tracked tip,
 the rupture-monitoring box and the length trace with a cursor, so the tracking can be followed
-frame by frame. They are MJPG `.avi` files; VLC plays them on any system.
+frame by frame. They are MJPG `.avi` files; VLC plays them on any system. The status line shows
+the frame, time, length and tracking state (pre-entry / tracking / exited / entry not confirmed),
+plus PULSE and RUPTURED when they apply. Frame rate and size are set by
+`workflow_settings.tracking_movie_fps` and `tracking_movie_width_px`.
+
+Watching a trap's movie is the quickest way to check its measurement: if the length trace looks
+wrong, the movie shows whether the mask lost the tip, picked up debris, or the cell left the trap.
 
 The bulk analysis reads both this layout and the older flat one (CSVs directly in
 `Full protrusion detection/`, `Dye Uptake/`, `Actin Quantification/`).
+
+**When tracking stops.** A trap is tracked from cell entry until the cell exits. Exit is either a
+slip (the protrusion collapses for 3 frames) or the **protrusion tip leaving the box**: once the
+tip has stayed at the left edge of the trap box for 3 consecutive frames, its true length is
+unknown and the cell usually moves on while the next one arrives. Tracking then stops at the last
+frame before the tip reached the edge, and later frames are left empty (NaN) in every CSV and
+plot (`rupture_detection.exit_at_roi_edge_frames`, 0 = off). The per-trap CSV has a `Tracked`
+column and an `Exit_Reason` (`left ROI` or `slip`) on the last tracked frame. If many traps stop
+this way, draw a wider trap box.
 
 Rupture markers on the plots come from the automatic rupture detection, which is not reliable
 enough to cut data on. All CSVs therefore contain every frame; treat the markers as hints.
@@ -275,6 +355,12 @@ live elsewhere.
 | The setup windows don't appear on a re-run | A saved setup is being reused; add `--fresh`. |
 | Windows are too small on a high-resolution screen | Raise `workflow_settings.window_scale_factor` (e.g. 1.5) in `config/defaults.yaml`. |
 | The computer becomes sluggish | Lower `workflow_settings.n_workers` in your config. |
+| A faint cell is barely captured in the threshold window | Press `F` for more smoothing, then lower the threshold (stay above ~3 sigma). |
+| The mask includes background noise | Raise the threshold, or press `F` to reduce smoothing if it is high. |
+| The protrusion mask reaches the left edge of the box | The protrusion is longer than the trap box, so its true length can't be measured; tracking stops after 3 frames at the edge. Draw a wider ROI (`--fresh`). |
+| `SyntaxError: invalid syntax` when running `python MFA_analysis.py ...` | The command was typed into a Python console. In Spyder use `runfile(...)` (see [Running from Spyder](#running-from-spyder)); otherwise run it in a terminal (Anaconda Prompt) from the repository folder. |
+| `Entry not confirmed for this trap` in the log | No valid protrusion was found for 3 frames in a row, so rupture detection is off for that trap. Watch its tracking movie. If the protrusion is tracked fine but longer than 0.9 × `channel_length_um` (36 µm by default), check `scale_factor`: `--check` shows the file's pixel size next to it. |
+| A tracking movie won't play | Open it in VLC, which plays MJPG `.avi` files on any system. |
 
 ## 8. For developers
 
@@ -297,11 +383,17 @@ every push (`.github/workflows/tests.yml`).
 | `config/` | `defaults.yaml` (pipeline settings) and the user configs |
 | `FileHandling_MFA.py` | Finding images, channel matching, timestamps |
 | `ImageProcessing_MFA.py` | Interactive rotation, ROI and trap selection |
-| `LineDetection_MFA.py` | Segmentation, protrusion length, entry/exit and rupture detection |
+| `LineDetection_MFA.py` | Segmentation, protrusion length, entry/exit and rupture detection, threshold windows |
+| `TrackingMovie_MFA.py` | Per-trap tracking movies |
+| `output_layout.py` | Folder layout of the results (single source of truth; bulk readers use it too) |
 | `UptakeQuantification.py` / `ActinQuantification.py` | Dye and actin channels |
 | `Calculation_MFA.py` / `Fitting_MFA.py` | Geometry, shear metrics and viscoelastic models |
-| `Plotting_MFA.py`, `Plotting_Multipanel.py`, `Kymograph_MFA.py`, `Utils_MFA.py` | Figures and shared helpers |
+| `Plotting_MFA.py`, `Plotting_Multipanel.py`, `Kymograph_MFA.py` | Figures and kymographs |
+| `Utils_MFA.py` | Shared helpers, including the membrane enhancement and mask generation |
 | `Bulk_Analysis/` | Multi-experiment pooling, statistics and thesis figures |
+
+To change where results are written, edit `output_layout.py` only; the pipeline and the bulk
+analysis both read it.
 
 When you add a config setting, define it in `config_schema.py` (unknown keys are rejected, so typos
 can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value and an
