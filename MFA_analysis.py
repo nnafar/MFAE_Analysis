@@ -1321,6 +1321,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if config.paths.image_format == "czi":
         from FileHandling_MFA import resolve_czi_file
         try:
+            import pylibCZIrw  # noqa: F401  (needed to read .czi files)
+        except ImportError:
+            logger.error("Reading .czi files needs the pylibCZIrw package, which isn't installed. "
+                         "Install it (in Spyder: %pip install pylibCZIrw czifile, then restart "
+                         "the kernel; in a terminal: pip install pylibCZIrw czifile).")
+            return 1
+        try:
             czi_file = resolve_czi_file(config.paths.data_folder, config.paths.experiment_id)
         except FileNotFoundError as e:
             logger.error(str(e))
