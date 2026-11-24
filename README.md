@@ -124,6 +124,40 @@ user settings is `USER_KEYS` in `config_loader.py`.
   old analysis with exactly the same settings even after the defaults have changed. Old full-length
   config files work the same way.
 
+### Using .czi files directly
+
+The pipeline can read a Zeiss `.czi` file instead of exported TIFFs. Start from the CZI template:
+
+```bash
+python MFA_analysis.py --init-config config/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10.czi"
+```
+
+When `--data-folder` is a `.czi` file, `config/config_czi.yaml` is copied automatically, and the
+experiment name defaults to the file name without `.czi`, so name the file by the naming rule.
+A CZI config differs from a TIFF one in two places:
+
+```yaml
+paths:
+  image_format: czi          # tiff for a folder of exported .tif files
+  data_folder: 'D:\MFAE\<experiment>.czi'   # or a folder containing exactly one .czi
+
+dye_uptake_parameters:
+  membrane_channel_number: 2 # channel numbers as Fiji shows them (dye first)
+  dye_channel_number: 1
+actin_parameters:
+  channel_number: 2
+```
+
+Channels are chosen by number because the order in the CZI file (dye = 1, membrane = 2) is not the
+order of the exported TIFFs (`C1` = membrane). TIFF configs use the name patterns instead; each
+format's settings are refused in the other, so a TIFF config can't be applied to a CZI by mistake.
+
+Frame numbers count from 1, as in Zen and Fiji, so `frame10` is the 10th frame. Frame times are
+read from the file when it stores them; otherwise `frame_interval` is used. `--check` shows which,
+the channel names, and the file's pixel size next to `scale_factor`. Only single-position,
+single-plane time-lapses are supported. To see how a CZI file is organised without running the
+pipeline, use `python tools/czi_info.py "D:/MFAE/<experiment>.czi"`.
+
 ## 3. The interactive setup
 
 On the first run a series of windows guides you through the trap geometry. Each window shows its

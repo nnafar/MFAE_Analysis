@@ -71,7 +71,8 @@ def _write(tmp_path, experiment_id, extra="", experiment_type=None):
     data = yaml.safe_load(USER_SETTINGS)
     name = parse_experiment_name(experiment_id)
     data["experiment_type"] = experiment_type or ("asp" if name and not name.has_pulse else "ep")
-    data["paths"] = {"data_folder": tempfile.gettempdir(), "experiment_id": experiment_id}
+    data["paths"] = {"image_format": "tiff", "data_folder": tempfile.gettempdir(),
+                     "experiment_id": experiment_id}
     data = config_loader.deep_merge(data, yaml.safe_load(extra) or {})
     path = tmp_path / "exp.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
@@ -148,8 +149,7 @@ def test_developer_setting_in_user_config_is_refused(tmp_path):
 
 def test_defaults_file_holds_no_user_settings():
     defaults = config_loader.read_yaml(config_loader.DEFAULTS_FILE)
-    user_owned = set(config_loader.USER_KEYS) | set(config_loader.OPTIONAL_USER_KEYS)
-    assert not set(config_loader._leaf_keys(defaults)) & user_owned
+    assert not set(config_loader._leaf_keys(defaults)) & config_loader.all_user_keys()
 
 
 def test_user_setting_in_defaults_is_refused(tmp_path, monkeypatch):
@@ -160,8 +160,9 @@ def test_user_setting_in_defaults_is_refused(tmp_path, monkeypatch):
         config_loader.load_layers(_write(tmp_path, EP_1MS))
 
 
-@pytest.mark.parametrize("name", ["config.yaml", "config_5ms.yaml",
-                                  "config_100us.yaml", "config_asp.yaml"])
-def test_shipped_configs_hold_exactly_the_user_settings(name):
+@pytest.mark.parametrize("name, image_format", [
+    ("config.yaml", "tiff"), ("config_5ms.yaml", "tiff"), ("config_100us.yaml", "tiff"),
+    ("config_asp.yaml", "tiff"), ("config_czi.yaml", "czi")])
+def test_shipped_configs_hold_exactly_the_user_settings(name, image_format):
     keys = set(config_loader._leaf_keys(config_loader.read_yaml(ROOT / "config" / name)))
-    assert keys == set(config_loader.USER_KEYS)
+    assert keys == set(config_loader.user_keys_for(image_format))

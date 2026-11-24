@@ -1,0 +1,87 @@
+# ===================================================================
+# MFA USER CONFIG: one experiment
+# ===================================================================
+# Your experiment, which analyses to run, and your computer. Pipeline
+# settings are in config/defaults.yaml (developers only); the two files never
+# share a setting, and every setting below must be present.
+#
+# Start a new experiment by copying a config, with the paths filled in:
+#   python MFA_analysis.py --init-config config/my_exp.yaml --data-folder "D:/MFAE/<folder>"
+#   (for a .czi file:  --data-folder "D:/MFAE/<experiment>.czi" --from config/config_czi.yaml)
+#
+# Check a config:      python MFA_analysis.py <this file> --check
+# See all settings:    python MFA_analysis.py <this file> --show-config
+
+# ep  = electroporation (pulse voltage, duration and frame are read from the
+#       experiment name, e.g. ...-100V-1ms-frame10)
+# asp = aspiration only (experiment name has 0V)
+experiment_type: ep
+
+# -------------------------------------------------------------------
+# EXPERIMENT
+# -------------------------------------------------------------------
+paths:
+  # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
+  image_format: czi
+  # The .czi file (or a folder containing exactly one .czi file).
+  data_folder: 'D:\MFAE\260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10.czi'
+  # Name of the results folder (defaults to the .czi file name); must follow the naming rule:
+  #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
+  #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
+  experiment_id: '260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10'
+
+experiment_parameters:
+  # Microns per pixel: 10x = 0.629, 20x = 0.315, 40x = 0.158
+  scale_factor: 0.315
+  # Aspiration pressure [Pa] = (P_inlet - P_waste_outlet) x 0.55
+  # (factor from Jessy's COMSOL simulation)
+  constant_pressure: 1100
+  # Seconds between frames; used only if the images have no timing metadata
+  frame_interval: 0.14
+  # Maximum number of traps to set up
+  max_traps: 18
+
+# -------------------------------------------------------------------
+# ANALYSES (True / False) AND CHANNELS
+# -------------------------------------------------------------------
+# The membrane channel is always analysed (protrusion length and shape).
+dye_uptake_parameters:
+  enable: True
+  # Channel numbers in the .czi file, counted from 1 as Fiji shows them
+  membrane_channel_number: 2
+  dye_channel_number: 1
+
+actin_parameters:
+  enable: True
+  channel_number: 2
+
+rupture_detection:
+  # Rupture / dead-on-arrival detection (a heuristic; results are hints)
+  enable: False
+  # 3-frame rolling median on the protrusion length trace
+  enable_smoothing: False
+  # Remove outlier length points before viscoelastic fitting
+  enable_outlier_rejection: False
+
+model_parameters:
+  # Viscoelastic fitting (skipped automatically for pulsed experiments)
+  perform_fitting: False
+
+workflow_settings:
+  # Membrane kymographs (CSV + multipanel figure)
+  create_kymographs: True
+
+  # ---------------------------------------------------------------
+  # INTERACTIVE SETUP
+  # ---------------------------------------------------------------
+  # Frame shown during setup, as a fraction of the recording (0.5 = middle)
+  selection_frame_fraction: 0.3
+  # Starting size of the trap box [µm]; adjust it during setup as needed
+  default_roi_width_um: 115.0
+  default_roi_height_um: 45.0
+
+  # ---------------------------------------------------------------
+  # COMPUTER
+  # ---------------------------------------------------------------
+  # CPU cores to use; lower it if the computer becomes slow
+  n_workers: 3

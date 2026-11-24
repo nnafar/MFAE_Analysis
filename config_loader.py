@@ -6,10 +6,12 @@ Configuration loading: two files that never share a setting.
     the user's config          the experiment: experiment_type, paths,
                                microscope, which analyses to run, channel
                                names, interactive setup, CPU cores
-                               (exactly the keys in USER_KEYS)
+                               (exactly user_keys_for(image_format))
 
-A user config must set every key in USER_KEYS (OPTIONAL_USER_KEYS may be
-set) and nothing else; defaults.yaml must contain none of them. Because they
+A user config must set every key in USER_KEYS plus the channel settings for
+its image format (CHANNEL_KEYS: name patterns for TIFF, channel numbers for
+CZI); OPTIONAL_USER_KEYS may be set; nothing else is allowed. defaults.yaml
+must contain none of these. Because they
 never overlap, either file can be rewritten without affecting the other.
 Command-line overrides (data folder, experiment name) are user settings too.
 
@@ -49,6 +51,7 @@ EXPERIMENT_TYPES = ("ep", "asp")   # electroporation, aspiration only
 USER_KEYS = (
     "experiment_type",
     # Experiment
+    "paths.image_format",
     "paths.data_folder",
     "paths.experiment_id",
     "experiment_parameters.scale_factor",
@@ -57,10 +60,7 @@ USER_KEYS = (
     "experiment_parameters.max_traps",
     # Analyses (on/off) and channels
     "dye_uptake_parameters.enable",
-    "dye_uptake_parameters.membrane_channel_pattern",
-    "dye_uptake_parameters.dye_channel_pattern",
     "actin_parameters.enable",
-    "actin_parameters.channel_pattern",
     "rupture_detection.enable",
     "rupture_detection.enable_smoothing",
     "rupture_detection.enable_outlier_rejection",
@@ -73,6 +73,27 @@ USER_KEYS = (
     # Computer
     "workflow_settings.n_workers",
 )
+
+IMAGE_FORMATS = ("tiff", "czi")
+
+# How the channels are chosen depends on the image format; a user config
+# contains the set for its format (required) and not the other one.
+CHANNEL_KEYS = {
+    # TIFF: text in the file names (e.g. 'C1').
+    "tiff": ("dye_uptake_parameters.membrane_channel_pattern",
+             "dye_uptake_parameters.dye_channel_pattern",
+             "actin_parameters.channel_pattern"),
+    # CZI: channel numbers in the file, counted from 1 as Fiji shows them.
+    "czi": ("dye_uptake_parameters.membrane_channel_number",
+            "dye_uptake_parameters.dye_channel_number",
+            "actin_parameters.channel_number"),
+}
+
+
+def user_keys_for(image_format: str) -> tuple:
+    """Every setting a user config with this image format must contain."""
+    return USER_KEYS + CHANNEL_KEYS[image_format]
+
 
 # User settings that may be given but are not required.
 OPTIONAL_USER_KEYS = (
@@ -141,10 +162,18 @@ def _bullets(keys: List[str]) -> str:
     return "\n".join(f"  - {k}" for k in keys)
 
 
+def all_user_keys() -> set:
+    """Every setting that belongs to users, for any image format."""
+    keys = set(USER_KEYS) | set(OPTIONAL_USER_KEYS)
+    for channel_keys in CHANNEL_KEYS.values():
+        keys |= set(channel_keys)
+    return keys
+
+
 def read_defaults() -> Dict[str, Any]:
     """The developer settings; refuses a defaults file that contains user settings."""
     defaults = read_yaml(DEFAULTS_FILE)
-    user_owned = set(USER_KEYS) | set(OPTIONAL_USER_KEYS)
+    user_owned = all_user_keys()
     misplaced = [k for k in _leaf_keys(defaults) if k in user_owned]
     if misplaced:
         raise ConfigFileError(
@@ -182,8 +211,21 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> 
             raise ConfigFileError(
                 f"{user_path}: experiment_type must be 'ep' (electroporation) or 'asp' "
                 f"(aspiration only), not '{experiment_type}'.")
-        allowed = set(USER_KEYS) | set(OPTIONAL_USER_KEYS)
+        image_format = str((user.get("paths") or {}).get("image_format", "")).lower()
+        if image_format not in IMAGE_FORMATS:
+            raise ConfigFileError(
+                f"{user_path}: paths.image_format must be 'tiff' (folder of .tif files) or "
+                f"'czi' (Zeiss .czi file), not '{image_format or '(missing)'}'.")
+        required = user_keys_for(image_format)
+        allowed = set(required) | set(OPTIONAL_USER_KEYS)
         given = set(_leaf_keys(user)) | {"experiment_type"}
+        other = [f for f in IMAGE_FORMATS if f != image_format][0]
+        wrong_format = sorted(given & set(CHANNEL_KEYS[other]))
+        if wrong_format:
+            raise ConfigFileError(
+                f"{user_path} has image_format: {image_format}, but these channel settings are "
+                f"only used with image_format: {other}:\n{_bullets(wrong_format)}\n"
+                f"Use instead:\n{_bullets(list(CHANNEL_KEYS[image_format]))}")
         developer = sorted(given - allowed)
         if developer:
             raise ConfigFileError(
@@ -192,7 +234,7 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> 
                 f"Pipeline settings live only in {DEFAULTS_FILE.relative_to(CONFIG_DIR.parent)} "
                 f"(developers). If this is a typo, compare with config/config.yaml.")
         override_keys = set(_leaf_keys(overrides or {}))
-        missing = [k for k in USER_KEYS if k not in given and k not in override_keys]
+        missing = [k for k in required if k not in given and k not in override_keys]
         if missing:
             raise ConfigFileError(
                 f"{user_path} is missing user setting(s) that every config must set:\n"

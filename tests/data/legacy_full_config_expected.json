@@ -1,5 +1,6 @@
 {
  "actin_parameters": {
+  "channel_number": null,
   "channel_pattern": "C1",
   "cortex_cv_threshold": 0.4,
   "cortex_thickness_px": 3,
@@ -9,9 +10,11 @@
  },
  "dye_uptake_parameters": {
   "baseline_frames": 5,
+  "dye_channel_number": null,
   "dye_channel_pattern": "C2",
   "enable": true,
   "has_pulse": true,
+  "membrane_channel_number": null,
   "membrane_channel_pattern": "C1",
   "pulse_frame": 10.0
  },
@@ -94,7 +97,8 @@
  },
  "paths": {
   "data_folder": "/tmp",
-  "experiment_id": "260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10"
+  "experiment_id": "260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10",
+  "image_format": "tiff"
  },
  "plotting_parameters": {
   "default_dpi": 300,

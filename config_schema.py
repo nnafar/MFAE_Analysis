@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Dict, Union, Optional, Any
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 from pydantic import ConfigDict
@@ -120,17 +120,29 @@ _NOT_IMPLEMENTED = "this check is not implemented in the pipeline; the setting h
 
 class PathsConfig(_StrictModel):
     """Configuration for input/output paths."""
+    # 'tiff': a folder of exported .tif files (channels told apart by file name).
+    # 'czi':  a Zeiss .czi file, or a folder holding exactly one (channels by number).
+    image_format: Literal['tiff', 'czi'] = 'tiff'
     data_folder: Path
     experiment_id: str = Field(..., min_length=1)
-    
+
     @field_validator('data_folder')
     @classmethod
     def folder_must_exist(cls, v: Path) -> Path:
         if not v.exists():
             raise ValueError(f"Data folder does not exist: {v}")
-        if not v.is_dir():
-            raise ValueError(f"Data folder path is not a directory: {v}")
         return v
+
+    @model_validator(mode='after')
+    def data_matches_format(self) -> 'PathsConfig':
+        folder = self.data_folder
+        if self.image_format == 'tiff' and not folder.is_dir():
+            raise ValueError(
+                f"image_format is 'tiff', so data_folder must be a folder of .tif files, "
+                f"not a file: {folder}")
+        if self.image_format == 'czi' and folder.is_file() and folder.suffix.lower() != '.czi':
+            raise ValueError(f"image_format is 'czi' but data_folder is not a .czi file: {folder}")
+        return self
 
 class ExperimentConfig(_StrictModel):
     """Core experimental parameters."""
@@ -508,6 +520,9 @@ class DyeUptakeConfig(_StrictModel):
     # Filename patterns to distinguish channels (e.g., "TRITC" vs "FITC")
     membrane_channel_pattern: str = Field(default="C1", description="Substring to identify membrane images")
     dye_channel_pattern: str = Field(default="C2", description="Substring to identify dye images")
+    # CZI files: channels by number, counted from 1 as Fiji shows them.
+    membrane_channel_number: Optional[int] = Field(default=None, ge=1, description="CZI channel of the membrane images")
+    dye_channel_number: Optional[int] = Field(default=None, ge=1, description="CZI channel of the dye images")
     
     # Analysis parameters
     # pulse_frame is 1-based (matches the frame number shown in your imaging software).
@@ -519,6 +534,7 @@ class ActinConfig(_StrictModel):
     """Configuration for actin distribution analysis."""
     enable: bool = False
     channel_pattern: str = Field(default="C3", description="Substring to identify actin images")
+    channel_number: Optional[int] = Field(default=None, ge=1, description="CZI channel of the actin images")
     cortex_thickness_px: int = Field(default=3, ge=1, description="Cortex shell depth in pixels (3px ≈ 1.9µm at 60x)")
     cortex_cv_threshold: float = Field(default=0.4, gt=0.0, lt=2.0, description="CV threshold: below = uniform cortex, above = patchy")
     pre_pulse_window_frames: int = Field(default=5, ge=1, description="Frames before pulse for remodelling score")
@@ -543,6 +559,22 @@ class MFAConfig(BaseModel):
     validation_parameters: ValidationParameters = Field(default_factory=ValidationParameters)
 
     model_config = ConfigDict(extra='forbid')
+
+    @model_validator(mode='after')
+    def czi_needs_channel_numbers(self) -> 'MFAConfig':
+        if self.paths.image_format != 'czi':
+            return self
+        missing = []
+        if self.dye_uptake_parameters.membrane_channel_number is None:
+            missing.append('dye_uptake_parameters.membrane_channel_number')
+        if self.dye_uptake_parameters.enable and self.dye_uptake_parameters.dye_channel_number is None:
+            missing.append('dye_uptake_parameters.dye_channel_number')
+        if self.actin_parameters.enable and self.actin_parameters.channel_number is None:
+            missing.append('actin_parameters.channel_number')
+        if missing:
+            raise ValueError("image_format is 'czi', so these channel numbers are needed: "
+                             + ", ".join(missing))
+        return self
         
 # =============================================================================
 # 4. VALIDATION FUNCTION
