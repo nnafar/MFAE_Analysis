@@ -11,3 +11,7 @@ Pillow>=11.0.0
 tqdm>=4.66.5
 PyYAML>=6.0.2
 pydantic>=2.10.0
+
+# Reading Zeiss .czi files directly (paths.image_format: czi)
+pylibCZIrw>=4.0.0
+czifile>=2019.7.2

@@ -18,6 +18,7 @@ import pickle
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional, Union, Tuple
 from pathlib import Path
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -375,6 +376,219 @@ class FileRead():
     def read_img(self, filename: Path) -> np.ndarray:
         """Reads an image file using OpenCV."""
         return cv2.imread(str(filename), cv2.IMREAD_UNCHANGED)
+
+# =============================================================================
+# ZEISS CZI FILES
+# =============================================================================
+
+@dataclass(frozen=True)
+class CziFrame:
+    """
+    One image plane of a CZI file. Stands in for a TIFF file path in the
+    frame lists (tif_files / dye_files / actin_files), so the rest of the
+    pipeline doesn't need to know which format it is reading.
+    """
+    path: Path
+    channel: int        # 0-based channel index in the file
+    t: int              # 0-based time index
+
+    @property
+    def frame_number(self) -> int:
+        """1-based frame number, as Zen and Fiji show it (and as `frame<N>` counts)."""
+        return self.t + 1
+
+    @property
+    def name(self) -> str:
+        return f"{self.path.name}[channel {self.channel + 1}, frame {self.frame_number}]"
+
+    def __str__(self) -> str:
+        return f"{self.path}[C{self.channel + 1},T{self.frame_number}]"
+
+
+def resolve_czi_file(data_folder: Union[str, Path]) -> Path:
+    """The .czi file itself, or the single .czi file inside a folder."""
+    data_folder = Path(data_folder)
+    if data_folder.is_file():
+        return data_folder
+    found = sorted(p for p in data_folder.iterdir() if p.suffix.lower() == '.czi')
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise FileNotFoundError(f"No .czi file found in {data_folder}")
+    raise FileNotFoundError(
+        f"{len(found)} .czi files in {data_folder}; set data_folder to the one to analyse: "
+        + ", ".join(p.name for p in found))
+
+
+def valid_timestamps(values, n_frames: int) -> Optional[List[float]]:
+    """
+    Frame times relative to the first frame, or None if they can't be trusted
+    (wrong count, not strictly increasing, or not finite).
+    """
+    try:
+        times = [float(v) for v in values]
+    except (TypeError, ValueError):
+        return None
+    if len(times) < n_frames or n_frames == 0:
+        return None
+    times = times[:n_frames]
+    if not all(np.isfinite(times)) or any(b <= a for a, b in zip(times, times[1:])):
+        return None
+    return [t - times[0] for t in times]
+
+
+class CziRead(FileRead):
+    """
+    Reads a Zeiss .czi time-lapse with the same interface as FileRead.
+
+    Channels are chosen by number (counted from 1, as Fiji shows them):
+    dye_uptake_parameters.membrane_channel_number / dye_channel_number and
+    actin_parameters.channel_number. Frame times come from the file's
+    TimeStamps attachment when present and plausible; otherwise the config's
+    frame_interval is used and the log says so.
+    """
+
+    def __init__(self, data_folder: Union[str, Path], params: Dict[str, Any]) -> None:
+        super().__init__(data_folder, params)
+        self.actin_files: List[CziFrame] = []
+        self.czi_path: Optional[Path] = None
+        self.channel_names: List[str] = []
+        self.pixel_size_um: Optional[float] = None
+        self._reader = None
+
+    # -- file access ---------------------------------------------------------
+    def _open(self):
+        if self._reader is None:
+            from pylibCZIrw import czi as pyczi   # only needed for CZI input
+            # A persistent reader (open_czi is a context manager for one-off use).
+            self._reader = pyczi.CziReader(str(self.czi_path))
+        return self._reader
+
+    def close(self) -> None:
+        if self._reader is not None:
+            self._reader.close()
+            self._reader = None
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state['_reader'] = None     # file handles don't cross process boundaries
+        return state
+
+    def read_img(self, frame: CziFrame) -> np.ndarray:
+        img = self._open().read(plane={"T": frame.t, "C": frame.channel, "Z": 0})
+        if img.ndim == 3 and img.shape[2] == 1:
+            img = img[:, :, 0]
+        return img
+
+    # -- loading -------------------------------------------------------------
+    def run(self) -> None:
+        logger.info("Reading CZI file...")
+        self.czi_path = resolve_czi_file(self.data_folder)
+        reader = self._open()
+        box = reader.total_bounding_box
+        n_t = box.get('T', (0, 1))[1]
+        n_c = box.get('C', (0, 1))[1]
+        n_z = box.get('Z', (0, 1))[1]
+        if n_z > 1:
+            raise ValueError(f"{self.czi_path.name} is a z-stack ({n_z} planes); "
+                             "only single-plane time-lapses are supported.")
+        try:
+            scenes = reader.scenes_bounding_rectangle
+        except Exception:
+            scenes = {}
+        if len(scenes) > 1:
+            raise ValueError(f"{self.czi_path.name} has {len(scenes)} scenes/positions; "
+                             "only single-position recordings are supported.")
+        self._read_metadata(reader)
+        logger.info(f"CZI file: {self.czi_path.name} | {n_t} frames | {n_c} channels: "
+                    + ", ".join(f"{i}={n!r}" for i, n in enumerate(self.channel_names, 1)))
+
+        dye_p = self.params.get('dye_uptake_parameters', {})
+        actin_p = self.params.get('actin_parameters', {})
+
+        def frames(number: Optional[int], label: str) -> List[CziFrame]:
+            if number is None:
+                return []
+            if not 1 <= number <= n_c:
+                raise ValueError(f"{label} channel number {number} doesn't exist: "
+                                 f"{self.czi_path.name} has channels 1-{n_c}.")
+            return [CziFrame(self.czi_path, number - 1, t) for t in range(n_t)]
+
+        self.tif_files = self._reject_black_frames(
+            frames(dye_p.get('membrane_channel_number'), 'Membrane'))
+        if dye_p.get('enable', False):
+            self.dye_files = self._reject_black_frames(
+                frames(dye_p.get('dye_channel_number'), 'Dye'))
+        if actin_p.get('enable', False):
+            if actin_p.get('channel_number') == dye_p.get('membrane_channel_number'):
+                self.actin_files = list(self.tif_files)
+            else:
+                self.actin_files = self._reject_black_frames(
+                    frames(actin_p.get('channel_number'), 'Actin'))
+
+        # Same synchronisation as for TIFFs: trim every channel to the shortest.
+        lengths = [len(l) for l in (self.tif_files, self.dye_files, self.actin_files) if l]
+        n = min(lengths) if lengths else 0
+        self.tif_files, self.dye_files, self.actin_files = (
+            l[:n] for l in (self.tif_files, self.dye_files, self.actin_files))
+
+        times = valid_timestamps(self._timestamps() or [], n)
+        if times is not None:
+            self.time_data = times
+            self.metadata_method_used = "CZI timestamps"
+        else:
+            logger.warning("No usable frame timestamps in the CZI file. "
+                           "Using frame_interval from the config.")
+            self.time_data = self.create_manual_timestamps()
+
+        self.num_files = n
+        constant_pressure = self.params.get('constant_pressure', 1100)
+        self.pressure_data = [constant_pressure] * n
+        self.frames = np.arange(0, n)
+        self.results['frames'] = self.frames
+        self.results['time_data'] = self.time_data
+        logger.info(f"Successfully loaded {n} frames for analysis ({self.metadata_method_used}).")
+
+    def _read_metadata(self, reader) -> None:
+        try:
+            info = reader.metadata["ImageDocument"]["Metadata"]
+        except Exception:
+            return
+        channels = (info.get("Information", {}).get("Image", {}).get("Dimensions", {})
+                    .get("Channels", {}).get("Channel", []))
+        if isinstance(channels, dict):
+            channels = [channels]
+        self.channel_names = [str(c.get("@Name") or c.get("Fluor") or "") for c in channels]
+        distances = info.get("Scaling", {}).get("Items", {}).get("Distance", [])
+        if isinstance(distances, dict):
+            distances = [distances]
+        for d in distances:
+            if d.get("@Id") == "X" and d.get("Value"):
+                self.pixel_size_um = float(d["Value"]) * 1e6   # stored in metres
+
+    def _timestamps(self) -> Optional[List[float]]:
+        """Raw frame times (seconds) from the TimeStamps attachment, if readable."""
+        try:
+            import czifile
+        except ImportError:
+            logger.warning("czifile is not installed, so CZI frame timestamps can't be read "
+                           "(pip install czifile).")
+            return None
+        try:
+            with czifile.CziFile(str(self.czi_path)) as czi:
+                for entry in czi.attachments():
+                    if entry.attachment_entry.name == "TimeStamps":
+                        return list(np.asarray(entry.data(), dtype=float).ravel())
+        except Exception as e:
+            logger.warning(f"Could not read CZI timestamps: {e}")
+        return None
+
+
+def make_file_reader(data_folder: Union[str, Path], params: Dict[str, Any]) -> FileRead:
+    """The reader for paths.image_format ('tiff' -> FileRead, 'czi' -> CziRead)."""
+    image_format = params.get('paths', {}).get('image_format', 'tiff')
+    return CziRead(data_folder, params) if image_format == 'czi' else FileRead(data_folder, params)
+
 
 class FileSave():
     """Handles saving of analysis results."""

@@ -755,6 +755,9 @@ def get_first_frame_number(file_list) -> int:
     """
     if not file_list:
         return 1
+    # CZI frames carry their (1-based) frame number directly.
+    if hasattr(file_list[0], 'frame_number'):
+        return int(file_list[0].frame_number)
     n = extract_frame_number_from_filename(file_list[0])
     return n if n is not None else 1
 

@@ -21,6 +21,9 @@ experiment_type: ep
 # EXPERIMENT
 # -------------------------------------------------------------------
 paths:
+  # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
+  # (to analyse .czi files, start from config/config_czi.yaml)
+  image_format: tiff
   # Folder with this experiment's .tif images.
   data_folder: 'D:\MFAE\100us_100V\260402_MDAMB231_WT_Chip2_Experiment3-1100Pa-100V-100us-frame111'
   # Name of the results folder; must follow the naming rule:
@@ -45,7 +48,7 @@ experiment_parameters:
 # The membrane channel is always analysed (protrusion length and shape).
 dye_uptake_parameters:
   enable: True
-  # Text in the file names that identifies each channel
+  # Text in the file names that identifies each channel (C1, C2 as exported)
   membrane_channel_pattern: 'C1'
   dye_channel_pattern: 'C2'
 

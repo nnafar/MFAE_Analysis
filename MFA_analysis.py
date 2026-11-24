@@ -51,7 +51,7 @@ from tqdm import tqdm
 from pydantic import ValidationError
 
 # Internal Imports
-from FileHandling_MFA import FileRead, FileSave
+from FileHandling_MFA import FileRead, FileSave, make_file_reader
 from ImageProcessing_MFA import CropImage
 from LineDetection_MFA import LineDetectionMFA
 from Calculation_MFA import compute_reff, compute_shear_metrics
@@ -72,8 +72,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 
-# The lab's standard experiment config; also the template for --init-config.
-DEFAULT_CONFIG = config_loader.CONFIG_DIR / "config.yaml"
+# The lab's standard experiment configs; templates for --init-config.
+DEFAULT_CONFIG = config_loader.CONFIG_DIR / "config.yaml"          # TIFF folders
+DEFAULT_CZI_CONFIG = config_loader.CONFIG_DIR / "config_czi.yaml"  # .czi files
+
+
+def default_experiment_id(data_folder: Path) -> str:
+    """Experiment name implied by the data location: the folder name, or a .czi file's name."""
+    data_folder = Path(data_folder)
+    return data_folder.stem if data_folder.suffix.lower() == ".czi" else data_folder.name
 
 
 def default_output_root() -> Path:
@@ -498,7 +505,7 @@ class MFAAnalysis:
         self.cleanup_orphaned_temp_dirs()
         
         # Helper classes for File I/O
-        self.file_reader = FileRead(self.path, self.params)
+        self.file_reader = make_file_reader(self.path, self.params)
         self.results_dir, self.subdirs = self._setup_output_directory()
         self.file_saver = FileSave(output_dir=self.results_dir)
         
@@ -559,6 +566,8 @@ class MFAAnalysis:
         return results_dir, subdirs
     
     def cleanup(self):
+        if hasattr(self, 'file_reader') and hasattr(self.file_reader, 'close'):
+            self.file_reader.close()
         if hasattr(self, 'temp_dir') and self.temp_dir.exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)
                     
@@ -1051,9 +1060,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--init-config", type=Path, metavar="NEW_CONFIG",
                         help="Create a new config by copying an existing one with the new "
                              "--data-folder / --experiment-id filled in, then exit.")
-    parser.add_argument("--from", dest="copy_from", type=Path, default=DEFAULT_CONFIG,
+    parser.add_argument("--from", dest="copy_from", type=Path, default=None,
                         metavar="CONFIG",
-                        help=f"Config copied by --init-config (default: {DEFAULT_CONFIG.name}).")
+                        help=f"Config copied by --init-config (default: {DEFAULT_CONFIG.name}, "
+                             f"or {DEFAULT_CZI_CONFIG.name} when --data-folder is a .czi file).")
     return parser
 
 
@@ -1067,7 +1077,7 @@ def _set_yaml_value(text: str, key: str, value: str) -> str:
     return pattern.sub(lambda m: f"{m.group(1)} {quoted}", text, count=1)
 
 
-def init_config(dest: Path, source: Path, data_folder: Optional[Path],
+def init_config(dest: Path, source: Optional[Path], data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
     """
     Copy an existing config (by default config/config.yaml) to `dest`, replacing its
@@ -1078,13 +1088,21 @@ def init_config(dest: Path, source: Path, data_folder: Optional[Path],
     if dest.exists():
         logger.error(f"{dest} already exists; choose another name or delete it first.")
         return False
+    is_czi = data_folder is not None and Path(data_folder).suffix.lower() == ".czi"
+    if source is None:
+        source = DEFAULT_CZI_CONFIG if is_czi else DEFAULT_CONFIG
     if not source.exists():
         logger.error(f"Config to copy not found: {source}")
         return False
 
     text = source.read_text(encoding="utf-8")
+    if is_czi and "image_format: czi" not in text:
+        logger.error(f"{data_folder} is a .czi file but {source.name} is a TIFF config. "
+                     f"Start from {DEFAULT_CZI_CONFIG.relative_to(PROJECT_ROOT)} instead "
+                     f"(--from), or from another CZI config.")
+        return False
     if data_folder is not None:
-        experiment_id = experiment_id or data_folder.name
+        experiment_id = experiment_id or default_experiment_id(data_folder)
     try:
         if data_folder is not None:
             text = _set_yaml_value(text, "data_folder", str(data_folder))
@@ -1116,7 +1134,7 @@ def load_config(config_path: Path, data_folder: Optional[Path] = None,
     overrides: Dict[str, Any] = {}
     if data_folder is not None:
         overrides["data_folder"] = str(data_folder)
-        experiment_id = experiment_id or data_folder.name
+        experiment_id = experiment_id or default_experiment_id(data_folder)
     if experiment_id is not None:
         overrides["experiment_id"] = experiment_id
 
@@ -1167,35 +1185,57 @@ def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
     problems: List[str] = []
     notes: List[str] = []
 
-    reader = FileRead(config.paths.data_folder, params)
+    reader = make_file_reader(config.paths.data_folder, params)
     try:
         reader.run()
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         logger.error(str(e))
         return False
+    finally:
+        if hasattr(reader, "close"):
+            reader.close()
 
     dye = params["dye_uptake_parameters"]
     actin = params["actin_parameters"]
     n = len(reader.tif_files)
+    is_czi = config.paths.image_format == "czi"
+
+    def channel(kind: str) -> str:
+        """How a channel is selected, for messages."""
+        if is_czi:
+            number = {"membrane": dye["membrane_channel_number"], "dye": dye["dye_channel_number"],
+                      "actin": actin["channel_number"]}[kind]
+            names = getattr(reader, "channel_names", [])
+            label = names[number - 1] if number and number <= len(names) and names[number - 1] else ""
+            return f"channel {number}" + (f" '{label}'" if label else "")
+        return "pattern '" + {"membrane": dye["membrane_channel_pattern"],
+                              "dye": dye["dye_channel_pattern"],
+                              "actin": actin["channel_pattern"]}[kind] + "'"
 
     logger.info("== SETUP CHECK ==")
-    logger.info(f"Data folder   : {config.paths.data_folder}")
+    logger.info(f"Image format  : {config.paths.image_format}")
+    logger.info(f"Data          : {getattr(reader, 'czi_path', None) or config.paths.data_folder}")
     logger.info(f"Results folder: {(output_root or default_output_root()) / config.paths.experiment_id}")
-    logger.info(f"Membrane      : {n} frames (pattern '{dye['membrane_channel_pattern']}')")
+    logger.info(f"Membrane      : {n} frames ({channel('membrane')})")
     if dye["enable"]:
-        logger.info(f"Dye           : {len(reader.dye_files)} frames (pattern '{dye['dye_channel_pattern']}')")
+        logger.info(f"Dye           : {len(reader.dye_files)} frames ({channel('dye')})")
         if not reader.dye_files:
-            problems.append(f"Dye analysis is enabled but no file names contain "
-                            f"'{dye['dye_channel_pattern']}' (dye_uptake_parameters.dye_channel_pattern).")
+            problems.append(f"Dye analysis is enabled but no dye images were found ({channel('dye')}).")
     if actin["enable"]:
-        logger.info(f"Actin         : {len(reader.actin_files)} frames (pattern '{actin['channel_pattern']}')")
+        logger.info(f"Actin         : {len(reader.actin_files)} frames ({channel('actin')})")
         if not reader.actin_files:
-            problems.append(f"Actin analysis is enabled but no file names contain "
-                            f"'{actin['channel_pattern']}' (actin_parameters.channel_pattern).")
-        elif actin["channel_pattern"] == dye["membrane_channel_pattern"]:
-            notes.append("Actin and membrane use the same channel pattern; actin is measured "
-                         "on the membrane images. Change actin_parameters.channel_pattern if "
-                         "you have a separate actin channel.")
+            problems.append(f"Actin analysis is enabled but no actin images were found ({channel('actin')}).")
+        elif list(reader.actin_files) == list(reader.tif_files):
+            notes.append("Actin is measured on the membrane images (same channel). Change the "
+                         "actin channel setting if you have a separate actin channel.")
+
+    pixel_um = getattr(reader, "pixel_size_um", None)
+    if pixel_um:
+        cfg_scale = params["experiment_parameters"]["scale_factor"]
+        logger.info(f"Pixel size    : {pixel_um:.4f} µm (from the CZI file)")
+        if abs(pixel_um - cfg_scale) > 0.02 * cfg_scale:
+            notes.append(f"The CZI file says {pixel_um:.4f} µm per pixel but scale_factor is "
+                         f"{cfg_scale}. The config value is used; check the objective.")
 
     if n < 2:
         problems.append("Fewer than 2 membrane frames found; nothing to analyse.")
