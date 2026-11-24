@@ -570,20 +570,17 @@ def estimate_background_and_noise(image: np.ndarray) -> Tuple[float, float]:
     return float(bg), float(max(sigma, 1e-6))
 
 
-def enhance_membrane_image(image: np.ndarray, params: Optional[Dict[str, Any]] = None) -> np.ndarray:
+def membrane_snr_image(image: np.ndarray, params: Optional[Dict[str, Any]] = None) -> np.ndarray:
     """
-    Contrast-enhanced 8-bit membrane image used ONLY for thresholding.
-
-    Steps: float conversion of the raw pixels -> anisotropic Gaussian denoise ->
-    per-frame background/noise estimate -> SNR image -> linear map so that
-    SNR = membrane_snr_full_scale becomes 255. Background (SNR <= 0) maps to
-    0, so the cell stands out on a black background.
-
-    A threshold T on this image corresponds to T * snr_full_scale / 255
-    noise units above background (see threshold_to_snr).
+    Unclipped signal-to-noise image of the membrane channel (float32):
+    float conversion of the raw pixels -> anisotropic Gaussian denoise ->
+    per-frame background/noise estimate -> (smoothed - background) / noise.
+    enhance_membrane_image maps it to 8 bit for thresholding; comparisons of
+    signal levels (e.g. the protrusion leak cut) use it unclipped, since the
+    8-bit image saturates at membrane_snr_full_scale.
     """
     if image is None:
-        return np.zeros((100, 100), dtype=np.uint8)
+        return np.zeros((100, 100), dtype=np.float32)
     cfg = _membrane_enhancement_settings(params)
     img = np.asarray(image)
     if img.ndim == 3:
@@ -601,8 +598,21 @@ def enhance_membrane_image(image: np.ndarray, params: Optional[Dict[str, Any]] =
         img_f = cv2.GaussianBlur(img_f, (0, 0), sigmaX=sx, sigmaY=sy if sy > 0 else 1e-3)
     bg, noise = estimate_background_and_noise(img_f)
     snr = (img_f - bg) / noise
-    gain = 255.0 / max(cfg['snr_full_scale'], 1e-3)
-    return np.clip(snr * gain, 0, 255).astype(np.uint8)
+    return snr.astype(np.float32)
+
+
+def enhance_membrane_image(image: np.ndarray, params: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    """
+    Contrast-enhanced 8-bit membrane image used ONLY for thresholding: the
+    signal-to-noise image (membrane_snr_image) mapped so that
+    SNR = membrane_snr_full_scale becomes 255 and background (SNR <= 0) is 0.
+    A threshold T on this image corresponds to T * snr_full_scale / 255
+    noise units above background (see threshold_to_snr).
+    """
+    if image is None:
+        return np.zeros((100, 100), dtype=np.uint8)
+    gain = 255.0 / max(_membrane_enhancement_settings(params)['snr_full_scale'], 1e-3)
+    return np.clip(membrane_snr_image(image, params) * gain, 0, 255).astype(np.uint8)
 
 
 # Along-channel smoothing levels offered in the threshold window (F key).
