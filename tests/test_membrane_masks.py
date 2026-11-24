@@ -181,3 +181,29 @@ def test_left_border_debris_still_removed():
     det = _detector(params)
     m = det._segment_mask(img, 64, True, PIP)
     assert not m[:, :25].any()
+
+
+def test_along_channel_smoothing_raises_faint_protrusion_snr():
+    """Anisotropic smoothing must lift a faint protrusion well above the noise."""
+    img, gt = _channel_scene(60, prot_amp=45.0)
+    iso = _params(); iso['image_processing']['membrane_denoise_sigma_along'] = 1.0
+    aniso = _params(); aniso['image_processing']['membrane_denoise_sigma_along'] = 3.0
+    snr = lambda p: np.median(utils.enhance_membrane_image(img, p)[gt]) * utils.threshold_to_snr(1, p)
+    assert snr(aniso) > 1.5 * snr(iso)
+
+
+def test_smoothing_suggestion_follows_brightness():
+    params = _params()
+    bright, _ = _channel_scene(60, prot_amp=600.0)
+    faint, _ = _channel_scene(60, prot_amp=30.0)
+    s_bright = utils.suggest_membrane_smoothing(bright, PIP, params)
+    s_faint = utils.suggest_membrane_smoothing(faint, PIP, params)
+    assert s_bright == utils.MEMBRANE_SMOOTHING_LEVELS[0]
+    assert s_faint > s_bright
+
+
+def test_per_trap_smoothing_does_not_leak_between_traps():
+    params = _params()
+    det = _detector(params)
+    det.params['image_processing']['membrane_denoise_sigma_along'] = 5.0
+    assert 'membrane_denoise_sigma_along' not in params['image_processing']

@@ -165,6 +165,11 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         params = {**params,
                   'rupture_detection': dict(params.get('rupture_detection', {})),
                   'dye_uptake_parameters': dict(dye_params_pre)}
+        # Per-trap membrane smoothing chosen during setup (F key / auto).
+        if config_dict.get('tuned_denoise_sigma_along') is not None:
+            params['image_processing'] = {**params.get('image_processing', {}),
+                                          'membrane_denoise_sigma_along':
+                                              float(config_dict['tuned_denoise_sigma_along'])}
         params['rupture_detection'].pop('pulse_frame_idx', None)
         params['dye_uptake_parameters'].pop('pulse_frame_idx', None)
 
@@ -604,6 +609,7 @@ class MFAAnalysis:
                     'pip':        float(cfg['pip']),
                     'thr_prot':   float(cfg['thr_prot']),
                     'thr_body':   float(cfg['thr_body']),
+                    'smooth':     (float(cfg['smooth']) if cfg.get('smooth') is not None else None),
                 }
                 for cfg in trap_configs
             ],
@@ -710,6 +716,8 @@ class MFAAnalysis:
                         'pip':        int(cfg['pip']),   # JSON deserialises ints as float; cast back
                         'thr_prot':   int(cfg['thr_prot']),
                         'thr_body':   int(cfg['thr_body']),
+                        # Older caches have no per-trap smoothing -> config default.
+                        'smooth':     cfg.get('smooth'),
                     }
                     for cfg in existing_cache['trap_configs']
                 ]
@@ -800,6 +808,7 @@ class MFAAnalysis:
                     'tuned_pipette_x': config['pip'],
                     'tuned_threshold_prot': config['thr_prot'],
                     'tuned_threshold_body': config['thr_body'],
+                    'tuned_denoise_sigma_along': config.get('smooth'),
                     
                     'results_dir': self.results_dir,
                     'output_dirs': self.subdirs,
@@ -948,7 +957,8 @@ class MFAAnalysis:
                     'trap_index': trap_index, 
                     'pip': interactive_res['pipette_start_x_used'], 
                     'thr_prot': interactive_res['threshold_prot'],
-                    'thr_body': interactive_res.get('threshold_body', interactive_res['threshold_prot'])
+                    'thr_body': interactive_res.get('threshold_body', interactive_res['threshold_prot']),
+                    'smooth': interactive_res.get('denoise_sigma_along'),
                 })
                 setup_progress.finish_trap(i, False)
                 

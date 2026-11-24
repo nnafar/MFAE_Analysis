@@ -481,6 +481,7 @@ def _membrane_enhancement_settings(params: Optional[Dict[str, Any]]) -> Dict[str
     return {
         'enable':          bool(img_p.get('membrane_enhancement', True)),
         'denoise_sigma':   float(img_p.get('membrane_denoise_sigma', 1.0)),
+        'denoise_sigma_along': float(img_p.get('membrane_denoise_sigma_along', 1.0)),
         'snr_full_scale':  float(img_p.get('membrane_snr_full_scale', 40.0)),
         'fill_holes':      bool(img_p.get('membrane_fill_holes', True)),
         'max_hole_frac':   float(img_p.get('membrane_max_hole_fraction', 0.25)),
@@ -573,7 +574,7 @@ def enhance_membrane_image(image: np.ndarray, params: Optional[Dict[str, Any]] =
     """
     Contrast-enhanced 8-bit membrane image used ONLY for thresholding.
 
-    Steps: float conversion of the raw pixels -> Gaussian denoise ->
+    Steps: float conversion of the raw pixels -> anisotropic Gaussian denoise ->
     per-frame background/noise estimate -> SNR image -> linear map so that
     SNR = membrane_snr_full_scale becomes 255. Background (SNR <= 0) maps to
     0, so the cell stands out on a black background.
@@ -588,12 +589,52 @@ def enhance_membrane_image(image: np.ndarray, params: Optional[Dict[str, Any]] =
     if img.ndim == 3:
         img = img[..., 0] if img.shape[2] == 1 else cv2.cvtColor(img.astype(np.float32), cv2.COLOR_BGR2GRAY)
     img_f = img.astype(np.float32)  # always a copy -> raw ROI is never touched
-    if cfg['denoise_sigma'] > 0:
-        img_f = cv2.GaussianBlur(img_f, (0, 0), cfg['denoise_sigma'])
+    # Anisotropic denoising: stronger smoothing ALONG the channel (x, the
+    # ROI is rotated so the channel is horizontal) than across it. The
+    # protrusion is a long horizontal structure, so averaging along x raises
+    # its SNR (~2x for sigma_along=3 vs 1) while the across-channel blur stays
+    # small and keeps its upper/lower edges sharp. This is what makes faint
+    # cells segmentable without pushing the threshold into the noise.
+    sy = max(cfg['denoise_sigma'], 0.0)
+    sx = max(cfg['denoise_sigma_along'], sy)
+    if sx > 0:
+        img_f = cv2.GaussianBlur(img_f, (0, 0), sigmaX=sx, sigmaY=sy if sy > 0 else 1e-3)
     bg, noise = estimate_background_and_noise(img_f)
     snr = (img_f - bg) / noise
     gain = 255.0 / max(cfg['snr_full_scale'], 1e-3)
     return np.clip(snr * gain, 0, 255).astype(np.uint8)
+
+
+# Along-channel smoothing levels offered in the threshold window (F key).
+MEMBRANE_SMOOTHING_LEVELS = (1.0, 2.0, 3.0, 5.0)
+
+
+def suggest_membrane_smoothing(image: np.ndarray, pipette_x: int,
+                               params: Optional[Dict[str, Any]] = None) -> float:
+    """
+    Starting along-channel smoothing for one trap, from how faint the cell is.
+
+    Bright cells keep light smoothing (sharpest edges, most accurate length);
+    faint cells get stronger smoothing along the channel, which roughly
+    doubles the protrusion SNR at 3 px. Brightness is the 99th percentile
+    SNR of the trap at light smoothing, ignoring the clipped channel walls.
+    """
+    levels = MEMBRANE_SMOOTHING_LEVELS
+    p = {**(params or {}), 'image_processing': {**((params or {}).get('image_processing', {}) or {}),
+                                                'membrane_denoise_sigma_along': levels[0]}}
+    full_scale = _membrane_enhancement_settings(p)['snr_full_scale']
+    enh = enhance_membrane_image(image, p).astype(np.float32) * full_scale / 255.0
+    h = enh.shape[0]
+    m = int(h * float(p['image_processing'].get('wall_clip_margin', 0.25)))
+    region = enh[m:h - m, :] if m > 0 else enh
+    peak = float(np.percentile(region, 99)) if region.size else 0.0
+    if peak >= 12.0:
+        return levels[0]
+    if peak >= 8.0:
+        return levels[1]
+    if peak >= 5.0:
+        return levels[2]
+    return levels[3]
 
 
 def threshold_to_snr(threshold: float, params: Optional[Dict[str, Any]] = None) -> float:

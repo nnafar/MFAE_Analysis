@@ -219,7 +219,10 @@ image_processing:
   # pixels; only the masks come from this enhanced image.
   # Set membrane_enhancement: False to go back to the CLAHE settings above.
   membrane_enhancement: True
-  membrane_denoise_sigma: 1.0        # Gaussian smoothing before the SNR transform [px]
+  membrane_denoise_sigma: 1.0        # Smoothing across the channel (y) [px]
+  membrane_denoise_sigma_along: 1.0  # Smoothing along the channel (x) [px]. Normally chosen per trap
+                                     # in the threshold window (auto from cell brightness, F to change);
+                                     # this value is only used when no per-trap choice exists.
   membrane_snr_full_scale: 40.0      # SNR shown as 255; threshold T = T*40/255 sigma above background
   membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
   membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI
