@@ -1316,6 +1316,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.check:
         return 0 if check_setup(config, args.output_dir) else 1
 
+    # Find the image data before creating any output, so a wrong path or file
+    # name stops the run with a short message instead of a traceback.
+    if config.paths.image_format == "czi":
+        from FileHandling_MFA import resolve_czi_file
+        try:
+            czi_file = resolve_czi_file(config.paths.data_folder, config.paths.experiment_id)
+        except FileNotFoundError as e:
+            logger.error(str(e))
+            return 1
+        logger.info(f"CZI file: {czi_file}")
+
     if args.debug:
         config.workflow_settings.debug_mode = True
 

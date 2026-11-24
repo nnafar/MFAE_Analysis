@@ -139,7 +139,7 @@ A CZI config differs from a TIFF one in two places:
 ```yaml
 paths:
   image_format: czi          # tiff for a folder of exported .tif files
-  data_folder: 'D:\MFAE\<experiment>.czi'   # or a folder containing exactly one .czi
+  data_folder: 'D:\MFAE'    # the .czi file, or its folder (file named after experiment_id)
 
 dye_uptake_parameters:
   membrane_channel_number: 2 # channel numbers as Fiji shows them (dye first)
