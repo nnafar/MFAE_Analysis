@@ -230,7 +230,8 @@ def test_temporal_window_steadies_faint_protrusion_length():
     def jitter(window):
         params = _params()
         params['image_processing'].update({'membrane_temporal_window': window,
-                                           'membrane_denoise_sigma_along': 3.0})
+                                           'membrane_denoise_sigma_along': 3.0,
+                                           'protrusion_leak_fraction': 0.0})   # temporal effect alone
         params['rupture_detection'] = {'enable_smoothing': False}
         det = LineDetectionMFA(rois, [PIP, 0], params)
         det.run_detection_with_parameters(PIP, 40, threshold_body=40)
@@ -284,7 +285,7 @@ def test_protrusion_mask_does_not_leak_into_faint_glow_ahead():
     thr = 45                                   # ~7 sigma: the glow is above it
     m = det._keep_closest_blob(det._segment_mask(img, thr, True, PIP), PIP, True)
     assert m[:, :3].any()                      # without the cut the mask reaches the edge
-    cut = det._cut_protrusion_leak(m, utils.prepare_membrane_for_threshold(img, params), PIP)
+    cut = det._cut_protrusion_leak(m, utils.membrane_snr_image(img, params), PIP)
     assert not cut[:, :3].any()
     assert abs(det._measure_protrusion_from_mask(cut, PIP)[0] - L) <= 3
 
@@ -345,3 +346,25 @@ def test_no_cell_at_pulse_keeps_last_cell_before_and_flags_it():
     lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] * 4 + [0] * 8
     res = _run_cells(lengths, pulse_idx=len(lengths) - 3)
     assert res['selected_cell'] == 1 and res['cell_at_pulse'] is False
+
+
+
+def test_leak_cut_works_with_a_high_threshold_on_a_bright_protrusion():
+    """High thresholds used to disable the cut (8-bit image saturates at 255)."""
+    from LineDetection_MFA import LineDetectionMFA
+    yy, xx = np.mgrid[0:H, 0:W]
+    rng = np.random.default_rng(2)
+    L = 50
+    sig = np.zeros((H, W))
+    sig += np.where((xx >= PIP - L) & (xx < PIP) & (np.abs(yy - 36) <= 6), 1500.0, 0.0)   # ~200 sigma
+    sig += np.where((xx < PIP - L - 2) & (np.abs(yy - 36) <= 7), 250.0, 0.0)              # glow ~17 %
+    img = 300 + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2) + rng.normal(0, 20, (H, W))
+    img = np.clip(img, 0, 65535).astype(np.uint16)
+    params = _params()
+    det = LineDetectionMFA([img], [PIP, 0], params)
+    thr = 130                                  # ~20 sigma, like Traps 1 and 3; glow is above it
+    m = det._keep_closest_blob(det._segment_mask(img, thr, True, PIP), PIP, True)
+    assert m[:, :3].any()
+    cut = det._cut_protrusion_leak(m, utils.membrane_snr_image(img, params), PIP)
+    assert not cut[:, :3].any()
+    assert abs(det._measure_protrusion_from_mask(cut, PIP)[0] - L) <= 3

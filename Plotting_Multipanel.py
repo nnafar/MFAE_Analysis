@@ -262,7 +262,8 @@ def _profile_kymographs(traps, ncols, scale, get_results, draw, cbar_label,
     usable = []
     for r in traps:
         res = get_results(r)
-        if res and res.get('spatial_profiles') and len(res.get('time_s', [])):
+        # at least 2 frames: a single row has no time extent to draw
+        if res and res.get('spatial_profiles') and len(res.get('time_s', [])) >= 2:
             usable.append((r, res))
     if not usable:
         return None

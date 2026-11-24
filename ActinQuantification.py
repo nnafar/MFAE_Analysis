@@ -634,7 +634,9 @@ class ActinAnalyzer:
         all rows so the CSV has one consistent value per column.
         """
         n_frames = len(self.results['zone_tip_mean'])
-        pulse    = self.pulse_frame
+        # The per-frame lists start at the cell's entry (start_idx), so the pulse
+        # must be counted from there too.
+        pulse    = self.pulse_frame - self.start_idx
         epsilon  = 1e-6
         
         dye_params = self.params.get('dye_uptake_parameters', {})
