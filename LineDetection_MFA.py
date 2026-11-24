@@ -42,6 +42,11 @@ class LineDetectionMFA:
         self.roi_images = roi_images
         self.pipette_coords = pipette_coords
         self.params = params or {}
+        # Private copy of image_processing: the per-trap membrane smoothing
+        # chosen during setup (F key) is written here and must not leak into
+        # other traps that share the same params dict.
+        self.params = {**self.params,
+                       'image_processing': dict(self.params.get('image_processing', {}) or {})}
 
         # --- EXTRACT SUB-DICTIONARIES ---
         r_params = self.params.get('rupture_detection', {})
@@ -126,6 +131,7 @@ class LineDetectionMFA:
             'r_eff': 0.0,                   # Placeholder for calculation results
             'time_seconds': [],
             'frame_masks': [],              # Per-frame (mask_prot, mask_body) tuples for downstream use
+            'denoise_sigma_along': None,    # Per-trap membrane smoothing along the channel (enhanced mode)
         }
         
         # Expose debug frames for preview
@@ -279,6 +285,10 @@ class LineDetectionMFA:
                 return self.results
             self.results['threshold_body'] = thr_body
 
+        if utils.membrane_enhancement_enabled(self.params):
+            self.results['denoise_sigma_along'] = float(
+                self.params['image_processing'].get('membrane_denoise_sigma_along', 1.0))
+
         # --- Step 4: Automated Processing (Protrusion Detection) ---
         # We only process length using the protrusion threshold here
         self._process_all_frames(pipette_start_x, thr_prot)
@@ -308,6 +318,9 @@ class LineDetectionMFA:
         """
         self.results['pipette_start_x_used'] = pipette_start_x
         self.results['threshold_prot'] = threshold_prot
+        if utils.membrane_enhancement_enabled(self.params):
+            self.results['denoise_sigma_along'] = float(
+                self.params['image_processing'].get('membrane_denoise_sigma_along', 1.0))
         # Store the body threshold explicitly so _process_all_frames can read it
         # via self.results['threshold_body'].  Using 'or' here would misfire when
         # the caller legitimately passes 0 (GUV mode), so we check for None directly.
@@ -564,24 +577,35 @@ class LineDetectionMFA:
         # pipeline thresholds (utils.prepare_membrane_for_threshold): the
         # background-referenced SNR image when membrane_enhancement is on,
         # otherwise the legacy percentile-stretch + CLAHE image.
-        image_params = self.params.get('image_processing', {})
+        image_params = self.params['image_processing']
         enhanced_mode = utils.membrane_enhancement_enabled(self.params)
-        if enhanced_mode or image_params.get('threshold_preview_clahe', True):
-            test_image_8bit = utils.prepare_membrane_for_threshold(test_image, self.params)
-        else:
-            test_image_8bit = utils.normalize_to_8bit(test_image)
 
+        # Faint-cell smoothing (enhanced mode): smoothing along the channel is
+        # chosen per trap. The first threshold window picks a starting level
+        # from the cell's SNR; F cycles through the levels. The body window
+        # inherits whatever was chosen in the protrusion window.
+        if enhanced_mode and clip_walls and not getattr(self, '_smoothing_chosen', False):
+            image_params['membrane_denoise_sigma_along'] = utils.suggest_membrane_smoothing(
+                test_image, pipette_start_x, self.params)
+            self._smoothing_chosen = True
+
+        def _prepare():
+            if enhanced_mode or image_params.get('threshold_preview_clahe', True):
+                img8 = utils.prepare_membrane_for_threshold(test_image, self.params)
+            else:
+                img8 = utils.normalize_to_8bit(test_image)
+            hh = img8.shape[0]
+            mg = int(hh * self.wall_clip_margin) if clip_walls else 0
+            if clip_walls:
+                # PROTRUSION: Left of pipette, clipped walls
+                stats = img8[mg:hh-mg, :pipette_start_x] if mg > 0 else img8[:, :pipette_start_x]
+            else:
+                # BODY: Right of pipette, full height
+                stats = img8[:, pipette_start_x:]
+            return img8, stats
+
+        test_image_8bit, roi_for_stats = _prepare()
         h, w = test_image_8bit.shape[:2]
-        
-        # 1. Determine ROI for statistics/histogram based on mode
-        margin = int(h * self.wall_clip_margin) if clip_walls else 0
-        
-        if clip_walls:
-             # PROTRUSION: Left of pipette, clipped walls
-             roi_for_stats = test_image_8bit[margin:h-margin, :pipette_start_x] if margin > 0 else test_image_8bit[:, :pipette_start_x]
-        else:
-             # BODY: Right of pipette, full height
-             roi_for_stats = test_image_8bit[:, pipette_start_x:]
 
         # 2. Initial Threshold Guess (Otsu)
         if roi_for_stats.size > 0:
@@ -674,12 +698,16 @@ class LineDetectionMFA:
             thr_label = f"Threshold: {current_threshold}"
             if enhanced_mode:
                 thr_label += f" (~{utils.threshold_to_snr(current_threshold, self.params):.1f} sigma above bg)"
-            utils.add_text_overlay(combined_display, [
+            overlay_lines = [
                 thr_label,
                 "Mouse: Drag yellow line to adjust",
                 "W/S: +/- 10 | A/D: +/- 1",
-                "ENTER: Confirm | R: Restart"
-            ])
+            ]
+            if enhanced_mode:
+                overlay_lines.append(
+                    f"F: faint-cell smoothing ({image_params.get('membrane_denoise_sigma_along', 1.0):g} px)")
+            overlay_lines.append("ENTER: Confirm | R: Restart")
+            utils.add_text_overlay(combined_display, overlay_lines)
             cv2.imshow(window_name, combined_display)
             
             key = cv2.waitKey(30) & 0xFF
@@ -692,6 +720,12 @@ class LineDetectionMFA:
             elif key in (ord('s'), ord('S')): state['threshold'] = max(0, current_threshold - 10)
             elif key in (ord('d'), ord('D')): state['threshold'] = min(255, current_threshold + 1)
             elif key in (ord('a'), ord('A')): state['threshold'] = max(0, current_threshold - 1)
+            elif enhanced_mode and key in (ord('f'), ord('F')):
+                levels = utils.MEMBRANE_SMOOTHING_LEVELS
+                cur = float(image_params.get('membrane_denoise_sigma_along', levels[0]))
+                nxt = next((l for l in levels if l > cur + 1e-6), levels[0])
+                image_params['membrane_denoise_sigma_along'] = nxt
+                test_image_8bit, roi_for_stats = _prepare()
 
     # Visualization Helper Methods
 

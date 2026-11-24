@@ -79,6 +79,7 @@
   ],
   "max_body_entrance_gap_px": 8,
   "membrane_denoise_sigma": 1.0,
+  "membrane_denoise_sigma_along": 1.0,
   "membrane_enhancement": true,
   "membrane_fill_holes": true,
   "membrane_max_hole_fraction": 0.25,

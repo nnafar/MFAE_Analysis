@@ -444,7 +444,16 @@ class ImageProcessingConstants(_StrictModel):
     )
     membrane_denoise_sigma: float = Field(
         default=1.0, ge=0.0, le=5.0,
-        description="Gaussian sigma [px] applied before the SNR transform (0 = off)."
+        description="Gaussian sigma [px] across the channel (y) applied before the SNR transform (0 = off)."
+    )
+    membrane_denoise_sigma_along: float = Field(
+        default=1.0, ge=0.0, le=10.0,
+        description=(
+            "Gaussian sigma [px] along the channel axis (x). Larger values raise the SNR "
+            "of faint, elongated protrusions without blurring their upper/lower edges. "
+            "Normally chosen per trap during setup (auto from brightness, F key); this "
+            "default only applies when no per-trap value exists."
+        )
     )
     membrane_snr_full_scale: float = Field(
         default=40.0, gt=0.0, le=200.0,
