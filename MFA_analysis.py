@@ -61,6 +61,7 @@ from UptakeQuantification import DyeUptakeAnalyzer
 from ActinQuantification import ActinAnalyzer
 from config_schema import MFAConfig, validate_config, format_validation_error
 import config_loader
+import experiment_naming
 import Plotting_MFA
 import Plotting_Multipanel
 import Utils_MFA as utils
@@ -69,6 +70,10 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+
+
+# The lab's standard experiment config; also the template for --init-config.
+DEFAULT_CONFIG = PROJECT_ROOT / "config.yaml"
 
 
 def default_output_root() -> Path:
@@ -141,15 +146,13 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         first_frame_number = int(config_dict.get('first_frame_number', 1))
 
         # --- Resolve the pulse frame once for this worker ---
-        # A pulse only exists when dye analysis is enabled AND has_pulse is
-        # True. Aspiration-only controls (has_pulse: False) usually still carry
-        # a pulse_frame value in the config; it must not reach the rupture
-        # detector, exit blanking, or the CSV/plot pulse annotations, otherwise
-        # controls get a spurious "Pulse-Induced Rupture" (which also bypasses
-        # the length veto).
+        # A pulse exists only when has_pulse is True (set from the experiment
+        # name: 0 V = no pulse), whether or not the dye channel is analysed.
+        # Aspiration-only controls may still carry a pulse_frame value; it must
+        # not reach the rupture detector, exit blanking, or the CSV/plot pulse
+        # annotations, otherwise controls get a spurious "Pulse-Induced Rupture".
         dye_params_pre = params.get('dye_uptake_parameters', {})
-        pulse_active = bool(dye_params_pre.get('enable', False)
-                            and dye_params_pre.get('has_pulse', True))
+        pulse_active = bool(dye_params_pre.get('has_pulse', True))
         # Work on a per-trap copy of the sections we modify so injected keys
         # never leak between traps (n_workers == 1 shares self.params).
         params = {**params,
@@ -1009,12 +1012,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Typical workflow:\n"
-            "  1. python MFA_analysis.py --init-config my_exp.yaml --preset ep --data-folder D:/data/260128_...\n"
+            "  1. python MFA_analysis.py --init-config my_exp.yaml --data-folder D:/data/260128_...\n"
             "  2. python MFA_analysis.py my_exp.yaml --check     (no windows; checks config and images)\n"
             "  3. python MFA_analysis.py my_exp.yaml             (interactive setup, then analysis)\n"
             "\n"
-            "Settings are combined from config/defaults.yaml, the preset named in your\n"
-            "file (config/presets/), and your file. See README.md for details."
+            "Your file holds the experiment's settings; everything else comes from\n"
+            "config/defaults.yaml. See README.md for details."
         ),
     )
     parser.add_argument("config_path", nargs="?", type=Path,
@@ -1035,57 +1038,58 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show-config", action="store_true",
                         help="Print every setting this run would use, and which file set it, then exit.")
     parser.add_argument("--init-config", type=Path, metavar="NEW_CONFIG",
-                        help="Create a new (short) config file and exit.")
-    parser.add_argument("--preset", "--template", dest="preset",
-                        choices=config_loader.available_presets(), default="ep",
-                        help="Experiment type for --init-config (default: ep).")
+                        help="Create a new config by copying an existing one with the new "
+                             "--data-folder / --experiment-id filled in, then exit.")
+    parser.add_argument("--from", dest="copy_from", type=Path, default=DEFAULT_CONFIG,
+                        metavar="CONFIG",
+                        help=f"Config copied by --init-config (default: {DEFAULT_CONFIG.name}).")
     return parser
 
 
-def _yaml_quote(value: str) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
+def _set_yaml_value(text: str, key: str, value: str) -> str:
+    """Replace the value of the first `key: ...` line, keeping comments and layout."""
+    import re
+    quoted = value if key == "experiment_type" else "'" + str(value).replace("'", "''") + "'"
+    pattern = re.compile(rf"^(\s*{key}:)[^\n]*", re.MULTILINE)
+    if not pattern.search(text):
+        raise ValueError(f"no '{key}:' entry to fill in")
+    return pattern.sub(lambda m: f"{m.group(1)} {quoted}", text, count=1)
 
 
-def init_config(dest: Path, preset: str, data_folder: Optional[Path],
+def init_config(dest: Path, source: Path, data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
     """
-    Write a short config (paths, microscope, pulse, channels) that names a
-    preset. Values not given on the command line are taken from the defaults
-    and the preset, so the file is valid as soon as the paths are filled in.
+    Copy an existing config (by default config.yaml) to `dest`, replacing its
+    data folder and experiment name, and setting experiment_type from the
+    voltage in the new name (0 V = asp). All other settings are kept, so
+    copying the config of a similar experiment is the quickest way to start.
     """
-    from string import Template
-
     if dest.exists():
         logger.error(f"{dest} already exists; choose another name or delete it first.")
         return False
+    if not source.exists():
+        logger.error(f"Config to copy not found: {source}")
+        return False
 
-    base = config_loader.deep_merge(
-        config_loader.read_yaml(config_loader.DEFAULTS_FILE),
-        config_loader.read_yaml(config_loader.PRESET_DIR / f"{preset}.yaml"))
-    exp, dye, actin = base["experiment_parameters"], base["dye_uptake_parameters"], base["actin_parameters"]
-
+    text = source.read_text(encoding="utf-8")
     if data_folder is not None:
         experiment_id = experiment_id or data_folder.name
-    text = Template(config_loader.USER_TEMPLATE_FILE.read_text(encoding="utf-8")).substitute(
-        config_name=dest.name,
-        preset_line=f"preset: {preset}",
-        data_folder=_yaml_quote(data_folder) if data_folder else "'CHANGE ME: folder with the .tif images'",
-        experiment_id=_yaml_quote(experiment_id) if experiment_id else "'CHANGE ME'",
-        scale_factor=exp["scale_factor"],
-        constant_pressure=exp["constant_pressure"],
-        frame_interval=exp["frame_interval"],
-        max_traps=exp["max_traps"],
-        pulse_frame=dye["pulse_frame"],
-        membrane_pattern=_yaml_quote(dye["membrane_channel_pattern"]),
-        dye_pattern=_yaml_quote(dye["dye_channel_pattern"]),
-        actin_enable=actin["enable"],
-        actin_pattern=_yaml_quote(actin["channel_pattern"]),
-        n_workers=base["workflow_settings"]["n_workers"],
-    )
+    try:
+        if data_folder is not None:
+            text = _set_yaml_value(text, "data_folder", str(data_folder))
+        if experiment_id:
+            text = _set_yaml_value(text, "experiment_id", experiment_id)
+            name = experiment_naming.parse_experiment_name(experiment_id)
+            if name is not None and "experiment_type:" in text:
+                text = _set_yaml_value(text, "experiment_type", "ep" if name.has_pulse else "asp")
+    except ValueError as e:
+        logger.error(f"Cannot fill in {source.name}: {e}.")
+        return False
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
-    logger.info(f"Created {dest} (preset '{preset}').")
-    if data_folder is None:
+    logger.info(f"Created {dest} (copy of {source.name}).")
+    if data_folder is None and not experiment_id:
         logger.info("Next: open it and set paths.data_folder and paths.experiment_id.")
     logger.info(f"Then check it with:  python MFA_analysis.py {dest} --check")
     return True
@@ -1095,7 +1099,7 @@ def load_config(config_path: Path, data_folder: Optional[Path] = None,
                 experiment_id: Optional[str] = None
                 ) -> Tuple[Optional[MFAConfig], Optional[config_loader.LayeredConfig]]:
     """
-    Combine defaults, preset, the user's file and command-line overrides, then
+    Combine the defaults, the user's file and command-line overrides, then
     validate. Logs a readable error and returns (None, None) on failure.
     """
     overrides: Dict[str, Any] = {}
@@ -1140,16 +1144,6 @@ def save_effective_config(config: MFAConfig, layered: config_loader.LayeredConfi
               f"#     python MFA_analysis.py {path.name}\n")
     path.write_text(header + show_config(config, layered).split("\n", 2)[2], encoding="utf-8")
     return path
-
-
-def _bulk_folder_pattern():
-    """The folder-name pattern the bulk analysis expects (single source of truth)."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "bulk_file_handling", PROJECT_ROOT / "Bulk_Analysis" / "bulk_file_handling.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.BulkDataLoader.FOLDER_PATTERN
 
 
 def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
@@ -1205,7 +1199,7 @@ def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
 
     first = utils.get_first_frame_number(reader.tif_files)
     logger.info(f"First frame number in file names: {first}")
-    if dye["enable"] and dye["has_pulse"]:
+    if dye["has_pulse"]:
         idx = utils.pulse_frame_to_index(dye["pulse_frame"], first)
         if 0 <= idx < n:
             logger.info(f"Pulse         : frame {dye['pulse_frame']:g} -> position {idx} "
@@ -1213,14 +1207,22 @@ def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
         else:
             problems.append(f"pulse_frame {dye['pulse_frame']:g} is outside the recording "
                             f"(only {n} frames).")
-    elif dye["enable"]:
-        logger.info("Pulse         : none (has_pulse: False, aspiration-only control)")
+    else:
+        logger.info("Pulse         : none (aspiration-only control)")
 
-    if not _bulk_folder_pattern().match(config.paths.experiment_id):
+    name = experiment_naming.parse_experiment_name(config.paths.experiment_id)
+    if name is None:
         notes.append(
-            "experiment_id does not follow the naming rule the bulk analysis uses "
-            "(YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>), so "
-            "Bulk_Analysis will skip this experiment. See README.md.")
+            "experiment_id does not follow the naming rule "
+            f"({experiment_naming.NAMING_RULE}), so the pulse settings come from the "
+            "config instead of the name, and Bulk_Analysis will skip this experiment. "
+            "See README.md.")
+    else:
+        logger.info(f"Experiment    : {name.describe()} (from the experiment name)")
+        cfg_p = params["experiment_parameters"]["constant_pressure"]
+        if abs(cfg_p - name.pressure_pa) > 1e-6:
+            notes.append(f"constant_pressure is {cfg_p:g} Pa but the experiment name says "
+                         f"{name.pressure_pa} Pa. The config value is used for the analysis.")
 
     cache = (output_root or default_output_root()) / config.paths.experiment_id / "session_cache.json"
     if cache.exists():
@@ -1245,7 +1247,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     utils.setup_logging(debug_mode=args.debug)
 
     if args.init_config is not None:
-        return 0 if init_config(args.init_config, args.preset,
+        return 0 if init_config(args.init_config, args.copy_from,
                                 args.data_folder, args.experiment_id) else 1
 
     if args.config_path is None:

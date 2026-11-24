@@ -43,20 +43,27 @@ def test_shipped_configs_validate(name):
     MFAConfig(**_load_config(name))
 
 
-@pytest.mark.parametrize('name', ['config_100us.yaml', 'config_5ms.yaml', 'config_asp.yaml'])
-def test_preset_settings_reach_the_pipeline(name):
-    """These presets turn the length veto and rupture detection off."""
-    dumped = MFAConfig(**_load_config(name)).model_dump()
-    assert dumped['rupture_detection']['enable_length_veto'] is False
-    assert dumped['rupture_detection']['enable'] is False
+@pytest.mark.parametrize('name', ['config.yaml', 'config_100us.yaml',
+                                  'config_5ms.yaml', 'config_asp.yaml'])
+def test_rupture_detection_off_by_default(name):
+    assert MFAConfig(**_load_config(name)).rupture_detection.enable is False
+
+
+def test_settings_from_each_layer_reach_the_pipeline():
+    asp = MFAConfig(**_load_config('config_asp.yaml'))
+    assert asp.dye_uptake_parameters.has_pulse is False          # 0V name + asp preset
+    assert asp.rupture_detection.enable_smoothing is True        # asp preset
+    us = MFAConfig(**_load_config('config_100us.yaml'))
+    assert us.dye_uptake_parameters.pulse_frame == 111           # ...-frame111 in the name
+    assert us.workflow_settings.default_roi_width_um == 70.0     # the config file itself
 
 
 def test_unknown_key_in_section_is_rejected(tmp_path):
     cfg = tmp_path / 'typo.yaml'
-    cfg.write_text((ROOT / 'config.yaml').read_text(encoding='utf-8')
-                   + "\nrupture_detection:\n  enable_lenght_veto: False\n", encoding='utf-8')
-    with pytest.raises(ValidationError):
-        MFAConfig(**_load_config(str(cfg)))
+    text = (ROOT / 'config.yaml').read_text(encoding='utf-8')
+    cfg.write_text(text.replace("  enable_smoothing:", "  enable_smoothin:"), encoding='utf-8')
+    with pytest.raises(config_loader.ConfigFileError, match="enable_smoothin"):
+        _load_config(str(cfg))
 
 
 def test_unimplemented_keys_are_dropped_with_warning(caplog):
@@ -141,7 +148,8 @@ def test_disabling_length_veto_keeps_haze_candidates():
     ({'enable': True, 'has_pulse': True, 'pulse_frame': 10}, {'pulse_frame_idx': 10}, 10),
     ({'enable': True, 'has_pulse': True, 'pulse_frame': 10}, {}, 9),     # t0001 fallback
     ({'enable': True, 'has_pulse': False, 'pulse_frame': 10}, {'pulse_frame_idx': 9}, None),
-    ({'enable': False, 'has_pulse': True, 'pulse_frame': 10}, {'pulse_frame_idx': 9}, None),
+    # Dye analysis off but there was a pulse: the pulse still counts (e.g. for actin).
+    ({'enable': False, 'has_pulse': True, 'pulse_frame': 10}, {'pulse_frame_idx': 9}, 9),
 ])
 def test_resolve_pulse_frame_idx(dye_params, r_params, expected):
     det = LineDetectionMFA([np.zeros((10, 10))], [0, 0],
