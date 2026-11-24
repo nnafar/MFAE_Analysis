@@ -277,6 +277,33 @@ def get_ui_color(element_type: str) -> Tuple[int, int, int]:
     """Returns the standardized BGR color for a UI element."""
     return UI_COLORS.get(element_type, (255, 255, 255))
 
+# Outline colours (BGR) of the LineDetection masks, shared by the tracking
+# movie and the dye/actin debug movies so the same mask looks the same in all.
+MASK_OUTLINE_PROT = (220, 80, 255)   # magenta
+MASK_OUTLINE_BODY = (255, 210, 60)   # cyan
+
+
+def draw_mask_outlines(display: np.ndarray, mask_prot: Optional[np.ndarray],
+                       mask_body: Optional[np.ndarray], frame_idx: Optional[int] = None,
+                       n_frames: Optional[int] = None) -> np.ndarray:
+    """
+    Draw the LineDetection protrusion (magenta) and body (cyan) outlines on a
+    debug frame, in place, plus 'frame N/total' (1-based, as in the tracking
+    movie) in the bottom-left corner when frame_idx is given.
+    """
+    for mask, colour in ((mask_body, MASK_OUTLINE_BODY), (mask_prot, MASK_OUTLINE_PROT)):
+        if mask is None or not np.any(mask):
+            continue
+        contours, _ = cv2.findContours((mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(display, contours, -1, colour, 1)
+    if frame_idx is not None:
+        label = f"f{frame_idx + 1}" + (f"/{n_frames}" if n_frames else "")
+        cv2.putText(display, label, (2, display.shape[0] - 3), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.3, (255, 255, 255), 1, cv2.LINE_AA)
+    return display
+
+
 def get_bgr_color(color_name: str) -> Tuple[int, int, int]:
     """Retrieves a BGR tuple from the MFA_COLORS palette by name."""
     hex_val = MFA_COLORS.get(color_name, MFA_COLORS['white'])

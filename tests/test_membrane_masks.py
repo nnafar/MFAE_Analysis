@@ -484,3 +484,70 @@ def test_relative_level_drops_the_halo_around_a_bright_protrusion(seed):
     assert _iou(on[:, cols], core) > 0.8       # relative level: mask on the protrusion itself
     # the dim shaft right next to the bright spot is kept (columns PIP-50 .. PIP-47)
     assert on[30:43, PIP - 50:PIP - 46].mean() > 0.9
+
+
+def test_debug_movies_show_the_linedetection_mask_of_the_same_frame(tmp_path):
+    """Dye and actin debug movies draw LineDetection's own mask for each frame, and
+    frame i of the results (which start at the cell's entry) is frame start_idx + i."""
+    from ActinQuantification import ActinAnalyzer
+    from UptakeQuantification import DyeUptakeAnalyzer
+
+    img, _, _ = _trap_image()
+    n, start = 8, 3
+    rois = [img] * n
+    params = _params()
+    params.update({
+        'experiment_parameters': {'scale_factor': 0.629},
+        'dye_uptake_parameters': {'enable': True, 'has_pulse': False, 'baseline_frames': 2},
+        'actin_parameters': {},
+    })
+    mp, mb = utils.generate_dual_masks(img, PIP, 100, 100, params)
+    masks = [(mp.copy(), mb.copy()) for _ in range(n)]
+
+    seen = {}
+    for cls, args in ((ActinAnalyzer, (rois, rois, PIP, 100, 100, params)),
+                      (DyeUptakeAnalyzer, (rois, rois, PIP, 100, 100, None, params))):
+        a = cls(*args, frame_masks=masks, start_idx=start)
+        a.run(list(range(n)))
+        calls = []
+        orig = a._get_masks
+
+        def spy(k, m, _orig=orig, _calls=calls):
+            out = _orig(k, m)
+            assert out[0] is masks[k][0] and out[1] is masks[k][1]   # LineDetection's mask, not a new one
+            _calls.append(k)
+            return out
+        a._get_masks = spy
+        if cls is ActinAnalyzer:
+            a.save_zones_debug_video(1, tmp_path)
+            a.save_cortex_debug_video(1, tmp_path)
+        else:
+            a.save_debug_video(1, tmp_path)
+        seen[cls.__name__] = calls
+
+    assert set(seen['ActinAnalyzer']) == set(range(start, n))
+    assert set(seen['DyeUptakeAnalyzer']) == set(range(start, n))
+
+
+def test_actin_times_start_at_the_cell_entry():
+    """Actin per-frame values start at start_idx; their time stamps must too (as for dye)."""
+    from ActinQuantification import ActinAnalyzer
+    from UptakeQuantification import DyeUptakeAnalyzer
+
+    img, _, _ = _trap_image()
+    n, start = 8, 3
+    rois = [img] * n
+    params = _params()
+    params.update({
+        'experiment_parameters': {'scale_factor': 0.629},
+        'dye_uptake_parameters': {'enable': True, 'has_pulse': False, 'baseline_frames': 2},
+        'actin_parameters': {},
+    })
+    mp, mb = utils.generate_dual_masks(img, PIP, 100, 100, params)
+    times = [10.0 * k for k in range(n)]
+    act = ActinAnalyzer(rois, rois, PIP, 100, 100, params,
+                        frame_masks=[(mp, mb)] * n, start_idx=start).run(times)
+    dye = DyeUptakeAnalyzer(rois, rois, PIP, 100, 100, None, params,
+                            frame_masks=[(mp, mb)] * n, start_idx=start).run(times)
+    assert list(act['time_s']) == times[start:]
+    assert list(act['time_s']) == list(dye['time_s'])

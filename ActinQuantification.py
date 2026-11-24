@@ -410,9 +410,12 @@ class ActinAnalyzer:
             profile = utils.calculate_spatial_profile(act_f, mask_total)
             self.results['spatial_profiles'].append(profile)
 
-        # Sync time vector to however many frames were actually processed
+        # Sync time vector to the frames actually processed: the per-frame lists
+        # start at the cell's entry (start_idx), so their times do too (as in
+        # the dye uptake analysis); time_data[:n] labelled every actin value
+        # start_idx frames too early.
         n_frames = len(self.results['actin_prot_rel'])
-        self.results['time_s'] = time_data[:n_frames]
+        self.results['time_s'] = list(time_data[self.start_idx:self.start_idx + n_frames])
 
         # ----------------------------------------------------------------
         # STEP 3 — Post-loop derived metrics
@@ -830,15 +833,20 @@ class ActinAnalyzer:
         ]
 
         for i in range(n_frames):
-            mem_img = self.mem_imgs[i]
-            act_img = self.actin_imgs[i]
+            # results[...][i] is frame start_idx + i (lists start at the cell's
+            # entry); image and masks must come from that same frame
+            k = self.start_idx + i
+            if k >= len(self.mem_imgs) or k >= len(self.actin_imgs):
+                break
+            mem_img = self.mem_imgs[k]
+            act_img = self.actin_imgs[k]
 
             if mem_img is None or act_img is None:
                 writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
                 continue
 
             display               = self._build_base_frame(act_img)
-            mask_prot, mask_body  = self._get_masks(i, mem_img)
+            mask_prot, mask_body  = self._get_masks(k, mem_img)
             zones                 = self._build_zone_masks(mask_prot, mask_body)
 
             layers = [
@@ -850,6 +858,8 @@ class ActinAnalyzer:
             display = self._draw_masks_on_frame(display, layers, alpha=0.45)
             cv2.line(display, (int(self.pipette_x), 0),
                      (int(self.pipette_x), h), col_line, 1)
+            # the LineDetection mask outlines, as drawn in the tracking movie
+            utils.draw_mask_outlines(display, mask_prot, mask_body, k, len(self.mem_imgs))
 
             time_s = self.results['time_s'][i] if i < n_frames else 0.0
             n_tip  = int(cv2.countNonZero(zones['tip']))
@@ -918,15 +928,20 @@ class ActinAnalyzer:
         ]
 
         for i in range(n_frames):
-            mem_img = self.mem_imgs[i]
-            act_img = self.actin_imgs[i]
+            # results[...][i] is frame start_idx + i (lists start at the cell's
+            # entry); image and masks must come from that same frame
+            k = self.start_idx + i
+            if k >= len(self.mem_imgs) or k >= len(self.actin_imgs):
+                break
+            mem_img = self.mem_imgs[k]
+            act_img = self.actin_imgs[k]
 
             if mem_img is None or act_img is None:
                 writer.write(np.zeros((total_h, w, 3), dtype=np.uint8))
                 continue
 
             display                  = self._build_base_frame(act_img)
-            mask_prot, mask_body     = self._get_masks(i, mem_img)
+            mask_prot, mask_body     = self._get_masks(k, mem_img)
             mask_b_cortex, mask_b_lumen = utils.generate_cortex_masks(
                 mask_body, self.cortex_thickness_px
             )
@@ -944,6 +959,8 @@ class ActinAnalyzer:
             display = self._draw_masks_on_frame(display, layers, alpha=0.45)
             cv2.line(display, (int(self.pipette_x), 0),
                      (int(self.pipette_x), h), col_line, 1)
+            # the LineDetection mask outlines, as drawn in the tracking movie
+            utils.draw_mask_outlines(display, mask_prot, mask_body, k, len(self.mem_imgs))
 
             time_s   = self.results['time_s'][i] if i < n_frames else 0.0
             b_cl  = (self.results['actin_body_cortex_lumen_ratio'][i]

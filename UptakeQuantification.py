@@ -536,6 +536,8 @@ class DyeUptakeAnalyzer:
 
             cv2.line(display, (int(self.pipette_x), 0),
                      (int(self.pipette_x), h), color_line, 1)
+            # the LineDetection mask outlines, as drawn in the tracking movie
+            utils.draw_mask_outlines(display, mask_prot, mask_body, actual_idx, len(self.mem_imgs))
 
             # Post-rupture annotation.
             if rupture_local is not None and i >= rupture_local:
