@@ -207,3 +207,35 @@ def test_per_trap_smoothing_does_not_leak_between_traps():
     det = _detector(params)
     det.params['image_processing']['membrane_denoise_sigma_along'] = 5.0
     assert 'membrane_denoise_sigma_along' not in params['image_processing']
+
+
+def test_temporal_median_frame_skips_missing_and_keeps_input():
+    a = np.full((4, 4), 10, np.uint16)
+    b = np.full((4, 4), 100, np.uint16)
+    c = np.full((4, 4), 20, np.uint16)
+    frames = [a, b, c, None]
+    assert np.all(utils.temporal_median_frame(frames, 1, 3) == 20)   # outlier frame b removed
+    assert np.all(utils.temporal_median_frame(frames, 3, 3) == 20)   # None skipped
+    assert b[0, 0] == 100
+
+
+def test_temporal_window_steadies_faint_protrusion_length():
+    """Faint protrusion: masks from a 3-frame median jitter less than per-frame masks."""
+    from LineDetection_MFA import LineDetectionMFA
+    rois = []
+    for t in range(40):
+        img, _ = _channel_scene(int(70 - t * 0.5), prot_amp=55.0, seed=100 + t)
+        rois.append(img)
+
+    def jitter(window):
+        params = _params()
+        params['image_processing'].update({'membrane_temporal_window': window,
+                                           'membrane_denoise_sigma_along': 3.0})
+        params['rupture_detection'] = {'enable_smoothing': False}
+        det = LineDetectionMFA(rois, [PIP, 0], params)
+        det.run_detection_with_parameters(PIP, 40, threshold_body=40)
+        L = np.array([det._measure_protrusion_from_mask(m[0], PIP)[0] if m[0] is not None else 0
+                      for m in det.results['frame_masks']])
+        return np.abs(np.diff(L)).mean()
+
+    assert jitter(3) < 0.8 * jitter(1)

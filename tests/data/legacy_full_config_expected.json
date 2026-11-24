@@ -84,6 +84,7 @@
   "membrane_fill_holes": true,
   "membrane_max_hole_fraction": 0.25,
   "membrane_snr_full_scale": 40.0,
+  "membrane_temporal_window": 3,
   "min_area_threshold": 100,
   "small_object_threshold": 50,
   "threshold_preview_clahe": true,

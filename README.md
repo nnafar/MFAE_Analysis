@@ -183,7 +183,8 @@ The steps are:
 6. **Per trap:** confirm the pipette line, then pick two thresholds: one for the **protrusion**
    (inside the channel, between the two guide lines) and one for the **cell body** (right of the
    pipette line). Drag the line in the histogram or use `W`/`S` ±10, `A`/`D` ±1 until the red mask
-   follows the cell. The preview shows exactly the mask the analysis will use.
+   follows the cell. The preview shows the mask the analysis will use (the analysis additionally takes the median over
+   neighbouring frames, so its masks are a little steadier).
 
 Your choices are saved to `Output/<experiment_id>/session_cache.json`, so a re-run skips the setup
 and goes straight to the analysis. Use `--fresh` to set up again (or delete that file).
@@ -216,7 +217,10 @@ The membrane channel is used only to build two masks per frame: the **protrusion
 **cell body**. Because no intensity is measured from it, it is enhanced to make the cell outline
 clear and consistent from frame to frame:
 
-1. The image is smoothed (1 px across the channel; along the channel by the per-trap level above).
+1. Each frame is replaced by the pixel-wise median of itself and its two neighbours, so noise at
+   the threshold doesn't make the tip jitter or a faint protrusion flicker in and out
+   (`membrane_temporal_window`, 1 = off). The image is then smoothed (1 px across the channel;
+   along the channel by the per-trap level above).
 2. In every frame, the background level and its noise are measured from the background peak of
    the histogram.
 3. Each pixel becomes "noise units above background", so one threshold means the same thing in
@@ -228,7 +232,7 @@ clear and consistent from frame to frame:
 this also holds when actin is imaged in the same channel as the membrane.
 
 The settings are in `config/defaults.yaml` under `image_processing` (`membrane_enhancement`,
-`membrane_denoise_sigma`, `membrane_denoise_sigma_along`, `membrane_snr_full_scale`,
+`membrane_denoise_sigma`, `membrane_denoise_sigma_along`, `membrane_temporal_window`, `membrane_snr_full_scale`,
 `membrane_fill_holes`, `membrane_max_hole_fraction`). Set `membrane_enhancement: False` to return
 to the older CLAHE-based segmentation; thresholds picked in one mode are not comparable with the
 other.
@@ -332,7 +336,7 @@ live elsewhere.
 | A faint cell is barely captured in the threshold window | Press `F` for more smoothing, then lower the threshold (stay above ~3 sigma). |
 | The mask includes background noise | Raise the threshold, or press `F` to reduce smoothing if it is high. |
 | The protrusion mask reaches the left edge of the box | The protrusion is longer than the trap box, so its true length can't be measured (lengths close to the channel length are treated as clamped and don't count for entry). Draw a wider ROI (`--fresh`). |
-| `Entry not confirmed for this trap` in the log | No sustained protrusion was found, so rupture detection is off for that trap. Watch its tracking movie to see why. |
+| `Entry not confirmed for this trap` in the log | No valid protrusion was found for 3 frames in a row, so rupture detection is off for that trap. Watch its tracking movie. If the protrusion is tracked fine but longer than 0.9 × `channel_length_um` (36 µm by default), check `scale_factor`: `--check` shows the file's pixel size next to it. |
 | A tracking movie won't play | Open it in VLC, which plays MJPG `.avi` files on any system. |
 
 ## 8. For developers

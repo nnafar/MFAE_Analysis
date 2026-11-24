@@ -692,6 +692,22 @@ def prepare_membrane_for_threshold(image: np.ndarray, params: Optional[Dict[str,
     return cv2.GaussianBlur(enhanced, tuple(img_p.get('gaussian_kernel_size', (5, 5))), 0)
 
 
+def temporal_median_frame(frames: List[Optional[np.ndarray]], idx: int, window: int = 3) -> np.ndarray:
+    """
+    Pixel-wise median of the frames centred on idx (window frames, odd; missing
+    frames at the ends or None entries are skipped). Returns float32; the
+    input frames are never modified.
+    """
+    half = max(0, int(window) // 2)
+    lo, hi = max(0, idx - half), min(len(frames), idx + half + 1)
+    stack = [np.asarray(f, dtype=np.float32) for f in frames[lo:hi] if f is not None]
+    if not stack:
+        return np.asarray(frames[idx], dtype=np.float32)
+    if len(stack) == 1:
+        return stack[0]
+    return np.median(np.stack(stack, axis=0), axis=0).astype(np.float32)
+
+
 def threshold_membrane(image: np.ndarray, threshold: int, params: Optional[Dict[str, Any]] = None) -> np.ndarray:
     """
     Full-frame binary mask of the membrane channel: threshold the prepared

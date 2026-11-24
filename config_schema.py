@@ -458,6 +458,15 @@ class ImageProcessingConstants(_StrictModel):
             "default only applies when no per-trap value exists."
         )
     )
+    membrane_temporal_window: int = Field(
+        default=3, ge=1, le=9,
+        description=(
+            "Masks are built from the pixel-wise median of this many consecutive membrane "
+            "frames (centred on the current one; 1 = off). Removes frame-to-frame noise at the "
+            "threshold (tip jitter, faint protrusions flickering in and out) and single-frame "
+            "transients. Intensities are always read from the raw frame."
+        )
+    )
     membrane_snr_full_scale: float = Field(
         default=40.0, gt=0.0, le=200.0,
         description=(

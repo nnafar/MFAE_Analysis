@@ -229,6 +229,7 @@ image_processing:
   membrane_denoise_sigma_along: 1.0  # Smoothing along the channel (x) [px]. Normally chosen per trap
                                      # in the threshold window (auto from cell brightness, F to change);
                                      # this value is only used when no per-trap choice exists.
+  membrane_temporal_window: 3        # Masks from the median of 3 consecutive frames (1 = off); steadier tips
   membrane_snr_full_scale: 40.0      # SNR shown as 255; threshold T = T*40/255 sigma above background
   membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
   membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI

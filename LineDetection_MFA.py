@@ -1382,6 +1382,14 @@ class LineDetectionMFA:
         _tip_buf: List[float] = []
         _TIP_BUF_N = 3
 
+        # Temporal median of the membrane frames, used ONLY to build the masks
+        # (and the tip's sub-pixel refinement). Segmenting each frame on its own
+        # lets noise at the threshold make the tip jitter and lets single-frame
+        # transients count; a 3-frame median removes both. Intensity readouts
+        # (rupture haze here, dye/actin downstream) still use the raw frame.
+        t_win = int(self.params.get('image_processing', {}).get('membrane_temporal_window', 3))
+        use_temporal = utils.membrane_enhancement_enabled(self.params) and t_win > 1
+
         for i, image in enumerate(self.roi_images):
             if image is None:
                 protrusion_px_list.append(0); downstream_int_list.append(0)
@@ -1402,6 +1410,12 @@ class LineDetectionMFA:
 
             image_8bit = utils.normalize_to_8bit(image)
             gray_image = image_8bit if len(image_8bit.shape) == 2 else cv2.cvtColor(image_8bit, cv2.COLOR_BGR2GRAY)
+            raw_image = image
+            if use_temporal:
+                image = utils.temporal_median_frame(self.roi_images, i, t_win)
+                mask_gray = utils.normalize_to_8bit(image)
+            else:
+                mask_gray = gray_image
             
             # 1. GENERATE MASKS & PROTRUSION DETECTION
             thr_prot = self.results.get('threshold_prot', threshold)
@@ -1428,7 +1442,7 @@ class LineDetectionMFA:
             mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
             
             # Measure length and area
-            protrusion_len_px, _ = self._measure_protrusion_from_mask(mask_prot, pipette_start_x, gray_image)
+            protrusion_len_px, _ = self._measure_protrusion_from_mask(mask_prot, pipette_start_x, mask_gray)
             protrusion_px_list.append(protrusion_len_px)
             
             # Measure Morphology (Total Area & Body Solidity) using the un-erased body mask
@@ -1458,7 +1472,7 @@ class LineDetectionMFA:
             downstream_int_list.append(self._measure_downstream_intensity(gray_image, tip_x, pipette_start_x))
             
             # 3. DEBUG VISUALIZATION
-            debug_image = self._create_debug_visualization(image, mask_prot, pipette_start_x, protrusion_len_px)
+            debug_image = self._create_debug_visualization(raw_image, mask_prot, pipette_start_x, protrusion_len_px)
             self.results['debug_images'].append(debug_image)
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
             self.results['frame_masks'].append((mask_prot, mask_body_standard))
