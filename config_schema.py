@@ -3,7 +3,7 @@
 Pydantic models for configuration file validation.
 
 ROLE IN PIPELINE:
-This module enforces strict type checking on the 'config.yaml' file.
+This module enforces strict type checking on the config files.
 It ensures that the pipeline never starts with invalid parameters.
 """
 import os

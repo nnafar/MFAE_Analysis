@@ -76,8 +76,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 # The lab's standard experiment configs; templates for --init-config.
-DEFAULT_CONFIG = config_loader.CONFIG_DIR / "config.yaml"          # TIFF folders
-DEFAULT_CZI_CONFIG = config_loader.CONFIG_DIR / "config_czi.yaml"  # .czi files
+DEFAULT_CONFIG = config_loader.CONFIG_DIR / "config_tiff_template.yaml"    # TIFF folders
+DEFAULT_CZI_CONFIG = config_loader.CONFIG_DIR / "config_czi_template.yaml"  # .czi files
 
 
 def default_experiment_id(data_folder: Path) -> str:
@@ -1152,7 +1152,8 @@ def _set_yaml_value(text: str, key: str, value: str) -> str:
 def init_config(dest: Path, source: Optional[Path], data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
     """
-    Copy an existing config (by default config/config.yaml) to `dest`, replacing its
+    Copy an existing config (by default config/config_tiff_template.yaml, or
+    config/config_czi_template.yaml for a .czi file) to `dest`, replacing its
     data folder and experiment name, and setting experiment_type from the
     voltage in the new name (0 V = asp). All other settings are kept, so
     copying the config of a similar experiment is the quickest way to start.

@@ -161,8 +161,7 @@ def test_user_setting_in_defaults_is_refused(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("name, image_format", [
-    ("config.yaml", "tiff"), ("config_5ms.yaml", "tiff"), ("config_100us.yaml", "tiff"),
-    ("config_asp.yaml", "tiff"), ("config_czi.yaml", "czi")])
+    ("config_tiff_template.yaml", "tiff"), ("config_czi_template.yaml", "czi")])
 def test_shipped_configs_hold_exactly_the_user_settings(name, image_format):
     keys = set(config_loader._leaf_keys(config_loader.read_yaml(ROOT / "config" / name)))
     assert keys == set(config_loader.user_keys_for(image_format))
