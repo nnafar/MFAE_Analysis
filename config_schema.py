@@ -479,7 +479,14 @@ class ImageProcessingConstants(_StrictModel):
     )
     max_tip_refinement_px: float = Field(
         default=15.0, ge=0.0, le=30.0,
-        description="Tip refinement (half-maximum along the centre line) is used only if it lies at most this far beyond the mask edge [px]; otherwise the mask edge is used."
+        description="Tip refinement (level crossing along the centre line) is used only if it lies at most this far beyond the mask edge [px]; otherwise the mask edge is used."
+    )
+    tip_level_fraction: float = Field(
+        default=0.25, gt=0.0, lt=1.0,
+        description=(
+            "The tip is placed where the centre-line profile drops to background + this fraction "
+            "of (protrusion - background). Lower values follow dimmer tips but are noisier."
+        )
     )
     protrusion_leak_fraction: float = Field(
         default=0.4, ge=0.0, lt=1.0,

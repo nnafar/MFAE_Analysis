@@ -1361,73 +1361,86 @@ class LineDetectionMFA:
 
     def _refine_edge_subpixel(self, image: np.ndarray, int_edge_x: int, stat_entry: np.ndarray, search_window: int = 10) -> float:
         """
-        Calculates the edge position with sub-pixel accuracy.
-        
-        How it works:
-        1. Takes an integer edge position (e.g., pixel 50).
-        2. Looks at the intensity profile around that pixel (e.g., pixels 45-55).
-        3. Finds the "50% intensity drop" point using linear interpolation.
-        
-        Result: Returns a float (e.g., 50.4) instead of an integer.
+        Place the protrusion tip on the centre-line intensity profile.
+
+        The intensity profile is taken along a narrow strip through the centre of
+        the protrusion. Two levels are measured on it:
+          * background: median of the channel ahead of the mask edge
+            (edge-30 .. edge-3), with its noise sigma estimated from the
+            pixel-to-pixel differences (so the channel-end edge or a wall
+            fragment in that window does not inflate it);
+          * protrusion: median of the first ~10 px inside the mask (edge+2 ..
+            edge+12), i.e. past the dim margin that sits right at the threshold.
+        The tip is where the profile drops to background + tip_level_fraction x
+        (protrusion - background) (default 0.25, so the dim end of a tapering
+        tip is still counted; at least 3 sigma above background), found by
+        walking from inside the protrusion towards the channel and stopping at
+        the first column below that level, then interpolating linearly.
+
+        Why not the minimum of the window and the last 5 mask columns (the
+        previous version)? On a dim tip in a faintly lit channel the minimum is
+        the darkest pixel at the box edge and the last mask columns are at the
+        threshold, so the half level fell inside the background noise; the
+        rightmost sub-level pixel then sat anywhere up to 15 px ahead of the
+        mask and the tip jumped between near-identical frames (Trap 1 after
+        the pulse, Trap 3).
+
+        The mask edge is returned unchanged when the contrast is too low, when
+        there is too little channel ahead to measure the background (mask at the
+        box edge), or when the crossing lies more than max_tip_refinement_px
+        beyond the mask edge.
         """
         h, w = image.shape
         y_top = stat_entry[cv2.CC_STAT_TOP]
         y_height = stat_entry[cv2.CC_STAT_HEIGHT]
         center_y = y_top + y_height / 2.0
-        
-        # Define a narrow horizontal strip through the center of the protrusion
-        keep_height = max(1, int(y_height * 0.30)) 
+
+        # Narrow horizontal strip through the centre of the protrusion
+        keep_height = max(1, int(y_height * 0.30))
         y_start = max(0, int(center_y - keep_height // 2))
         y_end = min(h, int(center_y + keep_height // 2 + 1))
-        
-        # Look around the detected integer edge
-        x_start = max(0, int_edge_x - 30)
-        x_end = min(w, int_edge_x + 5)
-        
-        if x_end - x_start < 5: return float(int_edge_x)
-        roi = image[y_start:y_end, x_start:x_end]
-        if roi.size == 0: return float(int_edge_x)
-        
-        # Average intensity profile along the strip
-        profile = np.mean(roi, axis=0)
-        bg_floor = np.min(profile)
-        
-        # Calculate dynamic range (contrast)
-        obj_level = np.median(profile[-5:]) if len(profile) >= 5 else np.max(profile)
-        dynamic_range = obj_level - bg_floor
-        
-        if dynamic_range < 3.0: return float(int_edge_x) # Contrast too low for subpixel
-        
-        # Determine 50% threshold for the edge
-        threshold = bg_floor + (0.5 * dynamic_range)
-        
-        # Vectorized Search
-        edge_indices = np.where(profile < threshold)[0]
-        if edge_indices.size == 0:
+        profile = np.mean(np.asarray(image[y_start:y_end, :], dtype=np.float64), axis=0)
+        if profile.size == 0:
             return float(int_edge_x)
-            
-        # The rightmost index where signal drops below threshold
-        edge_idx = edge_indices[-1]
-        
-        # Linear interpolation for sub-pixel cross point
-        if edge_idx < len(profile) - 1:
-            v_low, v_high = profile[edge_idx], profile[edge_idx + 1]
-            fraction = (threshold - v_low) / (v_high - v_low) if v_high != v_low else 0.5
-            offset = edge_idx + fraction
-        else:
-            offset = float(edge_idx)
-            
-        refined = max(0.0, min(float(w), x_start + offset))
-        # The half-maximum point usually lies a few px beyond the mask edge on a
-        # thin, dim tip, and it is steadier than the mask edge itself. But faint
-        # signal in the channel ahead (above half the tip's brightness) can carry
-        # the crossing far past the mask, up to the box edge. A crossing more than
-        # max_tip_refinement_px beyond the mask is therefore not trusted, and the
-        # mask edge is used instead.
-        max_out = float(self.params.get('image_processing', {}).get('max_tip_refinement_px', 15.0))
-        if refined < int_edge_x - max_out:
-            return float(int_edge_x)
-        return float(refined)
+
+        edge = int(int_edge_x)
+        # Background: the channel ahead of the mask
+        a0, a1 = max(0, edge - 30), edge - 3
+        if a1 - a0 < 5:
+            return float(edge)
+        ahead = profile[a0:a1]
+        bg = float(np.median(ahead))
+        dd = np.diff(ahead)
+        sigma = 1.4826 * float(np.median(np.abs(dd - np.median(dd)))) / np.sqrt(2.0)
+        # Protrusion level: just inside the mask, past its dim margin
+        i0, i1 = edge + 2, min(w, edge + 12)
+        if i1 - i0 < 3:
+            return float(edge)
+        obj = float(np.median(profile[i0:i1]))
+        if obj - bg < max(3.0, 4.0 * sigma):
+            return float(edge)   # contrast too low to place a crossing
+        ip = self.params.get('image_processing', {})
+        level_frac = float(ip.get('tip_level_fraction', 0.25))
+        level = max(bg + level_frac * (obj - bg), bg + 3.0 * sigma)
+
+        # Start inside the protrusion (above the level), walk towards the channel
+        s = i0
+        while s < i1 and profile[s] < level:
+            s += 1
+        if s >= i1:
+            return float(edge)
+        max_out = float(ip.get('max_tip_refinement_px', 15.0))
+        lim = max(0, int(np.floor(edge - max_out)))
+        x = s
+        while x - 1 >= lim and profile[x - 1] >= level:
+            x -= 1
+        if x - 1 < lim:
+            # still above the level max_out px beyond the mask: signal in the
+            # channel ahead, not the tip -> keep the mask edge
+            return float(edge)
+        v0, v1 = profile[x - 1], profile[x]
+        frac = (level - v0) / (v1 - v0) if v1 != v0 else 0.5
+        return float(min(max(x - 1 + frac, 0.0), float(w)))
 
     def _process_all_frames(self, pipette_start_x: int, threshold: int) -> None:
         """

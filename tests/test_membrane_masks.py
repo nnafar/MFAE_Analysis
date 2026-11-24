@@ -381,7 +381,7 @@ def test_tip_refinement_stays_near_the_mask_edge():
     img[30:42, edge - 26] = 40          # one dark column far ahead
     stat = np.array([edge, 30, PIP - edge, 12, (PIP - edge) * 12])
     refined = det._refine_edge_subpixel(img, edge, stat)
-    assert refined == edge                    # crossing ~25 px out is not trusted -> mask edge
+    assert abs(refined - edge) <= 1           # the band ahead is background: tip stays at the mask edge
 
 
 def test_thin_tip_inside_the_box_is_not_cut():
@@ -423,3 +423,30 @@ def test_tip_refinement_extends_onto_a_dim_tip_within_the_limit():
     refined = det._refine_edge_subpixel(img, edge, stat)
     assert edge - 5 <= refined < edge - 1
 
+
+
+def test_tip_refinement_is_stable_on_a_dim_tip_in_a_lit_channel():
+    """Trap 1: dim tip, faintly lit channel ahead, bright channel-end edge at the box edge.
+
+    The old refinement put the half level inside the background noise (minimum of
+    the window vs. the dim mask margin), so the tip jumped by up to 15 px between
+    near-identical frames. The tip must now stay on the ramp in every noisy frame.
+    """
+    params = _params()
+    det = _detector(params)
+    edge = 30
+    tips = []
+    for seed in range(40):
+        rng = np.random.default_rng(seed)
+        img = np.full((H, W), 14.0)
+        img[:, :2] = 7.0                            # dark box edge
+        img[:, 3:5] = 24.0                          # channel-end edge
+        ramp = np.clip((np.arange(W) - (edge - 2)) / 8.0, 0, 1)   # tip ramps up over 8 px
+        img[30:42, :PIP] += (ramp[:PIP] * 50.0)
+        img += rng.normal(0, 1.0, img.shape)
+        img = np.clip(img, 0, 255).astype(np.uint8)
+        stat = np.array([edge + rng.integers(-2, 3), 30, PIP - edge, 12, 0])
+        tips.append(det._refine_edge_subpixel(img, int(stat[0]), stat))
+    tips = np.array(tips)
+    assert tips.min() > edge - 4 and tips.max() < edge + 6
+    assert tips.std() < 1.0
