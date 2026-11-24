@@ -1225,18 +1225,19 @@ class LineDetectionMFA:
 
     def _cut_protrusion_leak(self, mask: np.ndarray, snr: np.ndarray, pipette_x: int) -> np.ndarray:
         """
-        Cut the protrusion mask where it leaks into faint signal ahead of the tip.
+        Cut a protrusion mask that leaks along the channel to the edge of the box.
 
-        Faint glow in the channel ahead of the protrusion (out-of-focus light,
-        debris, bright wall edges) can sit at the threshold; in frames where it
-        crosses it, the mask runs on to the edge of the box and the length jumps.
-        The mask is profiled along the channel from the entrance: per column, the
-        unclipped signal-to-noise of the masked pixels summed over the
-        protrusion's full height and divided by that height (so a thin streak
-        along a wall counts little). It is cut at the first stretch of >= 3
-        columns below protrusion_leak_fraction x the protrusion's level (median
-        of the profile over the half of the mask nearest the entrance). Without
-        a leak the mask edge comes first and nothing changes.
+        Faint signal in the channel ahead of the protrusion (out-of-focus light,
+        debris) can sit at the threshold; in frames where it crosses it, the
+        mask runs on to the left edge of the box and the length jumps to the box
+        length. Only then (mask within roi_edge_margin_px + 2 of the left edge)
+        the mask is profiled along the channel from the entrance (mean
+        signal-to-noise of the masked pixels per column) and cut at the first
+        stretch of >= 3 columns below protrusion_leak_fraction x the protrusion's
+        level (median of the profile over the half of the mask nearest the
+        entrance). A protrusion that really reaches the edge stays bright all
+        the way and is not cut (the 'left ROI' exit then applies); masks that
+        end inside the box, including thin dim tips, are never touched.
 
         `snr` must be the unclipped image (utils.membrane_snr_image): on the
         8-bit enhanced image a bright protrusion saturates at 255 while every
@@ -1247,19 +1248,19 @@ class LineDetectionMFA:
         pip = int(pipette_x)
         if frac <= 0 or pip <= 4 or not mask[:, :pip].any():
             return mask
+        edge_px = int(round(float(self.params.get('rupture_detection', {}).get('roi_edge_margin_px', 3)))) + 2
+        if not mask[:, :edge_px + 1].any():
+            return mask                     # ends inside the box: no leak to cut
         m = mask[:, :pip] > 0
         cols = np.where(m.any(axis=0))[0]
         left, right = int(cols.min()), int(cols.max())
+        counts = m.sum(axis=0)
+        sig = np.asarray(snr, dtype=float)[:, :pip]
+        prof = np.zeros(pip, dtype=float)
+        has = counts > 0
+        prof[has] = (sig * m).sum(axis=0)[has] / counts[has]
         half = left + (right - left) // 2
-        # rows of the protrusion core: those covered near the entrance
-        core_rows = np.where(m[:, half:right + 1].any(axis=1))[0]
-        if core_rows.size == 0:
-            return mask
-        r0, r1 = int(core_rows.min()), int(core_rows.max()) + 1
-        sig = np.clip(np.asarray(snr, dtype=float)[r0:r1, :pip], 0, None) * m[r0:r1]
-        prof = sig.sum(axis=0) / float(r1 - r0)
-        near = prof[half:right + 1]
-        near = near[near > 0]
+        near = prof[half:right + 1][counts[half:right + 1] > 0]
         if near.size < 3:
             return mask
         level = float(np.median(near))
@@ -1416,7 +1417,13 @@ class LineDetectionMFA:
         else:
             offset = float(edge_idx)
             
-        return max(0.0, min(float(w), x_start + offset))
+        refined = max(0.0, min(float(w), x_start + offset))
+        # Sub-pixel means sub-pixel: the 50 % crossing is searched up to 30 px
+        # beyond the mask, and faint signal in the channel ahead of the tip
+        # could move the tip far past the mask edge (e.g. to the box edge).
+        # Keep it within max_tip_refinement_px of the mask's own edge.
+        max_shift = float(self.params.get('image_processing', {}).get('max_tip_refinement_px', 2.0))
+        return float(min(max(refined, int_edge_x - max_shift), int_edge_x + max_shift))
 
     def _process_all_frames(self, pipette_start_x: int, threshold: int) -> None:
         """
@@ -1678,7 +1685,10 @@ class LineDetectionMFA:
                         run, cand = 0, None
                         continue
                     if run == 0:
-                        prev = [v for v in protrusions[max(entry, i - 5):i] if np.isfinite(v)]
+                        # recent level: the last 5 frames before i outside the pulse
+                        # window, so a cell leaving right at the pulse is still seen
+                        prev = [protrusions[j] for j in range(i - 1, entry - 1, -1)
+                                if j not in blanked_frames and np.isfinite(protrusions[j])][:5]
                         ref = float(np.median(prev)) if prev else None
                     p = protrusions[i]
                     if ref and ref > 2 * exit_thresh and np.isfinite(p) and p < change_ratio * ref:
@@ -1686,7 +1696,13 @@ class LineDetectionMFA:
                             cand = i
                         run += 1
                         if run >= exit_sustained_frames:
-                            last = cand - 1
+                            # step back over frames already below the drop level
+                            # (e.g. inside the pulse window, which is not scanned)
+                            j = cand
+                            while j - 1 > entry and np.isfinite(protrusions[j - 1]) \
+                                    and protrusions[j - 1] < change_ratio * ref:
+                                j -= 1
+                            last = j - 1
                             # frames with the tip at the box edge just before the
                             # drop belong to the cell leaving, not to the cell
                             while last > entry and last < len(tip_at_edge) and tip_at_edge[last]:

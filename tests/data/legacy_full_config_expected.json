@@ -78,6 +78,7 @@
    5
   ],
   "max_body_entrance_gap_px": 8,
+  "max_tip_refinement_px": 2.0,
   "membrane_denoise_sigma": 1.0,
   "membrane_denoise_sigma_along": 1.0,
   "membrane_enhancement": true,
