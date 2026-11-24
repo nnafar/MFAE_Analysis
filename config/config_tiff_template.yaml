@@ -7,7 +7,7 @@
 #
 # Start a new experiment by copying a config, with the paths filled in:
 #   python MFA_analysis.py --init-config config/my_exp.yaml --data-folder "D:/MFAE/<folder>"
-#   (add  --from config/config_asp.yaml  to copy a different config)
+#   (add  --from config/<other config>.yaml  to copy a different config)
 #
 # Check a config:      python MFA_analysis.py <this file> --check
 # See all settings:    python MFA_analysis.py <this file> --show-config
@@ -22,7 +22,7 @@ experiment_type: ep
 # -------------------------------------------------------------------
 paths:
   # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
-  # (to analyse .czi files, start from config/config_czi.yaml)
+  # (to analyse .czi files, start from config/config_czi_template.yaml)
   image_format: tiff
   # Folder with this experiment's .tif images.
   data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10'

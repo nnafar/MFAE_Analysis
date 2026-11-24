@@ -35,18 +35,29 @@ on Linux install it with your package manager (e.g. `sudo apt install python3-tk
 
 ## 2. Quick start (one experiment)
 
-All config files live in the `config/` folder.
+All config files live in the `config/` folder. Two templates are the starting point for every
+experiment:
 
-**Step 1 – create a config file** by copying `config/config.yaml`, the lab's standard experiment config,
-with your data folder filled in:
+| Template | For |
+|---|---|
+| `config/config_tiff_template.yaml` | A folder of exported `.tif` files |
+| `config/config_czi_template.yaml` | A Zeiss `.czi` file |
+
+Don't edit the templates themselves; make a copy per experiment (or per series of experiments
+recorded with the same settings). `config/defaults.yaml` holds the pipeline settings and is the
+same for everyone.
+
+**Step 1 – create a config file** from the template, with your data folder filled in:
 
 ```bash
 python MFA_analysis.py --init-config config/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10"
 ```
 
-The experiment name defaults to the folder's name, and `experiment_type` is set from its voltage.
-To start from one of your other configs instead, add `--from config/config_asp.yaml` (or any config file).
-You can also just copy a config file by hand.
+This copies `config/config_tiff_template.yaml`, or `config/config_czi_template.yaml` when
+`--data-folder` is a `.czi` file. The experiment name defaults to the folder's (or file's) name,
+and `experiment_type` is set from its voltage. To start from one of your own configs instead,
+add `--from config/<your config>.yaml`. You can also just copy a template by hand and fill in
+`data_folder` and `experiment_id`.
 
 A user config holds everything about one experiment, and nothing else:
 
@@ -58,8 +69,9 @@ A user config holds everything about one experiment, and nothing else:
 | Interactive setup | which frame is shown during setup, starting trap-box size |
 | Computer | number of CPU cores |
 
-Every one of these must be present (copy from `config/config.yaml` if one is missing). Open the file and
-check the values.
+Every one of these must be present (copy from the matching template if one is missing). Open the
+file and check the values, in particular `scale_factor` (µm per pixel for your objective and
+binning) and the channel settings.
 
 **The pulse is read from the experiment name** (see [Naming experiment folders](#5-naming-experiment-folders)):
 `…-100V-1ms-frame10` means a 100 V, 1 ms pulse at file number 10. Any voltage or duration works; you
@@ -85,16 +97,30 @@ Results are written to `Output/<experiment_id>/`.
 
 ### Running from Spyder
 
-The commands above are for a terminal. In Spyder's IPython console, pass the same arguments to
-`runfile` instead (everything after `python MFA_analysis.py` goes into `args`):
+The commands above are for a terminal. In Spyder, the pipeline needs to be told **which config
+file to use**: pressing Run (F5) on `MFA_analysis.py` without one only prints the help text.
+Add the config file to the file's run configuration once:
+
+1. Open `MFA_analysis.py` in Spyder.
+2. **Run → Configuration per file…** (Ctrl+F6).
+3. Tick **Command line options** and enter the path to your config, e.g.
+   `config/my_experiment.yaml`. Add options after it as needed, e.g.
+   `config/my_experiment.yaml --check` or `config/my_experiment.yaml --fresh`.
+4. Under **Working directory**, choose **The directory of the file being executed**, so that
+   `config/...` is found.
+5. Click **OK**, then press **F5**.
+
+Spyder remembers this per file, so later runs only need F5. To analyse another experiment,
+change the config path in the same dialog (and remove `--check` once the check passes).
+
+Alternatively, type the same in the IPython console with `runfile`; `args` is everything that
+would follow `python MFA_analysis.py` in a terminal:
 
 ```python
 runfile('C:/GitHub/MFAE_Analysis/MFA_analysis.py', args='config/my_experiment.yaml --check', wdir='C:/GitHub/MFAE_Analysis')
 ```
 
-Or set them once for the Run button: open `MFA_analysis.py`, **Run → Configuration per file…**
-(Ctrl+F6), tick **Command line options** and enter e.g. `config/my_experiment.yaml --check`, with
-the working directory set to the file's directory; then press F5.
+Typing `python MFA_analysis.py ...` in the console gives `SyntaxError: invalid syntax`.
 
 ### Command-line options
 
@@ -107,13 +133,13 @@ the working directory set to the file's directory; then press F5.
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
 | `--show-config` | Print every setting the run would use, and which file set it |
 | `--debug` | Show detailed log messages |
-| `--init-config FILE` | Create a new config by copying `config/config.yaml` (or `--from OTHER.yaml`) |
+| `--init-config FILE` | Create a new config from the TIFF or CZI template (or `--from OTHER.yaml`) |
 
 Because `--data-folder` overrides the config, one config can be reused for a whole series of
 experiments recorded with the same settings:
 
 ```bash
-python MFA_analysis.py config/config_5ms.yaml --data-folder "D:/MFAE/260129_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
+python MFA_analysis.py config/my_5ms_series.yaml --data-folder "D:/MFAE/260129_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
 ```
 
 ### How settings work
@@ -123,7 +149,7 @@ affecting the other:
 
 | File | Contains | Who edits it |
 |---|---|---|
-| Your user configs (`config/config.yaml`, `config/config_5ms.yaml`, …) | Exactly the user settings listed above. | You, per experiment |
+| Your user configs (copies of `config/config_tiff_template.yaml` or `config/config_czi_template.yaml`) | Exactly the user settings listed above. | You, per experiment |
 | `config/defaults.yaml` | Pipeline settings: image processing, detection thresholds, fitting, figures. | Developers only |
 
 The pipeline refuses to start if a user config is missing a user setting or contains a pipeline
@@ -145,7 +171,7 @@ The pipeline can read a Zeiss `.czi` file instead of exported TIFFs. Start from 
 python MFA_analysis.py --init-config config/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10.czi"
 ```
 
-When `--data-folder` is a `.czi` file, `config/config_czi.yaml` is copied automatically, and the
+When `--data-folder` is a `.czi` file, `config/config_czi_template.yaml` is copied automatically, and the
 experiment name defaults to the file name without `.czi`, so name the file by the naming rule.
 A CZI config differs from a TIFF one in two places:
 
@@ -200,7 +226,53 @@ The steps are:
    neighbouring frames, so its masks are a little steadier).
 
 Your choices are saved to `Output/<experiment_id>/session_cache.json`, so a re-run skips the setup
-and goes straight to the analysis. Use `--fresh` to set up again (or delete that file).
+and goes straight to the analysis (see [The saved setup](#the-saved-setup-session_cachejson)).
+
+### The saved setup (session_cache.json)
+
+When the interactive setup is finished, everything you chose in it is written to
+`Output/<experiment_id>/session_cache.json`. The next run of the same experiment (same results
+folder) finds the file, skips the setup windows and goes straight to the analysis.
+
+```json
+{
+  "experiment_id": "261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304",
+  "threshold_scale": "membrane SNR, 255 = 40 sigma",
+  "rotation_angle": 0.7,
+  "trap_configs": [
+    {"trap_index": 0, "roi_coords": [240, 291, 112, 246], "pip": 76.0,
+     "thr_prot": 64.0, "thr_body": 70.0, "smooth": 3.0}
+  ],
+  "source_files": ["..."]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `rotation_angle` | Image rotation [degrees] |
+| `trap_index` | Trap number minus one (`0` = Trap 1) |
+| `roi_coords` | Trap box `[top, bottom, left, right]` in pixels of the rotated image |
+| `pip` | Pipette entrance, in pixels from the left edge of the trap box |
+| `thr_prot`, `thr_body` | Protrusion and cell-body thresholds (0–255) |
+| `smooth` | Faint-cell smoothing along the channel [px] (the `F` key) |
+| `threshold_scale` | What the thresholds are measured in (see below) |
+| `source_files` | The image files the setup was made on |
+
+Only these interactive choices are stored. Every other setting is read from your config and
+`config/defaults.yaml` on each run, so you can change e.g. `scale_factor` or rupture settings
+and re-run without repeating the setup.
+
+- **Redo the setup:** run with `--fresh` (or delete the file). The new setup overwrites it.
+- **Edit by hand:** the file is plain text. You can change a threshold, the pipette position or
+  the smoothing of one trap, or delete a trap's entry to leave it out. Keep the JSON valid
+  (commas, brackets).
+- **Thresholds and settings must match.** A threshold is only meaningful on the scale it was
+  picked on. If `threshold_scale` doesn't match the current mask settings (`membrane_enhancement`,
+  `membrane_snr_full_scale`), the file is ignored, a warning says why, and the setup runs again.
+  Caches from before the contrast enhancement have no `threshold_scale` and count as the old
+  CLAHE method, so they also trigger a new setup.
+- **Changed data folder:** if the images differ from `source_files`, the log warns but the setup
+  is still reused; check the results, or use `--fresh`.
 
 ### Choosing the threshold
 
@@ -398,4 +470,5 @@ analysis both read it.
 When you add a config setting, define it in `config_schema.py` (unknown keys are rejected, so typos
 can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value and an
 explanation, in `config/defaults.yaml`; a user setting goes in `USER_KEYS` in `config_loader.py`
-and in every user config, starting with `config/config.yaml`.
+and in every user config, starting with the two templates (`config/config_tiff_template.yaml`,
+`config/config_czi_template.yaml`).

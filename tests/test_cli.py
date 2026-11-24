@@ -34,7 +34,7 @@ def test_init_config_copies_config_yaml_with_new_paths(tmp_path, data_folder):
     dest = tmp_path / "my.yaml"
     assert mfa.main(["--init-config", str(dest), "--data-folder", str(data_folder)]) == 0
     data = yaml.safe_load(dest.read_text(encoding="utf-8"))
-    template = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    template = yaml.safe_load((ROOT / "config" / "config_tiff_template.yaml").read_text(encoding="utf-8"))
     assert Path(data["paths"]["data_folder"]) == data_folder
     assert data["paths"]["experiment_id"] == EXP_NAME  # defaults to the folder name
     # everything except the paths is copied unchanged
@@ -44,7 +44,10 @@ def test_init_config_copies_config_yaml_with_new_paths(tmp_path, data_folder):
 
 def test_init_config_from_another_config(tmp_path, data_folder):
     dest = tmp_path / "my.yaml"
-    assert mfa.main(["--init-config", str(dest), "--from", str(ROOT / "config" / "config_100us.yaml"),
+    other = tmp_path / "other.yaml"
+    other.write_text((ROOT / "config" / "config_tiff_template.yaml").read_text(encoding="utf-8")
+                     .replace("default_roi_width_um: 115.0", "default_roi_width_um: 70.0"), encoding="utf-8")
+    assert mfa.main(["--init-config", str(dest), "--from", str(other),
                      "--data-folder", str(data_folder)]) == 0
     data = yaml.safe_load(dest.read_text(encoding="utf-8"))
     assert data["workflow_settings"]["default_roi_width_um"] == 70.0

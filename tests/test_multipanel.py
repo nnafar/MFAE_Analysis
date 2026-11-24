@@ -104,7 +104,7 @@ def test_worker_outputs(tmp_path, save_singles):
     import MFA_analysis as mfa
 
     import config_loader
-    raw = config_loader.load_layers(ROOT / 'config' / 'config.yaml', {
+    raw = config_loader.load_layers(ROOT / 'config' / 'config_tiff_template.yaml', {
         'paths': {'data_folder': tempfile.gettempdir()},
         'plotting_parameters': {'save_individual_trap_plots': save_singles},
     }).data
@@ -170,7 +170,7 @@ def test_shared_actin_channel_gives_identical_results(tmp_path):
     import config_loader
 
     params = MFAConfig(**config_loader.load_layers(
-        ROOT / 'config' / 'config.yaml', {'paths': {'data_folder': tempfile.gettempdir()}}).data).model_dump()
+        ROOT / 'config' / 'config_tiff_template.yaml', {'paths': {'data_folder': tempfile.gettempdir()}}).data).model_dump()
     frames = [create_synthetic_protrusion_image(
         protrusion_length_px=0.5 if i < 5 else 8 + 1.2 * (i - 5))[0].astype(np.uint8) for i in range(25)]
     stack = np.stack(frames)

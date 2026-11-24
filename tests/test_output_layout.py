@@ -36,3 +36,30 @@ def test_readers_fall_back_to_old_layout(tmp_path):
     new = tmp_path / 'Protrusion Length Detection' / 'Full protrusion detection'
     new.mkdir(parents=True)
     assert ol.first_existing(ol.full_csv_candidates(tmp_path)) == new
+
+
+def test_session_cache_with_other_threshold_scale_is_not_reused(tmp_path):
+    import json
+    import types
+    import MFA_analysis as mfa
+
+    def fake(enhance, full_scale=40.0):
+        obj = types.SimpleNamespace()
+        obj.params = {'image_processing': {'membrane_enhancement': enhance,
+                                           'membrane_snr_full_scale': full_scale},
+                      'guv_settings': {'enable': False}}
+        obj.results_dir = tmp_path
+        obj.file_reader = types.SimpleNamespace(tif_files=[])
+        obj._threshold_scale = types.MethodType(mfa.MFAAnalysis._threshold_scale, obj)
+        return obj
+
+    load = mfa.MFAAnalysis._load_session_cache
+    cache = {'trap_configs': [], 'source_files': []}          # old cache: no scale recorded
+    (tmp_path / 'session_cache.json').write_text(json.dumps(cache))
+    assert load(fake(enhance=True)) is None                   # CLAHE thresholds, SNR pipeline
+    assert load(fake(enhance=False)) is not None              # still fine for the CLAHE pipeline
+
+    cache['threshold_scale'] = fake(True)._threshold_scale()
+    (tmp_path / 'session_cache.json').write_text(json.dumps(cache))
+    assert load(fake(enhance=True)) is not None
+    assert load(fake(enhance=True, full_scale=20.0)) is None  # scale changed since the setup
