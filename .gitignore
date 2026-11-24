@@ -181,5 +181,10 @@ cython_debug/
 .cursorindexingignore
 
 #nnafar
-Output/
+/Output
 /Output_Thesis
+/config/config_czi_1ms_sym_NN.yaml
+/config/config_tiff_5ms_asym_NN.yaml
+/config/config_tiff_5ms_asym_NN.yaml
+/config/config_tiff_100us_asym_NN.yaml
+/config/config_tiff_asp_asym_NN.yaml
