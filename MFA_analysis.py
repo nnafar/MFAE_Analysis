@@ -309,7 +309,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 kymo = create_kymograph_for_trap(
                     rois, det_res, params, dirs['protrusion'],
                     trap_index + 1, time_data, save_plot=save_singles,
-                    csv_dir=dirs['membrane_kymo'],
+                    csv_dir=dirs['membrane_kymo'], pulse_time=pulse_time,
                 )
                 if kymo.display_matrix is not None:
                     plot_data['membrane_kymo'] = {

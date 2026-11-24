@@ -167,8 +167,9 @@ def draw_actin_kymograph(ax, profiles, t, pipette_x, scale,
         pulse_time=pulse_time, rupture_time=rupture_time, vmin=vmin, vmax=vmax)
 
 
-def draw_membrane_kymograph(ax, matrix, pipette_x, protrusions_px, time_data, scale):
-    """Membrane centre-line kymograph with the detected tip overlaid."""
+def draw_membrane_kymograph(ax, matrix, pipette_x, protrusions_px, time_data, scale,
+                            pulse_time=None):
+    """Membrane centre-line kymograph with the detected tip (and the pulse, if any) overlaid."""
     colors = utils.MFA_COLORS
     h, w = matrix.shape
     total_time = time_data[-1] if time_data else h
@@ -181,6 +182,9 @@ def draw_membrane_kymograph(ax, matrix, pipette_x, protrusions_px, time_data, sc
         ax.plot(tip_x_um, y_times, color=colors['secondary'], linewidth=2.0,
                 label='Detected Tip', alpha=0.9)
     ax.axvline(0, color=colors['pulse'], linestyle='--', linewidth=1.0, label='Entrance')
+    if pulse_time is not None:
+        # same style as the dye-uptake kymographs (white on the grey image)
+        ax.axhline(pulse_time, color='white', linestyle='--', linewidth=1.0, label='Pulse')
     return im
 
 
@@ -273,7 +277,8 @@ def draw_protrusion_trace(ax_len, ax_haze, time_points, protrusions, intensities
 # --- 2. KYMOGRAPH PLOT ---
 def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Path,
                    pipette_x: int, protrusions_px: List[float], time_data: List[float],
-                   params: Dict[str, Any], channel_label: Optional[str] = None):
+                   params: Dict[str, Any], channel_label: Optional[str] = None,
+                   pulse_time: Optional[float] = None):
     """
     Save a kymograph image.  When channel_label is provided (e.g. "Membrane"
     or "Dye"), the filename and title include that label so multiple channels
@@ -286,7 +291,8 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    draw_membrane_kymograph(ax, kymograph_matrix, pipette_x, protrusions_px, time_data, scale)
+    draw_membrane_kymograph(ax, kymograph_matrix, pipette_x, protrusions_px, time_data, scale,
+                            pulse_time=pulse_time)
 
     title_bits = [f'Trap #{trap_index}']
     if channel_label:

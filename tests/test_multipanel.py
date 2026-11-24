@@ -10,6 +10,7 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.pyplot  # noqa: E402
 
 import numpy as np
 import pytest
@@ -211,3 +212,14 @@ def test_file_reader_reuses_membrane_files_for_actin(tmp_path):
                                  'actin_parameters': {'enable': True, 'channel_pattern': 'C1'}})
     reader.run()
     assert reader.actin_files == reader.tif_files and reader.actin_files is not reader.tif_files
+
+
+def test_membrane_kymographs_mark_the_pulse_only_when_there_is_one():
+    pulsed = _fake_trap(0)
+    unpulsed = _fake_trap(1)
+    unpulsed['plot_data']['pulse_time'] = None
+    fig = pmu._membrane_kymographs([pulsed, unpulsed], ncols=2, scale=0.3)
+    labels = [[ln.get_label() for ln in ax.get_lines()] for ax in fig.axes[:2]]
+    assert 'Pulse' in labels[0]
+    assert 'Pulse' not in labels[1]
+    matplotlib.pyplot.close(fig)

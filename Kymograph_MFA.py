@@ -70,7 +70,8 @@ class KymographAnalysis:
     # ------------------------------------------------------------------ #
     def run_analysis(self, output_dir: Union[str, Path], trap_index: int,
                      save_plot: bool = True,
-                     csv_dir: Optional[Union[str, Path]] = None) -> 'KymographAnalysis':
+                     csv_dir: Optional[Union[str, Path]] = None,
+                     pulse_time: Optional[float] = None) -> 'KymographAnalysis':
         """Build the kymograph, write its CSV and (if save_plot) a single-trap PDF.
         The matrices stay on the object (display_matrix / raw_matrix) for
         callers that build multipanel figures.
@@ -103,6 +104,7 @@ class KymographAnalysis:
                 time_data=self.time_data,
                 params=self.params,
                 channel_label="Membrane",
+                pulse_time=pulse_time,
             )
 
         # CSV stores the raw floating-point intensity so downstream code can
@@ -230,6 +232,7 @@ def create_kymograph_for_trap(
     time_data: Optional[List[float]] = None,
     save_plot: bool = True,
     csv_dir: Optional[Union[str, Path]] = None,
+    pulse_time: Optional[float] = None,
 ) -> KymographAnalysis:
     """Helper function to instantiate and run the analysis."""
     analyzer = KymographAnalysis(
@@ -238,5 +241,6 @@ def create_kymograph_for_trap(
         params=params,
         time_data=time_data,
     )
-    analyzer.run_analysis(output_dir, trap_index, save_plot=save_plot, csv_dir=csv_dir)
+    analyzer.run_analysis(output_dir, trap_index, save_plot=save_plot, csv_dir=csv_dir,
+                          pulse_time=pulse_time)
     return analyzer
