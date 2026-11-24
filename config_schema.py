@@ -447,7 +447,7 @@ class ImageProcessingConstants(_StrictModel):
         description="Gaussian sigma [px] applied before the SNR transform (0 = off)."
     )
     membrane_snr_full_scale: float = Field(
-        default=20.0, gt=0.0, le=200.0,
+        default=40.0, gt=0.0, le=200.0,
         description=(
             "SNR mapped to 255 on the enhanced image. A threshold T corresponds to "
             "T * membrane_snr_full_scale / 255 noise units above background."

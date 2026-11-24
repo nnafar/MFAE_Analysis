@@ -481,7 +481,7 @@ def _membrane_enhancement_settings(params: Optional[Dict[str, Any]]) -> Dict[str
     return {
         'enable':          bool(img_p.get('membrane_enhancement', True)),
         'denoise_sigma':   float(img_p.get('membrane_denoise_sigma', 1.0)),
-        'snr_full_scale':  float(img_p.get('membrane_snr_full_scale', 20.0)),
+        'snr_full_scale':  float(img_p.get('membrane_snr_full_scale', 40.0)),
         'fill_holes':      bool(img_p.get('membrane_fill_holes', True)),
         'max_hole_frac':   float(img_p.get('membrane_max_hole_fraction', 0.25)),
     }
@@ -494,36 +494,79 @@ def membrane_enhancement_enabled(params: Optional[Dict[str, Any]]) -> bool:
     return _membrane_enhancement_settings(params)['enable']
 
 
+def _half_max_crossing(hist: np.ndarray, centers: np.ndarray, peak: int, step: int) -> Optional[float]:
+    """Distance from the peak to where the histogram first drops below half max (linear interp)."""
+    half = hist[peak] / 2.0
+    i = peak
+    while 0 <= i + step < len(hist):
+        j = i + step
+        if hist[j] < half:
+            # interpolate between i (>= half) and j (< half)
+            f = (hist[i] - half) / max(hist[i] - hist[j], 1e-12)
+            x = centers[i] + f * (centers[j] - centers[i])
+            return abs(x - centers[peak])
+        i = j
+    return None
+
+
 def estimate_background_and_noise(image: np.ndarray) -> Tuple[float, float]:
     """
     Robust background level and noise of a (smoothed) membrane image.
 
-    Background = mode of the intensity histogram. In a trap ROI the medium
-    around the cell is the most common intensity; cell pixels are brighter,
-    channel walls darker, and neither shifts the mode.
-    Noise = 1.4826 * median absolute deviation of the pixels *at or below*
-    the mode. Only the dark half of the background peak is used, so bright
-    cell pixels cannot inflate the noise estimate.
+    Background = mode of the intensity histogram (the medium around the cell
+    is the most common intensity in a trap ROI).
+
+    Noise = width of the background peak, from its half-width at half maximum
+    (HWHM / 1.1774 = sigma for a Gaussian peak). The narrower of the two
+    flanks is used: dark channel walls/PDMS only widen the left flank and
+    cell pixels only widen the right flank, and neither touches the flank
+    on the other side. This is measured on the image actually being
+    thresholded, so smoothing, interpolation from rotation and mild
+    illumination gradients are all included automatically.
+
+    (An earlier version used the MAD of all pixels below the mode. Thick
+    dark walls make up a large share of those pixels and inflated the noise
+    several-fold, so dim cells showed up at only 2-5 sigma.)
     """
     v = np.asarray(image, dtype=np.float64).ravel()
     v = v[np.isfinite(v)]
-    if v.size == 0:
-        return 0.0, 1.0
+    if v.size < 16:
+        return (float(v.mean()) if v.size else 0.0), 1.0
     lo, hi = np.percentile(v, (0.5, 99.5))
     if hi <= lo:
         return float(lo), 1.0
+    k = np.array([1, 4, 6, 4, 1], dtype=np.float64); k /= k.sum()
+
+    # Pass 1: coarse mode over the full range.
     hist, edges = np.histogram(v, bins=256, range=(lo, hi))
-    # Light smoothing so a single noisy bin cannot win the argmax.
-    k = np.array([1, 4, 6, 4, 1], dtype=np.float64)
-    hist = np.convolve(hist.astype(np.float64), k / k.sum(), mode='same')
+    hist = np.convolve(hist.astype(np.float64), k, mode='same')
     i = int(np.argmax(hist))
     bg = 0.5 * (edges[i] + edges[i + 1])
-    below = v[v <= bg]
-    noise = 1.4826 * float(np.median(bg - below)) if below.size > 10 else 0.0
-    # Floor: never below one histogram bin, so flat/synthetic images do not
-    # blow up the SNR scale.
-    noise = max(noise, (hi - lo) / 256.0, 1e-6)
-    return float(bg), float(noise)
+    sigma = (hi - lo) / 8.0  # generous start, refined below
+
+    # Passes 2-4: zoom in on the background peak and measure its width.
+    for _ in range(3):
+        r = max(5.0 * sigma, 1e-6)
+        sel = v[(v >= bg - r) & (v <= bg + r)]
+        if sel.size < 16:
+            break
+        hist, edges = np.histogram(sel, bins=128, range=(bg - r, bg + r))
+        hist = np.convolve(hist.astype(np.float64), k, mode='same')
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        i = int(np.argmax(hist))
+        bg = float(centers[i])
+        widths = [w for w in (_half_max_crossing(hist, centers, i, -1),
+                              _half_max_crossing(hist, centers, i, +1)) if w is not None]
+        if not widths:
+            break
+        new_sigma = min(widths) / 1.1774
+        bin_w = edges[1] - edges[0]
+        new_sigma = max(new_sigma, bin_w)
+        if abs(new_sigma - sigma) < 0.02 * sigma:
+            sigma = new_sigma
+            break
+        sigma = new_sigma
+    return float(bg), float(max(sigma, 1e-6))
 
 
 def enhance_membrane_image(image: np.ndarray, params: Optional[Dict[str, Any]] = None) -> np.ndarray:

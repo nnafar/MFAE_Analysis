@@ -123,3 +123,61 @@ def test_actin_uses_raw_pixels_when_sharing_membrane_channel():
     assert res[body_key][0] == pytest.approx(raw_body_mean, rel=1e-6)
     assert res[prot_key][0] == pytest.approx(raw_prot_mean, rel=1e-6)
     assert np.array_equal(rois[0], img)
+
+
+def _detector(params):
+    from LineDetection_MFA import LineDetectionMFA
+    return LineDetectionMFA([np.zeros((H, W), np.uint16)], [PIP, 0], params)
+
+
+def _channel_scene(prot_left, wall_rows=2, prot_amp=380.0, line=False, seed=3):
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:H, 0:W]
+    img = np.full((H, W), 400.0)
+    img[22 - wall_rows:22, :PIP] = 120
+    img[50:50 + wall_rows, :PIP] = 120
+    if wall_rows > 4:  # large dark PDMS areas, as in many real traps
+        img[:22 - wall_rows, :PIP] = 220
+        img[50 + wall_rows:, :PIP] = 220
+    prot = (xx >= prot_left) & (xx < PIP) & (np.abs(yy - 36) <= 6)
+    sig = np.where(prot, prot_amp, 0.0)
+    if line:
+        sig[:, 2:4] += 200
+    sig = cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2)
+    img = img + sig + rng.normal(0, 25, (H, W))
+    gt = prot.copy()
+    gt[:18] = gt[H - 18:] = False
+    return np.clip(img, 0, 65535).astype(np.uint16), gt
+
+
+def test_noise_estimate_not_inflated_by_dark_walls():
+    """Thick dark walls must not inflate the noise (dim cells looked like 2 sigma)."""
+    params = _params()
+    thin, _ = _channel_scene(60, wall_rows=2)
+    thick, _ = _channel_scene(60, wall_rows=10)
+    f = lambda im: cv2.GaussianBlur(im.astype(np.float32), (0, 0), 1.0)
+    _, n_thin = utils.estimate_background_and_noise(f(thin))
+    _, n_thick = utils.estimate_background_and_noise(f(thick))
+    assert n_thick == pytest.approx(n_thin, rel=0.25)
+    assert n_thin < 12  # true smoothed noise is ~7 for sigma=25 raw noise
+
+
+@pytest.mark.parametrize("prot_left,line", [(0, False), (6, True)])
+def test_protrusion_reaching_left_border_is_kept(prot_left, line):
+    """A protrusion spanning the whole channel used to be deleted as a 'wall artefact'."""
+    params = _params()
+    img, gt = _channel_scene(prot_left, line=line)
+    det = _detector(params)
+    m = det._keep_closest_blob(det._segment_mask(img, 64, True, PIP), PIP, True)
+    assert _iou(m, gt) > 0.6
+
+
+def test_left_border_debris_still_removed():
+    """Debris touching the left border but not the entrance is still removed."""
+    params = _params()
+    img, _ = _channel_scene(60)
+    img = img.copy()
+    img[30:42, 0:25] += 400  # bright blob at the left edge, far from the entrance
+    det = _detector(params)
+    m = det._segment_mask(img, 64, True, PIP)
+    assert not m[:, :25].any()
