@@ -405,19 +405,30 @@ class CziFrame:
         return f"{self.path}[C{self.channel + 1},T{self.frame_number}]"
 
 
-def resolve_czi_file(data_folder: Union[str, Path]) -> Path:
-    """The .czi file itself, or the single .czi file inside a folder."""
+def resolve_czi_file(data_folder: Union[str, Path], experiment_id: Optional[str] = None) -> Path:
+    """
+    The .czi file to analyse:
+      - data_folder itself, if it is a .czi file;
+      - otherwise the .czi file in that folder named after experiment_id
+        (so one folder can hold the files of many experiments);
+      - otherwise the only .czi file in the folder.
+    """
     data_folder = Path(data_folder)
     if data_folder.is_file():
         return data_folder
     found = sorted(p for p in data_folder.iterdir() if p.suffix.lower() == '.czi')
-    if len(found) == 1:
-        return found[0]
     if not found:
         raise FileNotFoundError(f"No .czi file found in {data_folder}")
+    if experiment_id:
+        named = [p for p in found if p.stem.lower() == str(experiment_id).lower()]
+        if named:
+            return named[0]
+    if len(found) == 1:
+        return found[0]
     raise FileNotFoundError(
-        f"{len(found)} .czi files in {data_folder}; set data_folder to the one to analyse: "
-        + ", ".join(p.name for p in found))
+        f"{len(found)} .czi files in {data_folder} and none is named after the experiment "
+        f"('{experiment_id}.czi'). Set experiment_id to one of these file names (without .czi), "
+        f"or data_folder to the file itself: " + ", ".join(p.name for p in found))
 
 
 def valid_timestamps(values, n_frames: int) -> Optional[List[float]]:
@@ -483,7 +494,8 @@ class CziRead(FileRead):
     # -- loading -------------------------------------------------------------
     def run(self) -> None:
         logger.info("Reading CZI file...")
-        self.czi_path = resolve_czi_file(self.data_folder)
+        self.czi_path = resolve_czi_file(
+            self.data_folder, self.params.get('paths', {}).get('experiment_id'))
         reader = self._open()
         box = reader.total_bounding_box
         n_t = box.get('T', (0, 1))[1]

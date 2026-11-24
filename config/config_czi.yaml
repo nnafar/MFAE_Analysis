@@ -23,7 +23,8 @@ experiment_type: ep
 paths:
   # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
   image_format: czi
-  # The .czi file (or a folder containing exactly one .czi file).
+  # The .czi file, or the folder holding it: in a folder with several .czi files,
+  # the one named after experiment_id is used.
   data_folder: 'D:\MFAE\260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10.czi'
   # Name of the results folder (defaults to the .czi file name); must follow the naming rule:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
