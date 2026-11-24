@@ -239,3 +239,30 @@ def test_temporal_window_steadies_faint_protrusion_length():
         return np.abs(np.diff(L)).mean()
 
     assert jitter(3) < 0.8 * jitter(1)
+
+
+def test_tracking_stops_when_tip_leaves_roi():
+    """Tip at the left ROI edge for 3+ frames: tracking stops before it; the next cell is not tracked."""
+    from LineDetection_MFA import LineDetectionMFA
+    yy, xx = np.mgrid[0:H, 0:W]
+    lengths = [0] * 3 + list(range(20, 110, 10)) + [PIP] * 6 + [25, 30, 35, 40, 45]
+    rois = []
+    for k, L in enumerate(lengths):
+        rng = np.random.default_rng(k)
+        img = np.full((H, W), 400.0)
+        sig = np.where(np.hypot(xx - PIP - 24, yy - 36) <= 23, 500.0, 0.0)
+        if L:
+            sig += np.where((xx >= PIP - L) & (xx < PIP) & (np.abs(yy - 36) <= 6), 500.0, 0.0)
+        img = img + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2) + rng.normal(0, 20, (H, W))
+        rois.append(np.clip(img, 0, 65535).astype(np.uint16))
+    params = _params()
+    params['image_processing']['membrane_temporal_window'] = 1
+    params['rupture_detection'] = {'enable_smoothing': False}
+    params['experiment_parameters'] = {'scale_factor': 0.1}   # keep lengths below the clamp limit
+    det = LineDetectionMFA(rois, [PIP, 0], params)
+    res = det.run_detection_with_parameters(PIP, 100, threshold_body=100)
+    first_edge = lengths.index(PIP)
+    assert res['exit_reason'] == 'left ROI'
+    assert res['exit_frame_index'] == first_edge - 1
+    assert all(np.isnan(v) for v in res['protrusion_lengths_um'][first_edge:])
+    assert np.isfinite(res['protrusion_lengths_um'][first_edge - 1])

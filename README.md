@@ -284,6 +284,15 @@ wrong, the movie shows whether the mask lost the tip, picked up debris, or the c
 The bulk analysis reads both this layout and the older flat one (CSVs directly in
 `Full protrusion detection/`, `Dye Uptake/`, `Actin Quantification/`).
 
+**When tracking stops.** A trap is tracked from cell entry until the cell exits. Exit is either a
+slip (the protrusion collapses for 3 frames) or the **protrusion tip leaving the box**: once the
+tip has stayed at the left edge of the trap box for 3 consecutive frames, its true length is
+unknown and the cell usually moves on while the next one arrives. Tracking then stops at the last
+frame before the tip reached the edge, and later frames are left empty (NaN) in every CSV and
+plot (`rupture_detection.exit_at_roi_edge_frames`, 0 = off). The per-trap CSV has a `Tracked`
+column and an `Exit_Reason` (`left ROI` or `slip`) on the last tracked frame. If many traps stop
+this way, draw a wider trap box.
+
 Rupture markers on the plots come from the automatic rupture detection, which is not reliable
 enough to cut data on. All CSVs therefore contain every frame; treat the markers as hints.
 
@@ -335,7 +344,8 @@ live elsewhere.
 | The computer becomes sluggish | Lower `workflow_settings.n_workers` in your config. |
 | A faint cell is barely captured in the threshold window | Press `F` for more smoothing, then lower the threshold (stay above ~3 sigma). |
 | The mask includes background noise | Raise the threshold, or press `F` to reduce smoothing if it is high. |
-| The protrusion mask reaches the left edge of the box | The protrusion is longer than the trap box, so its true length can't be measured (lengths close to the channel length are treated as clamped and don't count for entry). Draw a wider ROI (`--fresh`). |
+| The protrusion mask reaches the left edge of the box | The protrusion is longer than the trap box, so its true length can't be measured; tracking stops after 3 frames at the edge. Draw a wider ROI (`--fresh`). |
+| `SyntaxError: invalid syntax` when running `python MFA_analysis.py ...` | The command was typed into a Python console (Spyder, Jupyter). Run it in a terminal (Anaconda Prompt) from the repository folder, or prefix it with `!` in the console. |
 | `Entry not confirmed for this trap` in the log | No valid protrusion was found for 3 frames in a row, so rupture detection is off for that trap. Watch its tracking movie. If the protrusion is tracked fine but longer than 0.9 × `channel_length_um` (36 µm by default), check `scale_factor`: `--check` shows the file's pixel size next to it. |
 | A tracking movie won't play | Open it in VLC, which plays MJPG `.avi` files on any system. |
 
