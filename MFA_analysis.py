@@ -73,7 +73,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 # The lab's standard experiment config; also the template for --init-config.
-DEFAULT_CONFIG = PROJECT_ROOT / "config.yaml"
+DEFAULT_CONFIG = config_loader.CONFIG_DIR / "config.yaml"
 
 
 def default_output_root() -> Path:
@@ -396,8 +396,13 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         if params.get('actin_parameters', {}).get('enable', False) and actin_config and actin_config['path']:
             try:
                 dirs['actin'].mkdir(parents=True, exist_ok=True)
-                all_actin_frames = np.memmap(actin_config['path'], dtype=actin_config['dtype'], mode='r', shape=actin_config['shape'])
-                actin_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_actin_frames]
+                if actin_config['path'] == config_dict['mmap_path']:
+                    # Same images as the membrane channel: reuse the trap crops
+                    # (read-only memmap slices, so neither analysis can alter them).
+                    actin_rois = rois
+                else:
+                    all_actin_frames = np.memmap(actin_config['path'], dtype=actin_config['dtype'], mode='r', shape=actin_config['shape'])
+                    actin_rois = [cropper.process_frame(f, trap_index, skip_rotation=True) for f in all_actin_frames]
                 
                 actin_analyzer = ActinAnalyzer(
                     rois, actin_rois,
@@ -753,7 +758,13 @@ class MFAAnalysis:
             # 3. Cache Actin (Optional)
             actin_mmap_path, actin_shape, actin_dtype = None, None, None
             if self.params.get('actin_parameters', {}).get('enable', False) and self.file_reader.actin_files:
-                actin_mmap_path, actin_shape, actin_dtype = self._prepare_shared_memory_stack(self.file_reader.actin_files, "Actin")
+                if list(self.file_reader.actin_files) == list(self.file_reader.tif_files):
+                    # Actin is imaged in the membrane channel: reuse those
+                    # frames instead of reading and caching them a second time.
+                    logger.info("Actin channel is the membrane channel: reusing the membrane images.")
+                    actin_mmap_path, actin_shape, actin_dtype = mem_mmap_path, mem_shape, mem_dtype
+                else:
+                    actin_mmap_path, actin_shape, actin_dtype = self._prepare_shared_memory_stack(self.file_reader.actin_files, "Actin")
             
             # Auto-detect filename numbering scheme so the pulse_frame config
             # value (which matches the filename suffix, e.g. t0010) maps to
@@ -1059,7 +1070,7 @@ def _set_yaml_value(text: str, key: str, value: str) -> str:
 def init_config(dest: Path, source: Path, data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
     """
-    Copy an existing config (by default config.yaml) to `dest`, replacing its
+    Copy an existing config (by default config/config.yaml) to `dest`, replacing its
     data folder and experiment name, and setting experiment_type from the
     voltage in the new name (0 V = asp). All other settings are kept, so
     copying the config of a similar experiment is the quickest way to start.

@@ -104,7 +104,7 @@ def test_worker_outputs(tmp_path, save_singles):
     import MFA_analysis as mfa
 
     import config_loader
-    raw = config_loader.load_layers(ROOT / 'config.yaml', {
+    raw = config_loader.load_layers(ROOT / 'config' / 'config.yaml', {
         'paths': {'data_folder': tempfile.gettempdir()},
         'plotting_parameters': {'save_individual_trap_plots': save_singles},
     }).data
@@ -147,3 +147,54 @@ def test_worker_outputs(tmp_path, save_singles):
         assert len(single_pdfs) >= 6
     else:
         assert single_pdfs == []
+
+
+def test_shared_actin_channel_gives_identical_results(tmp_path):
+    """Reusing the membrane frames for actin must match reading a separate copy."""
+    import shutil
+    from synthetic_data_generators import create_synthetic_protrusion_image
+    import MFA_analysis as mfa
+    import config_loader
+
+    params = MFAConfig(**config_loader.load_layers(
+        ROOT / 'config' / 'config.yaml', {'paths': {'data_folder': tempfile.gettempdir()}}).data).model_dump()
+    frames = [create_synthetic_protrusion_image(
+        protrusion_length_px=0.5 if i < 5 else 8 + 1.2 * (i - 5))[0].astype(np.uint8) for i in range(25)]
+    stack = np.stack(frames)
+    mem = tmp_path / 'membrane.dat'
+    fp = np.memmap(mem, dtype=stack.dtype, mode='w+', shape=stack.shape)
+    fp[:] = stack
+    fp.flush()
+    del fp
+    copy = tmp_path / 'actin_copy.dat'
+    shutil.copy(mem, copy)
+
+    def run(actin_path, out):
+        dirs = {k: out / k for k in ('root', 'full_csv', 'tracking_visuals', 'morphology',
+                                     'fitting', 'dye', 'actin')}
+        for d in dirs.values():
+            d.mkdir(parents=True)
+        chan = {'path': str(actin_path), 'shape': stack.shape, 'dtype': stack.dtype}
+        mfa.static_parallel_worker({
+            'trap_index': 0, 'params': params, 'output_dirs': dirs, 'mmap_path': str(mem),
+            'dtype': stack.dtype, 'shape': stack.shape, 'rotation_angle': 0.0,
+            'roi_coords': (0, 50, 0, 200), 'tuned_pipette_x': 150, 'tuned_threshold_prot': 110,
+            'tuned_threshold_body': 110, 'time_data': [i * DT for i in range(len(frames))],
+            'first_frame_number': 1, 'dye_mmap': {'path': None}, 'actin_mmap': chan,
+        })
+        return (dirs['actin'] / 'Trap_01_Actin_Data.csv').read_text()
+
+    assert run(mem, tmp_path / 'shared') == run(copy, tmp_path / 'separate')
+
+
+def test_file_reader_reuses_membrane_files_for_actin(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    from FileHandling_MFA import FileRead
+    for t in range(1, 6):
+        for c in ('C1', 'C2'):
+            cv2.imwrite(str(tmp_path / f"exp_{c}_t{t:04d}.tif"), np.full((8, 8), 50, np.uint8))
+    reader = FileRead(tmp_path, {'dye_uptake_parameters': {'enable': True, 'membrane_channel_pattern': 'C1',
+                                                           'dye_channel_pattern': 'C2'},
+                                 'actin_parameters': {'enable': True, 'channel_pattern': 'C1'}})
+    reader.run()
+    assert reader.actin_files == reader.tif_files and reader.actin_files is not reader.tif_files

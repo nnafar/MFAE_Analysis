@@ -37,30 +37,30 @@ def _load_config(name: str) -> dict:
 LEGACY = ROOT / 'tests' / 'data' / 'legacy_full_config.yaml'
 
 
-@pytest.mark.parametrize('name', ['config.yaml', 'config_100us.yaml',
-                                  'config_5ms.yaml', 'config_asp.yaml'])
+@pytest.mark.parametrize('name', ['config/config.yaml', 'config/config_100us.yaml',
+                                  'config/config_5ms.yaml', 'config/config_asp.yaml'])
 def test_shipped_configs_validate(name):
     MFAConfig(**_load_config(name))
 
 
-@pytest.mark.parametrize('name', ['config.yaml', 'config_100us.yaml',
-                                  'config_5ms.yaml', 'config_asp.yaml'])
+@pytest.mark.parametrize('name', ['config/config.yaml', 'config/config_100us.yaml',
+                                  'config/config_5ms.yaml', 'config/config_asp.yaml'])
 def test_rupture_detection_off_by_default(name):
     assert MFAConfig(**_load_config(name)).rupture_detection.enable is False
 
 
 def test_settings_from_each_layer_reach_the_pipeline():
-    asp = MFAConfig(**_load_config('config_asp.yaml'))
+    asp = MFAConfig(**_load_config('config/config_asp.yaml'))
     assert asp.dye_uptake_parameters.has_pulse is False          # 0V name + asp preset
     assert asp.rupture_detection.enable_smoothing is True        # asp preset
-    us = MFAConfig(**_load_config('config_100us.yaml'))
+    us = MFAConfig(**_load_config('config/config_100us.yaml'))
     assert us.dye_uptake_parameters.pulse_frame == 111           # ...-frame111 in the name
     assert us.workflow_settings.default_roi_width_um == 70.0     # the config file itself
 
 
 def test_unknown_key_in_section_is_rejected(tmp_path):
     cfg = tmp_path / 'typo.yaml'
-    text = (ROOT / 'config.yaml').read_text(encoding='utf-8')
+    text = (ROOT / 'config/config.yaml').read_text(encoding='utf-8')
     cfg.write_text(text.replace("  enable_smoothing:", "  enable_smoothin:"), encoding='utf-8')
     with pytest.raises(config_loader.ConfigFileError, match="enable_smoothin"):
         _load_config(str(cfg))

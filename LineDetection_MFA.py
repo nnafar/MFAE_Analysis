@@ -877,7 +877,7 @@ class LineDetectionMFA:
         # pixel intensity in the body region. This adapts automatically to
         # varying illumination across experiments, removing the need for
         # manual threshold tuning.
-        # sigma is read from guv_settings.canny_sigma in config.yaml.
+        # sigma is read from guv_settings.canny_sigma in config/defaults.yaml.
         roi_pixels = body_crop[margin:body_h - margin, :]
         valid_pixels = roi_pixels[roi_pixels > 0]
         median_val = float(np.median(valid_pixels)) if valid_pixels.size > 0 else 64.0

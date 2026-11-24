@@ -160,6 +160,10 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> 
     Raises ConfigFileError with a user-facing message on any problem.
     """
     user_path = Path(user_path)
+    if user_path.exists() and user_path.resolve() == DEFAULTS_FILE.resolve():
+        raise ConfigFileError(
+            f"{user_path} holds the pipeline (developer) settings and can't be run on its "
+            f"own. Give an experiment config instead, e.g. config/config.yaml.")
     user = read_yaml(user_path)
     if "preset" in user:
         user.pop("preset")
@@ -186,13 +190,13 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> 
                 f"{user_path} contains setting(s) that are not user settings:\n"
                 f"{_bullets(developer)}\n"
                 f"Pipeline settings live only in {DEFAULTS_FILE.relative_to(CONFIG_DIR.parent)} "
-                f"(developers). If this is a typo, compare with config.yaml.")
+                f"(developers). If this is a typo, compare with config/config.yaml.")
         override_keys = set(_leaf_keys(overrides or {}))
         missing = [k for k in USER_KEYS if k not in given and k not in override_keys]
         if missing:
             raise ConfigFileError(
                 f"{user_path} is missing user setting(s) that every config must set:\n"
-                f"{_bullets(missing)}\nCopy them from config.yaml "
+                f"{_bullets(missing)}\nCopy them from config/config.yaml "
                 f"(or start from it with --init-config).")
         layers = [("defaults", defaults), (user_path.name, user)]
 

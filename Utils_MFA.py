@@ -588,7 +588,7 @@ def generate_cortex_masks(mask_total: np.ndarray, cortex_thickness_px: int = 3) 
         Binary mask of the whole cell region (255 = cell, 0 = background).
     cortex_thickness_px : int
         Shell thickness in pixels. At 0.629 µm/px, 3 px ≈ 1.9 µm.
-        Configurable in config.yaml under actin_parameters → cortex_thickness_px.
+        Configurable in config/defaults.yaml under actin_parameters → cortex_thickness_px.
 
     Returns
     -------

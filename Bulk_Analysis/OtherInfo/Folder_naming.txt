@@ -24,4 +24,4 @@ Aspiration only (no pulse): use 0V, 0ms and frame0:
 
 Folders that don't match are skipped by Bulk_Analysis. Check a name with:
 
-    python MFA_analysis.py my_config.yaml --check
+    python MFA_analysis.py config/my_config.yaml --check

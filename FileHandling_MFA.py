@@ -102,7 +102,10 @@ class FileRead():
         enable_actin = self.params.get('actin_parameters', {}).get('enable', False)
         self.actin_files = []
 
-        if enable_actin:
+        if enable_actin and actin_pattern == mem_pattern and membrane_candidates:
+            # Actin is imaged in the membrane channel: same files, no second scan.
+            self.actin_files = list(self.tif_files)
+        elif enable_actin:
             self.actin_files = [f for f in all_files if actin_pattern in f.name]
             self.actin_files = self.sort_by_time_index(self.actin_files)
             self.actin_files = self._reject_black_frames(self.actin_files)
