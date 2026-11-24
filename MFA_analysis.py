@@ -623,10 +623,14 @@ class MFAAnalysis:
         """
         import json
 
-        # roi_coords are tuples/lists of 4 ints: (x, y, width, height).
+        # roi_coords are tuples/lists of 4 ints: (y_min, y_max, x_min, x_max),
+        # as used by utils.crop_single_trap.
         # json.dump cannot handle numpy integers, so cast everything explicitly.
         cache = {
             'experiment_id':  self.experiment_id,
+            # What the thresholds below are measured in; a cache whose scale
+            # differs from the current settings is not reused.
+            'threshold_scale': self._threshold_scale(),
             'rotation_angle': float(self.cropper.rotation_angle),
             'trap_configs': [
                 {
@@ -649,6 +653,13 @@ class MFAAnalysis:
             json.dump(cache, fh, indent=2)
         logger.info(f"Session cache saved → {cache_path.name}")
 
+    def _threshold_scale(self) -> str:
+        """Describes the scale the setup thresholds are on (stored in the session cache)."""
+        if utils.membrane_enhancement_enabled(self.params):
+            fs = self.params.get('image_processing', {}).get('membrane_snr_full_scale', 40.0)
+            return f"membrane SNR, 255 = {float(fs):g} sigma"
+        return "legacy (CLAHE)"
+
     def _load_session_cache(self) -> Optional[Dict[str, Any]]:
         """
         Reads session_cache.json from the output folder, if it exists.
@@ -669,6 +680,18 @@ class MFAAnalysis:
 
         # Integrity check: compare the membrane TIF list recorded at save time
         # with the one the file reader discovered right now.
+        # The thresholds only mean something on the scale they were picked on.
+        # Caches written before the scale was recorded were made with the CLAHE method.
+        cached_scale = cache.get('threshold_scale', 'legacy (CLAHE)')
+        if cached_scale != self._threshold_scale():
+            logger.warning(
+                "session_cache.json was saved with thresholds on a different scale, so it is "
+                "not reused and the interactive setup runs again.\n"
+                "  Cache  : %s\n  Current: %s",
+                cached_scale, self._threshold_scale(),
+            )
+            return None
+
         cached_files  = set(cache.get('source_files', []))
         current_files = set(str(p) for p in self.file_reader.tif_files)
         if cached_files != current_files:

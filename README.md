@@ -200,7 +200,53 @@ The steps are:
    neighbouring frames, so its masks are a little steadier).
 
 Your choices are saved to `Output/<experiment_id>/session_cache.json`, so a re-run skips the setup
-and goes straight to the analysis. Use `--fresh` to set up again (or delete that file).
+and goes straight to the analysis (see [The saved setup](#the-saved-setup-session_cachejson)).
+
+### The saved setup (session_cache.json)
+
+When the interactive setup is finished, everything you chose in it is written to
+`Output/<experiment_id>/session_cache.json`. The next run of the same experiment (same results
+folder) finds the file, skips the setup windows and goes straight to the analysis.
+
+```json
+{
+  "experiment_id": "261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304",
+  "threshold_scale": "membrane SNR, 255 = 40 sigma",
+  "rotation_angle": 0.7,
+  "trap_configs": [
+    {"trap_index": 0, "roi_coords": [240, 291, 112, 246], "pip": 76.0,
+     "thr_prot": 64.0, "thr_body": 70.0, "smooth": 3.0}
+  ],
+  "source_files": ["..."]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `rotation_angle` | Image rotation [degrees] |
+| `trap_index` | Trap number minus one (`0` = Trap 1) |
+| `roi_coords` | Trap box `[top, bottom, left, right]` in pixels of the rotated image |
+| `pip` | Pipette entrance, in pixels from the left edge of the trap box |
+| `thr_prot`, `thr_body` | Protrusion and cell-body thresholds (0–255) |
+| `smooth` | Faint-cell smoothing along the channel [px] (the `F` key) |
+| `threshold_scale` | What the thresholds are measured in (see below) |
+| `source_files` | The image files the setup was made on |
+
+Only these interactive choices are stored. Every other setting is read from your config and
+`config/defaults.yaml` on each run, so you can change e.g. `scale_factor` or rupture settings
+and re-run without repeating the setup.
+
+- **Redo the setup:** run with `--fresh` (or delete the file). The new setup overwrites it.
+- **Edit by hand:** the file is plain text. You can change a threshold, the pipette position or
+  the smoothing of one trap, or delete a trap's entry to leave it out. Keep the JSON valid
+  (commas, brackets).
+- **Thresholds and settings must match.** A threshold is only meaningful on the scale it was
+  picked on. If `threshold_scale` doesn't match the current mask settings (`membrane_enhancement`,
+  `membrane_snr_full_scale`), the file is ignored, a warning says why, and the setup runs again.
+  Caches from before the contrast enhancement have no `threshold_scale` and count as the old
+  CLAHE method, so they also trigger a new setup.
+- **Changed data folder:** if the images differ from `source_files`, the log warns but the setup
+  is still reused; check the results, or use `--fresh`.
 
 ### Choosing the threshold
 
