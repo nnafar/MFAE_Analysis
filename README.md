@@ -83,6 +83,19 @@ python MFA_analysis.py config/my_experiment.yaml
 
 Results are written to `Output/<experiment_id>/`.
 
+### Running from Spyder
+
+The commands above are for a terminal. In Spyder's IPython console, pass the same arguments to
+`runfile` instead (everything after `python MFA_analysis.py` goes into `args`):
+
+```python
+runfile('C:/GitHub/MFAE_Analysis/MFA_analysis.py', args='config/my_experiment.yaml --check', wdir='C:/GitHub/MFAE_Analysis')
+```
+
+Or set them once for the Run button: open `MFA_analysis.py`, **Run → Configuration per file…**
+(Ctrl+F6), tick **Command line options** and enter e.g. `config/my_experiment.yaml --check`, with
+the working directory set to the file's directory; then press F5.
+
 ### Command-line options
 
 | Option | What it does |
@@ -345,7 +358,7 @@ live elsewhere.
 | A faint cell is barely captured in the threshold window | Press `F` for more smoothing, then lower the threshold (stay above ~3 sigma). |
 | The mask includes background noise | Raise the threshold, or press `F` to reduce smoothing if it is high. |
 | The protrusion mask reaches the left edge of the box | The protrusion is longer than the trap box, so its true length can't be measured; tracking stops after 3 frames at the edge. Draw a wider ROI (`--fresh`). |
-| `SyntaxError: invalid syntax` when running `python MFA_analysis.py ...` | The command was typed into a Python console (Spyder, Jupyter). Run it in a terminal (Anaconda Prompt) from the repository folder, or prefix it with `!` in the console. |
+| `SyntaxError: invalid syntax` when running `python MFA_analysis.py ...` | The command was typed into a Python console. In Spyder use `runfile(...)` (see [Running from Spyder](#running-from-spyder)); otherwise run it in a terminal (Anaconda Prompt) from the repository folder. |
 | `Entry not confirmed for this trap` in the log | No valid protrusion was found for 3 frames in a row, so rupture detection is off for that trap. Watch its tracking movie. If the protrusion is tracked fine but longer than 0.9 × `channel_length_um` (36 µm by default), check `scale_factor`: `--check` shows the file's pixel size next to it. |
 | A tracking movie won't play | Open it in VLC, which plays MJPG `.avi` files on any system. |
 
