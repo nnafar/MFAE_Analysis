@@ -507,8 +507,7 @@ class MFAAnalysis:
     def __init__(self, path: Path, experiment_id: str,
                  params: Optional[Union['MFAConfig', Dict[str, Any]]] = None,
                  output_root: Optional[Path] = None,
-                 use_session_cache: bool = True,
-                 log_mode: str = 'w') -> None:
+                 use_session_cache: bool = True) -> None:
         """
         Args:
             path: Folder containing the raw .tif image sequence.
@@ -526,8 +525,6 @@ class MFAAnalysis:
         self.experiment_id = experiment_id
         self.output_root = Path(output_root) if output_root is not None else None
         self.use_session_cache = use_session_cache
-        self.log_mode = log_mode           # 'a' appends to an existing log (batch: setup, then analysis)
-        self.stopped_by_user = False       # Esc during the interactive setup
         
         # Accept a validated MFAConfig object (typed) or a plain dict (backward compat).
         if hasattr(params, 'model_dump'):
@@ -548,8 +545,7 @@ class MFAAnalysis:
         self.results_dir, self.subdirs = self._setup_output_directory()
         self.file_saver = FileSave(output_dir=self.results_dir)
         
-        utils.setup_logging(self.params.get('workflow_settings', {}).get('debug_mode', False),
-                            self.results_dir / f"{self.experiment_id}_analysis.log", mode=self.log_mode)
+        utils.setup_logging(self.params.get('workflow_settings', {}).get('debug_mode', False), self.results_dir / f"{self.experiment_id}_analysis.log")
         
         self.trap_results = []
         self.skipped = []
@@ -709,12 +705,9 @@ class MFAAnalysis:
 
         return cache
 
-    def run_analysis(self, setup_only: bool = False) -> bool:
+    def run_analysis(self) -> bool:
         """
         Main execution method.
-        setup_only: stop after the interactive setup (Phase 1) has been done
-        or loaded and saved to session_cache.json (batch runs do all setups
-        first, then all analyses).
         """
         try:
             logger.info("== MFA ANALYSIS START ==")
@@ -796,18 +789,14 @@ class MFAAnalysis:
 
                     setup_signal = self.cropper.run(self.file_reader)
                     if setup_signal in ('stop', 'restart'):
-                        if setup_signal == 'stop':
-                            self.stopped_by_user = True
-                            return False
+                        if setup_signal == 'stop': return False
                         continue
 
                     # --- Phase 1b: Per-Trap Parameter Tuning ---
                     setup_signal, trap_configs = self._collect_interactive_parameters()
 
                     if setup_signal in ('stop', 'restart'):
-                        if setup_signal == 'stop':
-                            self.stopped_by_user = True
-                            return False
+                        if setup_signal == 'stop': return False
                         continue
                     if setup_signal == 'confirm': break
 
@@ -820,10 +809,6 @@ class MFAAnalysis:
                 return True
 
             if self.cropper: self.cropper.save_trap_map(self.results_dir)
-
-            if setup_only:
-                logger.info(f"Setup saved for {self.experiment_id} ({len(trap_configs)} trap(s)).")
-                return True
 
             # --- Phase 2: Parallel Processing ---
             logger.info("\n== PHASE 2: PARALLEL PROCESSING ==")
@@ -1138,10 +1123,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=f"Where result folders are written (default: {default_output_root()}).")
     parser.add_argument("--check", action="store_true",
                         help="Validate the config and scan the images, then exit. Opens no windows.")
-    parser.add_argument("--batch", action="store_true",
-                        help="Analyse every experiment in the data folder: each .czi file (CZI "
-                             "configs) or each sub-folder with .tif files (TIFF configs), all "
-                             "with this config. Setups first, then the analyses.")
     parser.add_argument("--fresh", action="store_true",
                         help="Ignore a saved session_cache.json and redo the interactive trap setup.")
     parser.add_argument("--debug", action="store_true",
@@ -1217,13 +1198,11 @@ def init_config(dest: Path, source: Optional[Path], data_folder: Optional[Path],
 
 
 def load_config(config_path: Path, data_folder: Optional[Path] = None,
-                experiment_id: Optional[str] = None, type_from_name: bool = False
+                experiment_id: Optional[str] = None
                 ) -> Tuple[Optional[MFAConfig], Optional[config_loader.LayeredConfig]]:
     """
     Combine the defaults, the user's file and command-line overrides, then
     validate. Logs a readable error and returns (None, None) on failure.
-    type_from_name: take experiment_type (ep / asp) from the experiment name
-    instead of the config (batch runs over a folder with mixed experiments).
     """
     overrides: Dict[str, Any] = {}
     if data_folder is not None:
@@ -1232,14 +1211,8 @@ def load_config(config_path: Path, data_folder: Optional[Path] = None,
     if experiment_id is not None:
         overrides["experiment_id"] = experiment_id
 
-    type_override = None
-    if type_from_name and experiment_id is not None:
-        info = experiment_naming.parse_experiment_name(experiment_id)
-        if info is not None:
-            type_override = "ep" if info.has_pulse else "asp"
     try:
-        layered = config_loader.load_layers(config_path, {"paths": overrides} if overrides else None,
-                                            experiment_type_override=type_override)
+        layered = config_loader.load_layers(config_path, {"paths": overrides} if overrides else None)
     except config_loader.ConfigFileError as e:
         logger.error(str(e))
         return None, None
@@ -1391,176 +1364,6 @@ def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
     return True
 
 
-# =============================================================================
-# BATCH: every experiment in one parent folder, one config
-# =============================================================================
-
-def find_experiments(parent: Path, image_format: str) -> List[Path]:
-    """
-    The experiments in a parent folder: every .czi file in it (image_format
-    'czi'), or every sub-folder that contains .tif files ('tiff').
-    """
-    parent = Path(parent)
-    if not parent.is_dir():
-        raise FileNotFoundError(f"Batch data folder not found (or not a folder): {parent}")
-    if image_format == "czi":
-        return sorted(p for p in parent.iterdir() if p.is_file() and p.suffix.lower() == ".czi")
-    found = []
-    for sub in sorted(p for p in parent.iterdir() if p.is_dir()):
-        if any(f.suffix.lower() in (".tif", ".tiff") for f in sub.iterdir() if f.is_file()):
-            found.append(sub)
-    return found
-
-
-def _batch_parent_and_format(config_path: Path, data_folder: Optional[Path]) -> Tuple[Path, str]:
-    """Parent folder and image format for a batch run, read from the config file itself."""
-    raw = config_loader.read_yaml(Path(config_path))
-    paths = raw.get("paths") or {}
-    parent = Path(data_folder) if data_folder is not None else Path(str(paths.get("data_folder", "")))
-    if parent.suffix.lower() == ".czi":
-        parent = parent.parent            # a single .czi file given: use its folder
-    return parent, str(paths.get("image_format", "tiff")).lower()
-
-
-def run_batch(args) -> int:
-    """
-    Run every experiment in the data folder with one config.
-
-    1. Find the experiments (each .czi file, or each sub-folder of .tif files).
-       The experiment name, the pulse and ep/asp come from each name.
-    2. Interactive setup of every experiment, one after another (saved setups
-       are reused unless --fresh). Esc stops the batch.
-    3. Analysis of every experiment that has a setup, without interaction.
-    A failure in one experiment is reported and the batch continues.
-    """
-    try:
-        parent, image_format = _batch_parent_and_format(args.config_path, args.data_folder)
-        experiments = find_experiments(parent, image_format)
-    except (FileNotFoundError, config_loader.ConfigFileError, OSError) as e:
-        logger.error(str(e))
-        return 1
-    what = ".czi files" if image_format == "czi" else "sub-folders with .tif files"
-    if not experiments:
-        logger.error(f"Batch: no {what} found in {parent}")
-        return 1
-    if args.experiment_id:
-        logger.warning("--experiment-id is ignored with --batch: each experiment is named after "
-                       "its file or folder.")
-
-    logger.info(f"Batch: {len(experiments)} experiment(s) in {parent}:\n"
-                + "\n".join(f"  {i + 1:2d}. {p.name}" for i, p in enumerate(experiments)))
-
-    status: Dict[str, str] = {}
-    configs: Dict[str, Tuple[MFAConfig, Any, Path]] = {}
-    for exp_path in experiments:
-        name = default_experiment_id(exp_path)
-        if experiment_naming.parse_experiment_name(name) is None:
-            status[name] = "skipped: name doesn't follow the naming rule"
-            logger.warning(f"Batch: skipping {exp_path.name}: its name doesn't follow the naming "
-                           f"rule, so the pulse can't be read from it.")
-            continue
-        config, layered = load_config(args.config_path, exp_path, type_from_name=True)
-        if config is None:
-            status[name] = "skipped: config problem (see log)"
-            continue
-        if args.debug:
-            config.workflow_settings.debug_mode = True
-        configs[name] = (config, layered, exp_path)
-
-    if args.show_config:
-        for name, (config, layered, _) in configs.items():
-            print(f"===== {name} =====\n{show_config(config, layered)}")
-        return 0
-
-    if args.check:
-        for name, (config, _, _) in configs.items():
-            logger.info(f"\n===== Check: {name} =====")
-            status[name] = "check passed" if check_setup(config, args.output_dir) else "check: PROBLEM"
-        _log_batch_summary(status, experiments)
-        return 0 if all(v == "check passed" for v in status.values()) else 1
-
-    if image_format == "czi":
-        try:
-            import pylibCZIrw  # noqa: F401
-        except ImportError:
-            logger.error("Reading .czi files needs the pylibCZIrw package, which isn't installed. "
-                         "Install it (in Spyder: %pip install pylibCZIrw czifile, then restart "
-                         "the kernel; in a terminal: pip install pylibCZIrw czifile).")
-            return 1
-
-    # --- Pass 1: interactive setups -------------------------------------------
-    logger.info(f"\n== BATCH PASS 1: SETUP OF {len(configs)} EXPERIMENT(S) ==")
-    ready: List[str] = []
-    for k, (name, (config, layered, exp_path)) in enumerate(configs.items(), 1):
-        logger.info(f"\n--- Setup {k}/{len(configs)}: {name} ---")
-        analysis = None
-        try:
-            analysis = MFAAnalysis(exp_path, name, config, output_root=args.output_dir,
-                                   use_session_cache=not args.fresh)
-            save_effective_config(config, layered, args.config_path, analysis.results_dir)
-            if analysis.run_analysis(setup_only=True):
-                ready.append(name)
-            elif analysis.stopped_by_user:
-                status[name] = "stopped (Esc during setup)"
-                logger.warning("Batch stopped during setup (Esc). Setups finished so far are "
-                               "saved; run the batch again to continue.")
-                break
-            else:
-                status[name] = "failed during setup (see its log)"
-        except KeyboardInterrupt:
-            logger.warning("Batch interrupted by user.")
-            return 130
-        except Exception:
-            status[name] = "failed during setup (see its log)"
-            logger.error(f"Batch: setup of {name} failed.", exc_info=True)
-        finally:
-            if analysis:
-                analysis.cleanup()
-
-    # --- Pass 2: analyses -------------------------------------------------------
-    logger.info(f"\n== BATCH PASS 2: ANALYSIS OF {len(ready)} EXPERIMENT(S) ==")
-    for k, name in enumerate(ready, 1):
-        config, layered, exp_path = configs[name]
-        logger.info(f"\n--- Analysis {k}/{len(ready)}: {name} ---")
-        analysis = None
-        try:
-            analysis = MFAAnalysis(exp_path, name, config, output_root=args.output_dir,
-                                   use_session_cache=True, log_mode='a')
-            status[name] = "done" if analysis.run_analysis() else "failed (see its log)"
-        except KeyboardInterrupt:
-            logger.warning("Batch interrupted by user.")
-            status[name] = "interrupted"
-            break
-        except Exception:
-            status[name] = "failed (see its log)"
-            logger.error(f"Batch: analysis of {name} failed.", exc_info=True)
-        finally:
-            if analysis:
-                analysis.cleanup()
-
-    utils.setup_logging(debug_mode=args.debug)   # summary to the console, not the last experiment's log
-    summary = _log_batch_summary(status, experiments)
-    try:
-        from datetime import datetime
-        out_root = Path(args.output_dir) if args.output_dir is not None else default_output_root()
-        out_root.mkdir(parents=True, exist_ok=True)
-        path = out_root / f"batch_summary_{datetime.now():%Y%m%d_%H%M}.txt"
-        path.write_text(f"Batch over {parent}\nConfig: {Path(args.config_path).resolve()}\n\n{summary}\n",
-                        encoding="utf-8")
-        logger.info(f"Batch summary saved to {path}")
-    except OSError:
-        logger.warning("Could not write the batch summary file.", exc_info=True)
-    return 0 if all(v == "done" for v in status.values()) and len(status) == len(experiments) else 1
-
-
-def _log_batch_summary(status: Dict[str, str], experiments: List[Path]) -> str:
-    lines = [f"  {default_experiment_id(p)}: {status.get(default_experiment_id(p), 'not run')}"
-             for p in experiments]
-    text = "== BATCH SUMMARY ==\n" + "\n".join(lines)
-    logger.info("\n" + text)
-    return text
-
-
 def main(argv: Optional[List[str]] = None) -> int:
     """Command-line entry point. Returns a process exit code (0 = success)."""
     parser = build_arg_parser()
@@ -1574,9 +1377,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.config_path is None:
         parser.print_help()
         return 2
-
-    if args.batch:
-        return run_batch(args)
 
     config, layered = load_config(args.config_path, args.data_folder, args.experiment_id)
     if config is None:

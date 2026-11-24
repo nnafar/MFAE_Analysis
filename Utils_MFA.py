@@ -39,8 +39,7 @@ logger = logging.getLogger(__name__)
 # 1. LOGGING CONFIGURATION
 # =============================================================================
 
-def setup_logging(debug_mode: bool = False, log_file: Path = Path('mfa_analysis.log'),
-                  mode: str = 'w') -> None:
+def setup_logging(debug_mode: bool = False, log_file: Path = Path('mfa_analysis.log')) -> None:
     """
     Configures the Python logging system.
     - Console: Shows INFO (progress) or DEBUG (detailed) messages.
@@ -71,7 +70,7 @@ def setup_logging(debug_mode: bool = False, log_file: Path = Path('mfa_analysis.
     
     # File handler
     try:
-        file_handler = logging.FileHandler(log_file, mode=mode)
+        file_handler = logging.FileHandler(log_file, mode='w')
         file_handler.setLevel(logging.DEBUG) # Always log DEBUG to file
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
