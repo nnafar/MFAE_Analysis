@@ -61,6 +61,7 @@ from UptakeQuantification import DyeUptakeAnalyzer
 from ActinQuantification import ActinAnalyzer
 from config_schema import MFAConfig, validate_config, format_validation_error
 import Plotting_MFA
+import Plotting_Multipanel
 import Utils_MFA as utils
 
 logger = logging.getLogger(__name__)
@@ -222,43 +223,66 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             'solidity':      det_full.results.get('body_solidity', [])
         }
 
+        # Per-trap figures are combined into multipanel PDFs (all traps on one
+        # page per plot type) after all workers finish. Each worker therefore
+        # returns the small arrays those panels need in `plot_data`, and only
+        # writes its own single-trap PDFs when explicitly requested.
+        save_singles = params.get('plotting_parameters', {}).get('save_individual_trap_plots', False)
+        plot_data: Dict[str, Any] = {
+            'pipette_x':    det_res['pipette_start_x_used'],
+            'pulse_time':   pulse_time,
+            'rupture_time': rupture_time,
+            'trace': {
+                'time':        list(time_data),
+                'protrusions': list(det_res['protrusion_lengths_um']),
+                'intensities': det_res.get('downstream_intensities'),
+            },
+        }
+
         # Export Raw CSV and Plot Trace.
         try:
             det_full.export_results_to_csv(
                 dirs['root'], f"trap_{trap_index+1:02d}",
-                dirs['full_csv'], dirs['filtered_csv'],
+                dir_full=dirs['full_csv'],
                 time_points=time_data,
             )
         except Exception:
             worker_logger.warning(f"Trap {trap_index+1}: CSV export failed.", exc_info=True)
 
-        try:
-            Plotting_MFA.plot_protrusion_trace(
-                debug_images=det_full.results['debug_images'],
-                time_points=np.array(time_data),
-                protrusions=np.array(det_res['protrusion_lengths_um']),
-                trap_index=trap_index + 1,
-                save_path=dirs['tracking_visuals'] / f"trap_{trap_index+1:02d}_detection_trace.png",
-                params=params,
-                rupture_time=rupture_time,
-                intensities=det_res.get('downstream_intensities'),
-                pulse_time=pulse_time
-            )
-        except Exception:
-            worker_logger.warning(f"Trap {trap_index+1}: Trace plot failed.", exc_info=True)
+        if save_singles:
+            try:
+                Plotting_MFA.plot_protrusion_trace(
+                    debug_images=det_full.results['debug_images'],
+                    time_points=np.array(time_data),
+                    protrusions=np.array(det_res['protrusion_lengths_um']),
+                    trap_index=trap_index + 1,
+                    save_path=dirs['tracking_visuals'] / f"trap_{trap_index+1:02d}_detection_trace.png",
+                    params=params,
+                    rupture_time=rupture_time,
+                    intensities=det_res.get('downstream_intensities'),
+                    pulse_time=pulse_time
+                )
+            except Exception:
+                worker_logger.warning(f"Trap {trap_index+1}: Trace plot failed.", exc_info=True)
 
         # 6. Kymograph Generation
         # Membrane kymograph (centre-line slice of the membrane channel):
-        # produces Trap_XX_Membrane_Kymograph.png and Trap_XX_Membrane_Kymograph.csv.
+        # writes Trap_XX_Membrane_Kymograph.csv (plus a single-trap PDF only when
+        # save_individual_trap_plots is on); the matrix goes into plot_data.
         # The dye-channel kymograph is written separately by
         # DyeUptakeAnalyzer.export_kymograph_csv (see section 8), because it
         # uses mask-scoped column averages rather than a centre-line slice.
         if params.get('workflow_settings', {}).get('create_kymographs', True):
             try:
-                create_kymograph_for_trap(
+                kymo = create_kymograph_for_trap(
                     rois, det_res, params, dirs['tracking_visuals'],
-                    trap_index + 1, time_data,
+                    trap_index + 1, time_data, save_plot=save_singles,
                 )
+                if kymo.display_matrix is not None:
+                    plot_data['membrane_kymo'] = {
+                        'matrix':         kymo.display_matrix,
+                        'protrusions_px': list(kymo.protrusions_px),
+                    }
             except Exception:
                 worker_logger.warning(
                     f"Trap {trap_index+1}: Kymograph generation failed.",
@@ -356,12 +380,13 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 # Pass pulse_time AND rupture_time down.  Uptake analysis
                 # no longer truncates at rupture; the dashboard now marks
                 # rupture as a red horizontal line instead.
-                Plotting_MFA.plot_dye_uptake_dashboard(
-                    dye_results, trap_index + 1, dirs['dye'], params,
-                    det_res['pipette_start_x_used'],
-                    pulse_time=pulse_time,
-                    rupture_time=rupture_time,
-                )
+                if save_singles:
+                    Plotting_MFA.plot_dye_uptake_dashboard(
+                        dye_results, trap_index + 1, dirs['dye'], params,
+                        det_res['pipette_start_x_used'],
+                        pulse_time=pulse_time,
+                        rupture_time=rupture_time,
+                    )
                 
                 # Add the missing debug video call here
                 uptake_analyzer.save_debug_video(trap_index + 1, dirs['dye'])
@@ -393,8 +418,13 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 actin_analyzer.save_cortex_debug_video(trap_index + 1, dirs['actin'])
                 # Retained plots: kymograph (image) and zone dynamics.
                 # Removed plots: dashboard (_Ratio), cortex-structure, profiles.
-                Plotting_MFA.plot_actin_kymograph(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
-                Plotting_MFA.plot_actin_zones(actin_results, trap_index + 1, dirs['actin'], params, pulse_time=pulse_time, rupture_time=rupture_time)
+                if save_singles:
+                    Plotting_MFA.plot_actin_kymograph(actin_results, trap_index + 1, dirs['actin'], params, det_res['pipette_start_x_used'], pulse_time=pulse_time, rupture_time=rupture_time)
+                    Plotting_MFA.plot_actin_zones(actin_results, trap_index + 1, dirs['actin'], params, pulse_time=pulse_time, rupture_time=rupture_time)
+                plot_data['actin'] = {
+                    k: v for k, v in actin_results.items()
+                    if k in ('time_s', 'spatial_profiles') or k.startswith('zone_')
+                }
             except Exception:
                 worker_logger.warning(f"Trap {trap_index+1}: Actin analysis failed.", exc_info=True)
                 
@@ -403,7 +433,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             'status':     fit_status,   # 'success' | 'detection_only' | 'fit_failed'
             'data':       trap_data,
             'fit_rows':   trap_fit_rows,
-            'dye_data':   dye_results
+            'dye_data':   dye_results,
+            'plot_data':  plot_data,
         }
             
     except Exception:
@@ -510,7 +541,6 @@ class MFAAnalysis:
         # Define subfolders
         subdirs = {
             'root': results_dir,
-            'filtered_csv': results_dir / "Filtered protrusion detection",
             'full_csv': results_dir / "Full protrusion detection",
             'tracking_visuals': results_dir / "Tracking visuals", 
             'morphology': results_dir / "Cell Morphology",
@@ -520,7 +550,6 @@ class MFAAnalysis:
         }
         
         # Create core CSV folders immediately
-        subdirs['filtered_csv'].mkdir(parents=True, exist_ok=True)
         subdirs['full_csv'].mkdir(parents=True, exist_ok=True)
         subdirs['tracking_visuals'].mkdir(parents=True, exist_ok=True)
         subdirs['morphology'].mkdir(parents=True, exist_ok=True)
@@ -929,6 +958,11 @@ class MFAAnalysis:
             df.to_csv(self.subdirs['fitting'] / f"{self.experiment_id}_summary_fits.csv", index=False)
 
         self._perform_shear_analysis()
+
+        # All traps' per-trap plots, one multipanel PDF per plot type.
+        Plotting_Multipanel.plot_trap_multipanels(
+            all_results, self.subdirs, self.experiment_id, self.params
+        )
         
         # Call the morphology aggregate plotter (Using the corrected 'self.subdirs')
         Plotting_MFA.plot_aggregate_metrics(

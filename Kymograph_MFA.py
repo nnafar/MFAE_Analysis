@@ -68,7 +68,11 @@ class KymographAnalysis:
     # ------------------------------------------------------------------ #
     # Public entry point
     # ------------------------------------------------------------------ #
-    def run_analysis(self, output_dir: Union[str, Path], trap_index: int) -> 'KymographAnalysis':
+    def run_analysis(self, output_dir: Union[str, Path], trap_index: int,
+                     save_plot: bool = True) -> 'KymographAnalysis':
+        """Build the kymograph, write its CSV and (if save_plot) a single-trap PDF.
+        The matrices stay on the object (display_matrix / raw_matrix) for
+        callers that build multipanel figures."""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -85,16 +89,17 @@ class KymographAnalysis:
 
         # Plot uses the 8-bit display matrix so contrast is comparable across
         # experiments regardless of absolute intensity.
-        Plotting_MFA.plot_kymograph(
-            kymograph_matrix=self.display_matrix,
-            trap_index=trap_index,
-            output_dir=output_dir,
-            pipette_x=self.pipette_start_x,
-            protrusions_px=self.protrusions_px,
-            time_data=self.time_data,
-            params=self.params,
-            channel_label="Membrane",
-        )
+        if save_plot:
+            Plotting_MFA.plot_kymograph(
+                kymograph_matrix=self.display_matrix,
+                trap_index=trap_index,
+                output_dir=output_dir,
+                pipette_x=self.pipette_start_x,
+                protrusions_px=self.protrusions_px,
+                time_data=self.time_data,
+                params=self.params,
+                channel_label="Membrane",
+            )
 
         # CSV stores the raw floating-point intensity so downstream code can
         # apply its own normalization if needed.
@@ -219,6 +224,7 @@ def create_kymograph_for_trap(
     output_dir: Union[str, Path],
     trap_index: int,
     time_data: Optional[List[float]] = None,
+    save_plot: bool = True,
 ) -> KymographAnalysis:
     """Helper function to instantiate and run the analysis."""
     analyzer = KymographAnalysis(
@@ -227,5 +233,5 @@ def create_kymograph_for_trap(
         params=params,
         time_data=time_data,
     )
-    analyzer.run_analysis(output_dir, trap_index)
+    analyzer.run_analysis(output_dir, trap_index, save_plot=save_plot)
     return analyzer

@@ -124,13 +124,29 @@ Output/<experiment_id>/
 ├── session_cache.json                  saved interactive setup
 ├── trap_map.png                        which trap is which
 ├── Full protrusion detection/          per-trap CSV, every frame
-├── Filtered protrusion detection/      per-trap CSV, cell-present frames only
-├── Tracking visuals/                   detection traces and kymographs
+├── Tracking visuals/
+│   ├── <id>_Detection_Traces.pdf       length + haze, all traps
+│   ├── <id>_Membrane_Kymographs.pdf    membrane kymograph, all traps
+│   └── Trap_XX_Membrane_Kymograph.csv
 ├── Cell Morphology/                    aggregate shape metrics
-├── Dye Uptake/                         dye-channel CSVs, plots, debug videos   (if enabled)
-├── Actin Quantification/               actin CSVs, kymographs, zone plots     (if enabled)
+├── Dye Uptake/                                                    (if enabled)
+│   ├── <id>_Uptake_Kymographs.pdf      dye kymograph, all traps
+│   ├── <id>_Diffusion_Profiles.pdf     dye profiles, all traps
+│   └── Trap_XX_*.csv / *.avi           per-trap data and debug videos
+├── Actin Quantification/                                          (if enabled)
+│   ├── <id>_Actin_Kymographs.pdf       actin kymograph, all traps
+│   ├── <id>_Actin_Zones.pdf            zone dynamics, all traps
+│   └── Trap_XX_*.csv / *.avi           per-trap data and debug videos
 └── Fitting results/                    shear analysis and viscoelastic fits   (if enabled)
 ```
+
+Each plot type is one multipanel PDF with every trap as a panel. Panels share their axes and,
+for kymographs, one colour scale, so traps can be compared at a glance. To also get one PDF per
+trap (e.g. for a slide), set `plotting_parameters.save_individual_trap_plots: True`; the number
+of panels per row is `plotting_parameters.multipanel_columns`.
+
+Rupture markers on the plots come from the automatic rupture detection, which is not reliable
+enough to cut data on. All CSVs therefore contain every frame; treat the markers as hints.
 
 ## 5. Naming experiment folders
 

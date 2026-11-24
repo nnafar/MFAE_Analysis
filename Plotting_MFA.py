@@ -57,64 +57,26 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
     # --- E. Kymograph & Diffusion ---
     profiles = results['spatial_profiles']
     if profiles:
-        # Kymograph
-        max_w = max(len(p) for p in profiles)
-        kymo = np.zeros((len(profiles), max_w))
-        for i, p in enumerate(profiles):
-            kymo[i, :len(p)] = p
-
-        fig, ax = plt.subplots(figsize=(10, 6))
         scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
-        extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
-        mfa_cmap = utils.get_mfa_continuous_cmap()
-
-        im = ax.imshow(kymo, aspect='auto', extent=extent,
-                       cmap=mfa_cmap, interpolation='nearest')
-        ax.axvline(0, color=colors['pulse'], linestyle='--',
-                   linewidth=1, label='Pipette Entrance')
-
         dye_params = params.get('dye_uptake_parameters', {})
-        if dye_params.get('has_pulse', True) and pulse_time is not None:
-            ax.axhline(pulse_time, color='white', linestyle='--',
-                       linewidth=1, label='Pulse')
+        show_pulse = pulse_time if dye_params.get('has_pulse', True) else None
 
-        # Rupture marker: red horizontal line spanning the plot.  Uptake
-        # analysis is no longer truncated at rupture, so this is purely a
-        # visual annotation.
-        if rupture_time is not None:
-            ax.axhline(rupture_time, color=colors['rupture'],
-                       linestyle='--', linewidth=2, label='Rupture')
-
+        # Kymograph
+        fig, ax = plt.subplots(figsize=(10, 6))
+        im = draw_uptake_kymograph(ax, profiles, t, pipette_x, scale,
+                                   pulse_time=show_pulse, rupture_time=rupture_time)
         plt.colorbar(im, ax=ax, label="Intensity")
-        ax.set_xlabel("Position relative to channel entrance (\u00b5m)")
+        ax.set_xlabel(POSITION_LABEL)
         ax.set_ylabel("Time (s)")
         ax.set_title(f"Trap {trap_idx}: Uptake Kymograph")
-        if pulse_time is not None or rupture_time is not None:
+        if show_pulse is not None or rupture_time is not None:
             ax.legend(loc='upper right')
         utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Uptake_Kymograph.png")
         plt.close(fig)
 
         # Diffusion Profiles
         fig, ax = plt.subplots(figsize=(10, 6))
-        n_curves = 7
-        indices = np.linspace(0, len(t) - 1, n_curves, dtype=int)
-        time_colors = utils.get_time_colormap(len(indices))
-        max_w = max(len(p) for p in profiles)
-        x_axis = (pipette_x - np.arange(max_w)) * params.get(
-            'experiment_parameters', {}
-        ).get('scale_factor', 0.629)
-
-        for i, idx in enumerate(indices):
-            if idx >= len(profiles):
-                continue
-            p = profiles[idx]
-            y = np.zeros(max_w)
-            y[:len(p)] = p
-            ax.plot(x_axis, y, color=time_colors[i], linewidth=2.5,
-                    label=f"{t[idx]:.1f}s")
-
-        ax.axvline(0, color=colors['pulse'], linestyle='--',
-                   alpha=0.6, label='Entrance')
+        indices = draw_diffusion_profiles(ax, profiles, t, pipette_x, scale)
 
         # Rupture marker on the diffusion profile plot: the profile is
         # spatial (x = position) rather than temporal, so we cannot mark
@@ -123,8 +85,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         # add a note.  This keeps the marker visible without cluttering
         # the axis.
         if rupture_time is not None:
-            post_indices = [i for i, idx in enumerate(indices)
-                            if idx < len(t) and t[idx] > rupture_time]
+            post_indices = [i for i, idx in enumerate(indices) if t[idx] > rupture_time]
             if post_indices:
                 handles, labels = ax.get_legend_handles_labels()
                 # Prepend an asterisk to labels for post-rupture curves.
@@ -141,11 +102,173 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         else:
             ax.legend(title="Time")
 
-        ax.invert_xaxis()
-        ax.set_xlabel("Position relative to channel entrance (\u00b5m)")
+        ax.set_xlabel(POSITION_LABEL)
         ax.set_ylabel("Intensity")
         utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Diffusion_Profiles.png")
         plt.close(fig)
+
+
+# =============================================================================
+# SHARED DRAWING HELPERS
+# =============================================================================
+# Each helper draws ONE trap's plot onto axes it is given. The single-trap
+# figures in this module and the all-trap grids in Plotting_Multipanel use
+# the same helpers, so both always look the same.
+
+POSITION_LABEL = "Position relative to channel entrance (\u00b5m)"
+
+
+def profiles_to_matrix(profiles: List[np.ndarray]) -> np.ndarray:
+    """Stack variable-length per-frame profiles into a zero-padded (frames x width) matrix."""
+    max_w = max(len(p) for p in profiles)
+    kymo = np.zeros((len(profiles), max_w))
+    for i, p in enumerate(profiles):
+        kymo[i, :len(p)] = p
+    return kymo
+
+
+def _draw_profile_kymograph(ax, profiles, t, pipette_x, scale, cmap,
+                            entrance_kw, pulse_kw, rupture_kw,
+                            pulse_time=None, rupture_time=None,
+                            vmin=None, vmax=None):
+    kymo = profiles_to_matrix(profiles)
+    extent = [pipette_x * scale, (pipette_x - kymo.shape[1]) * scale, t[-1], t[0]]
+    im = ax.imshow(kymo, aspect='auto', extent=extent, cmap=cmap,
+                   interpolation='nearest', vmin=vmin, vmax=vmax)
+    ax.axvline(0, label='Entrance', **entrance_kw)
+    if pulse_time is not None:
+        ax.axhline(pulse_time, label='Pulse', **pulse_kw)
+    if rupture_time is not None:
+        ax.axhline(rupture_time, label='Rupture', **rupture_kw)
+    return im
+
+
+def draw_uptake_kymograph(ax, profiles, t, pipette_x, scale,
+                          pulse_time=None, rupture_time=None, vmin=None, vmax=None):
+    """Dye-channel kymograph (rows = frames, columns = position)."""
+    colors = utils.MFA_COLORS
+    return _draw_profile_kymograph(
+        ax, profiles, t, pipette_x, scale, utils.get_mfa_continuous_cmap(),
+        entrance_kw=dict(color=colors['pulse'], linestyle='--', linewidth=1),
+        pulse_kw=dict(color='white', linestyle='--', linewidth=1),
+        rupture_kw=dict(color=colors['rupture'], linestyle='--', linewidth=2),
+        pulse_time=pulse_time, rupture_time=rupture_time, vmin=vmin, vmax=vmax)
+
+
+def draw_actin_kymograph(ax, profiles, t, pipette_x, scale,
+                         pulse_time=None, rupture_time=None, vmin=None, vmax=None):
+    """Actin-channel kymograph (rows = frames, columns = position)."""
+    colors = utils.MFA_COLORS
+    return _draw_profile_kymograph(
+        ax, profiles, t, pipette_x, scale, 'RdBu_r',
+        entrance_kw=dict(color='white', linestyle='--', linewidth=1, alpha=0.7),
+        pulse_kw=dict(color=colors['pulse'], linestyle=':', linewidth=2),
+        rupture_kw=dict(color=colors['rupture'], linestyle='--', linewidth=2),
+        pulse_time=pulse_time, rupture_time=rupture_time, vmin=vmin, vmax=vmax)
+
+
+def draw_membrane_kymograph(ax, matrix, pipette_x, protrusions_px, time_data, scale):
+    """Membrane centre-line kymograph with the detected tip overlaid."""
+    colors = utils.MFA_COLORS
+    h, w = matrix.shape
+    total_time = time_data[-1] if time_data else h
+    extent = [pipette_x * scale, (pipette_x - w) * scale, total_time, 0]
+    # The display matrix is 8-bit, so a fixed 0-255 range keeps traps comparable.
+    im = ax.imshow(matrix, cmap='gray', aspect='auto', extent=extent, vmin=0, vmax=255)
+    if protrusions_px is not None and len(protrusions_px) == h:
+        y_times = np.array(time_data) if len(time_data) == h else np.arange(h)
+        tip_x_um = [l * scale for l in protrusions_px]
+        ax.plot(tip_x_um, y_times, color=colors['secondary'], linewidth=2.0,
+                label='Detected Tip', alpha=0.9)
+    ax.axvline(0, color=colors['pulse'], linestyle='--', linewidth=1.0, label='Entrance')
+    return im
+
+
+def draw_diffusion_profiles(ax, profiles, t, pipette_x, scale, n_curves=7, color_for_time=None):
+    """
+    Plot n_curves evenly spaced spatial profiles. Curves are coloured by rank
+    on the time gradient, or by color_for_time(t) when given (used by the grid
+    so colours mean the same time in every panel). Returns the frame indices drawn.
+    """
+    colors = utils.MFA_COLORS
+    indices = [int(i) for i in np.linspace(0, len(t) - 1, n_curves, dtype=int) if i < len(profiles)]
+    rank_colors = utils.get_time_colormap(len(indices))
+    max_w = max(len(p) for p in profiles)
+    x_axis = (pipette_x - np.arange(max_w)) * scale
+    for i, idx in enumerate(indices):
+        y = np.zeros(max_w)
+        y[:len(profiles[idx])] = profiles[idx]
+        color = color_for_time(t[idx]) if color_for_time else rank_colors[i]
+        ax.plot(x_axis, y, color=color, linewidth=2.5, label=f"{t[idx]:.1f}s")
+    ax.axvline(0, color=colors['pulse'], linestyle='--', alpha=0.6, label='Entrance')
+    if not ax.xaxis_inverted():
+        ax.invert_xaxis()
+    return indices
+
+
+ACTIN_ZONE_STYLES = {
+    'tip':         ('Protrusion tip',   'dark_blue'),
+    'base':        ('Protrusion base',  'medium_blue'),
+    'perinuclear': ('Perinuclear body', 'pale_red'),
+    'distal':      ('Distal body',      'medium_red'),
+}
+
+
+def draw_actin_zones(ax_norm, ax_didt, results, pulse_time=None, rupture_time=None):
+    """Normalised zone intensity (top axes) and its rate of change (bottom axes)."""
+    colors = utils.MFA_COLORS
+    t = np.array(results.get('time_s', []))
+    for zone, (label, color_key) in ACTIN_ZONE_STYLES.items():
+        norm_vals = np.array(results.get(f'zone_{zone}_norm', []))
+        didt_vals = np.array(results.get(f'zone_{zone}_didt', []))
+        if len(norm_vals) == len(t):
+            ax_norm.plot(t, norm_vals, color=colors[color_key], linewidth=2, label=label)
+        if len(didt_vals) == len(t):
+            # Replace NaN in frame 0 with 0 for display only
+            ax_didt.plot(t, np.where(np.isnan(didt_vals), 0, didt_vals),
+                         color=colors[color_key], linewidth=2, label=label)
+    ax_norm.axhline(1.0, color=colors['primary'], linestyle=':', linewidth=1,
+                    alpha=0.5, label='Baseline ($I_0$)')
+    ax_didt.axhline(0.0, color=colors['primary'], linestyle='-', linewidth=1, alpha=0.4)
+    for ax in (ax_norm, ax_didt):
+        if pulse_time is not None:
+            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':',
+                       linewidth=2, label='Pulse Applied')
+        if rupture_time is not None:
+            ax.axvline(rupture_time, color=colors['rupture'], linestyle='--',
+                       linewidth=2, label='Rupture Detected')
+
+
+def draw_protrusion_trace(ax_len, ax_haze, time_points, protrusions, intensities,
+                          rupture_time=None, pulse_time=None, markersize=4):
+    """
+    Protrusion length (ax_len) and downstream haze intensity (ax_haze), with
+    time re-zeroed at cell entry (first non-NaN length). Returns the shifted time.
+    """
+    colors = utils.MFA_COLORS
+    time_points = np.asarray(time_points, dtype=float)
+    protrusions = np.asarray(protrusions, dtype=float)
+    valid_indices = np.where(~np.isnan(protrusions))[0]
+    entry_idx = valid_indices[0] if len(valid_indices) > 0 else 0
+    t_shift = time_points[entry_idx]
+    time_shifted = time_points - t_shift
+
+    ax_len.plot(time_shifted, protrusions, 'o-', color=colors['primary'],
+                markersize=markersize, label='Length')
+    ax_len.grid(True, alpha=0.3)
+    if intensities is not None and len(intensities) == len(time_shifted):
+        ax_haze.plot(time_shifted, intensities, '-', color=colors['quaternary'],
+                     linewidth=2, label='Haze Intensity')
+    ax_haze.grid(True, alpha=0.3)
+    for ax in (ax_len, ax_haze):
+        if rupture_time is not None:
+            ax.axvline(rupture_time - t_shift, color=colors['rupture'], linestyle='--',
+                       linewidth=2.5, label='Rupture Detected')
+        if pulse_time is not None:
+            ax.axvline(pulse_time - t_shift, color=colors['pulse'], linestyle=':',
+                       linewidth=2, label='Pulse Applied')
+    return time_shifted
+
 
 # --- 2. KYMOGRAPH PLOT ---
 def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Path,
@@ -160,23 +283,10 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     """
     if kymograph_matrix is None: return
     utils.set_paper_style()
-    colors = utils.MFA_COLORS
     scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
 
-    h, w = kymograph_matrix.shape
-    total_time = time_data[-1] if time_data else h
-
     fig, ax = plt.subplots(figsize=(8, 6))
-    extent = [(pipette_x) * scale, (pipette_x - w) * scale, total_time, 0]
-
-    ax.imshow(kymograph_matrix, cmap='gray', aspect='auto', extent=extent)
-
-    if protrusions_px and len(protrusions_px) == h:
-        y_times = np.array(time_data) if len(time_data) == h else np.arange(h)
-        tip_x_um = [l * scale for l in protrusions_px]
-        ax.plot(tip_x_um, y_times, color=colors['secondary'], linewidth=2.0, label='Detected Tip', alpha=0.9)
-
-    ax.axvline(0, color=colors['pulse'], linestyle='--', linewidth=1.0, label='Entrance')
+    draw_membrane_kymograph(ax, kymograph_matrix, pipette_x, protrusions_px, time_data, scale)
 
     title_bits = [f'Trap #{trap_index}']
     if channel_label:
@@ -203,16 +313,12 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
                           pulse_time: Optional[float] = None):
     """Generates the suite of protrusion dynamics plots."""
     utils.set_paper_style()
-    colors = utils.MFA_COLORS
-    
-    # --- Time Synchronization ---
+
+    # Time is re-zeroed at cell entry (first non-NaN length).
+    protrusions = np.asarray(protrusions, dtype=float)
     valid_indices = np.where(~np.isnan(protrusions))[0]
     entry_idx = valid_indices[0] if len(valid_indices) > 0 else 0
-    t_shift = time_points[entry_idx]
-    
-    time_shifted = time_points - t_shift
-    if rupture_time is not None: rupture_time -= t_shift
-    if pulse_time is not None: pulse_time -= t_shift
+    time_shifted = np.asarray(time_points, dtype=float) - time_points[entry_idx]
 
     fig = plt.figure(figsize=(16, 10))
     gs = gridspec.GridSpec(3, 4, height_ratios=[1, 1.5, 1.5])
@@ -228,25 +334,13 @@ def plot_protrusion_trace(debug_images: List[np.ndarray], time_points: np.ndarra
             ax.axis('off')
 
     ax1 = fig.add_subplot(gs[1, :])
-    ax1.plot(time_shifted, protrusions, 'o-', color=colors['primary'], markersize=4, label='Length')
-    ax1.set_ylabel('Length (μm)')
-    ax1.grid(True, alpha=0.3)
-    
     ax2 = fig.add_subplot(gs[2, :], sharex=ax1)
-    if intensities is not None:
-        ax2.plot(time_shifted, intensities, '-', color=colors['quaternary'], linewidth=2, label='Haze Intensity')
+    draw_protrusion_trace(ax1, ax2, time_points, protrusions, intensities,
+                          rupture_time=rupture_time, pulse_time=pulse_time)
+    ax1.set_ylabel('Length (μm)')
     ax2.set_ylabel('Intensity (a.u.)'); ax2.set_xlabel('Time (s)')
-    ax2.grid(True, alpha=0.3)
-
-    if rupture_time is not None:
-        for ax in [ax1, ax2]:
-            ax.axvline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2.5, label='Rupture Detected')
-            ax.legend()
-            
-    if pulse_time is not None:
-        for ax in [ax1, ax2]:
-            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2, label='Pulse Applied')
-            ax.legend()
+    if rupture_time is not None or pulse_time is not None:
+        ax1.legend(); ax2.legend()
 
     utils.save_plot_pdf(save_path)
     plt.close(fig)
@@ -348,24 +442,11 @@ def plot_actin_kymograph(results: Dict[str, Any], trap_idx: int, output_dir: Pat
     if len(t) == 0 or not profiles:
         return
 
-    colors = utils.MFA_COLORS
     scale = params.get('experiment_parameters', {}).get('scale_factor', 0.629)
-    max_w = max(len(p) for p in profiles)
-
-    kymo = np.zeros((len(profiles), max_w))
-    for i, p in enumerate(profiles):
-        kymo[i, :len(p)] = p
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    extent = [(pipette_x) * scale, (pipette_x - max_w) * scale, t[-1], t[0]]
-
-    im = ax.imshow(kymo, aspect='auto', extent=extent, cmap='RdBu_r', interpolation='nearest')
-    ax.axvline(0, color='white', linestyle='--', linewidth=1, label='Entrance', alpha=0.7)
-
-    if rupture_time is not None:
-        ax.axhline(rupture_time, color=colors['rupture'], linestyle='--', linewidth=2, label='Rupture')
-    if pulse_time is not None:
-        ax.axhline(pulse_time, color=colors['pulse'], linestyle=':', linewidth=2, label='Pulse')
+    im = draw_actin_kymograph(ax, profiles, t, pipette_x, scale,
+                              pulse_time=pulse_time, rupture_time=rupture_time)
 
     plt.colorbar(im, ax=ax, label="Actin Intensity")
     ax.set_xlabel("Position relative to channel entrance (µm)")
@@ -402,53 +483,10 @@ def plot_actin_zones(results: Dict[str, Any], trap_idx: int, output_dir: Path, p
     if len(t) == 0:
         return
 
-    colors = utils.MFA_COLORS
-    zone_styles = {
-        'tip':         {'label': 'Protrusion tip',   'color': colors['dark_blue'],   'ls': '-'},
-        'base':        {'label': 'Protrusion base',  'color': colors['medium_blue'], 'ls': '-'},
-        'perinuclear': {'label': 'Perinuclear body', 'color': colors['pale_red'],    'ls': '-'},
-        'distal':      {'label': 'Distal body',      'color': colors['medium_red'],  'ls': '-'},
-    }
-
     fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
     fig.suptitle(f"Trap {trap_idx}: Actin Zone Dynamics", fontweight='bold')
-
-    ax_norm  = axes[0]
-    ax_didt  = axes[1]
-
-    for zone, style in zone_styles.items():
-        norm_key = f'zone_{zone}_norm'
-        didt_key = f'zone_{zone}_didt'
-
-        norm_vals = np.array(results.get(norm_key, []))
-        didt_vals = np.array(results.get(didt_key, []))
-
-        if len(norm_vals) == len(t):
-            ax_norm.plot(t, norm_vals,
-                         linestyle=style['ls'], color=style['color'],
-                         linewidth=2, label=style['label'])
-
-        if len(didt_vals) == len(t):
-            # Replace NaN in frame 0 with 0 for display only
-            didt_display = np.where(np.isnan(didt_vals), 0, didt_vals)
-            ax_didt.plot(t, didt_display,
-                         linestyle=style['ls'], color=style['color'],
-                         linewidth=2, label=style['label'])
-
-    # Reference lines
-    ax_norm.axhline(1.0, color=colors['primary'], linestyle=':', linewidth=1,
-                    alpha=0.5, label='Baseline ($I_0$)')
-    ax_didt.axhline(0.0, color=colors['primary'], linestyle='-', linewidth=1,
-                    alpha=0.4)
-
-    # Pulse / rupture markers on both panels
-    for ax in axes:
-        if pulse_time is not None:
-            ax.axvline(pulse_time, color=colors['pulse'], linestyle=':',
-                       linewidth=2, label='Pulse Applied')
-        if rupture_time is not None:
-            ax.axvline(rupture_time, color=colors['rupture'], linestyle='--',
-                       linewidth=2, label='Rupture Detected')
+    ax_norm, ax_didt = axes
+    draw_actin_zones(ax_norm, ax_didt, results, pulse_time=pulse_time, rupture_time=rupture_time)
 
     ax_norm.set_ylabel("Normalised Actin Intensity (I / $I_0$)")
     ax_norm.set_title("Zone Mean Intensity (Normalised to Pre-Pulse Baseline)")

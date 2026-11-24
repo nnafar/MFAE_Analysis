@@ -2198,9 +2198,13 @@ class LineDetectionMFA:
                               dir_full: Optional[Path] = None, dir_filtered: Optional[Path] = None,
                               time_points: Optional[List[float]] = None) -> List[Path]:
         """
-        Saves two CSV files:
-        1. `..._full.csv`: Contains every frame of data.
-        2. `..._filtered.csv`: Cuts off data after a rupture is detected (cleaner for plotting).
+        Saves `..._detection_full.csv` with every frame of data.
+
+        Only when `dir_filtered` is given, also saves `..._detection_filtered.csv`,
+        which is the same table cut off at the detected rupture frame. The
+        pipeline no longer requests it: rupture/DOA detection is not reliable
+        enough to truncate data on, and the bulk analysis reads only the
+        full CSV.
 
         Time_s is taken from `time_points` when supplied (these are the
         per-frame timestamps extracted from image metadata upstream). If
@@ -2261,8 +2265,10 @@ class LineDetectionMFA:
         df.to_csv(full_path, index=False)
         created_files.append(full_path)
 
-        # --- 2. Export Filtered Data ---
-        path_filtered = dir_filtered if dir_filtered else Path(output_dir)
+        # --- 2. Optional: data truncated at the detected rupture ---
+        if dir_filtered is None:
+            return created_files
+        path_filtered = Path(dir_filtered)
         path_filtered.mkdir(parents=True, exist_ok=True) 
         
         filename_filtered = f"{experiment_id}_detection_filtered.csv" 

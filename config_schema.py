@@ -456,6 +456,17 @@ class PlottingConstants(_StrictModel):
     default_dpi: int = Field(default=300, gt=70)
     figure_size_large: Tuple[float, float] = Field(default=(18.0, 12.0))
     figure_size_medium: Tuple[float, float] = Field(default=(10.0, 7.0))
+    save_individual_trap_plots: bool = Field(
+        default=False,
+        description=(
+            "Also save one PDF per trap for each plot type. By default only the "
+            "multipanel figures (all traps on one page per plot type) are saved."
+        ),
+    )
+    multipanel_columns: int = Field(
+        default=4, ge=1, le=8,
+        description="Number of trap panels per row in the multipanel figures.",
+    )
 
 class FittingParameters(_StrictModel):
     """Advanced settings for the optimization."""

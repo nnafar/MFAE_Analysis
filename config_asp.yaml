@@ -356,6 +356,10 @@ plotting_parameters:
   default_dpi: 300                 # Quality of saved plots (300 = Print Quality).
   figure_size_large: [18.0, 12.0]
   figure_size_medium: [10.0, 7.0]
+  # Per-trap plots (detection traces, kymographs, diffusion profiles, actin
+  # zones) are saved as multipanel PDFs: one PDF per plot type, every trap a panel.
+  multipanel_columns: 4            # Trap panels per row.
+  save_individual_trap_plots: False # True = also save one PDF per trap per plot.
 
 fitting_parameters:
   # Strategy:
