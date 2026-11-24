@@ -57,7 +57,7 @@ def _fake_trap(trap_index: int, with_dye=True, with_actin=True, rupture=False):
 
 
 def _subdirs(tmp_path):
-    return {'tracking_visuals': tmp_path / 'tv', 'dye': tmp_path / 'dye', 'actin': tmp_path / 'actin'}
+    return {'protrusion': tmp_path / 'prot', 'dye': tmp_path / 'dye', 'actin': tmp_path / 'actin'}
 
 
 PARAMS = {'experiment_parameters': {'scale_factor': 0.3},
@@ -124,7 +124,7 @@ def test_worker_outputs(tmp_path, save_singles):
     del fp
 
     dirs = {k: tmp_path / k for k in
-            ('root', 'full_csv', 'tracking_visuals', 'morphology', 'fitting', 'dye', 'actin')}
+            ('root', 'full_csv', 'protrusion', 'morphology', 'fitting', 'dye', 'actin')}
     for d in dirs.values():
         d.mkdir()
     channel = {'path': str(mmap_path), 'shape': stack.shape, 'dtype': stack.dtype}
@@ -141,6 +141,19 @@ def test_worker_outputs(tmp_path, save_singles):
     assert {'trace', 'membrane_kymo', 'actin', 'pipette_x'} <= set(result['plot_data'])
     assert (dirs['full_csv'] / 'trap_01_detection_full.csv').exists()
     assert not list(tmp_path.rglob('*filtered*'))       # filtered CSV no longer written
+
+    # Output layout: CSVs, kymograph CSVs and movies in their own sub-folders.
+    prot = dirs['protrusion']
+    assert (prot / 'Movies' / 'Trap_01_Tracking.avi').stat().st_size > 0
+    assert (prot / 'Kymographs' / 'Trap_01_Membrane_Kymograph.csv').exists()
+    assert (dirs['actin'] / 'Actin traces' / 'Trap_01_Actin_Data.csv').exists()
+    assert (dirs['actin'] / 'Actin Kymographs' / 'Trap_01_Actin_Kymograph.csv').exists()
+    assert (dirs['actin'] / 'Actin Movies' / 'Trap_01_Actin_Debug_Zones.avi').exists()
+    assert (dirs['dye'] / 'Uptake traces' / 'Trap_01_Uptake_Data.csv').exists()
+    assert (dirs['dye'] / 'Uptake Kymographs' / 'Trap_01_Uptake_Kymograph.csv').exists()
+    assert (dirs['dye'] / 'Uptake Movies' / 'Trap_01_Mask_Debug.avi').exists()
+    for top in (prot, dirs['dye'], dirs['actin']):   # only PDFs directly in the main folders
+        assert all(f.suffix == '.pdf' for f in top.iterdir() if f.is_file())
 
     single_pdfs = list(tmp_path.rglob('*.pdf'))
     if save_singles:
@@ -170,7 +183,7 @@ def test_shared_actin_channel_gives_identical_results(tmp_path):
     shutil.copy(mem, copy)
 
     def run(actin_path, out):
-        dirs = {k: out / k for k in ('root', 'full_csv', 'tracking_visuals', 'morphology',
+        dirs = {k: out / k for k in ('root', 'full_csv', 'protrusion', 'morphology',
                                      'fitting', 'dye', 'actin')}
         for d in dirs.values():
             d.mkdir(parents=True)
@@ -182,7 +195,7 @@ def test_shared_actin_channel_gives_identical_results(tmp_path):
             'tuned_threshold_body': 110, 'time_data': [i * DT for i in range(len(frames))],
             'first_frame_number': 1, 'dye_mmap': {'path': None}, 'actin_mmap': chan,
         })
-        return (dirs['actin'] / 'Trap_01_Actin_Data.csv').read_text()
+        return (dirs['actin'] / 'Actin traces' / 'Trap_01_Actin_Data.csv').read_text()
 
     assert run(mem, tmp_path / 'shared') == run(copy, tmp_path / 'separate')
 

@@ -34,6 +34,7 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 from experiment_naming import FOLDER_PATTERN  # noqa: E402
+import output_layout  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -364,9 +365,11 @@ class BulkDataLoader:
                 except Exception as e:
                     logger.warning(f"   Could not read shear CSV: {e}")
 
-        dir_uptake = meta.full_path / "Dye Uptake"
-        dir_full   = meta.full_path / "Full protrusion detection"
-        dir_actin  = meta.full_path / "Actin Quantification"
+        # New layout (Protrusion Length Detection/..., Dye Uptake/Uptake traces,
+        # Actin Quantification/Actin traces) first, old flat layout as fallback.
+        dir_uptake = output_layout.first_existing(output_layout.dye_traces_candidates(meta.full_path))
+        dir_full   = output_layout.first_existing(output_layout.full_csv_candidates(meta.full_path))
+        dir_actin  = output_layout.first_existing(output_layout.actin_traces_candidates(meta.full_path))
 
         all_full_candidates = (
             sorted(dir_full.glob("trap_*_detection_full*.csv"))

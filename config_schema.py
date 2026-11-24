@@ -393,6 +393,9 @@ class WorkflowConfig(_StrictModel):
     """Settings that control the pipeline's execution flow."""
     verify_traps_interactively: bool = True
     create_kymographs: bool = True
+    save_tracking_movies: bool = Field(default=True, description="Write Trap_XX_Tracking.avi per trap (Protrusion Length Detection/Movies)")
+    tracking_movie_fps: int = Field(default=10, ge=1, le=60)
+    tracking_movie_width_px: int = Field(default=900, ge=200, le=4000)
     window_scale_factor: float = Field(default=1.0, gt=0.0, le=5.0, description="Scaling factor for interactive window size on high-DPI screens")
     max_cache_size: int = Field(gt=10, lt=500)
     trap_spacing_factor: float = Field(gt=1.0, lt=3.0)

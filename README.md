@@ -192,20 +192,23 @@ Output/<experiment_id>/
 ├── <experiment_id>_analysis.log        full log of the run
 ├── session_cache.json                  saved interactive setup
 ├── trap_map.png                        which trap is which
-├── Full protrusion detection/          per-trap CSV, every frame
-├── Tracking visuals/
+├── Protrusion Length Detection/
 │   ├── <id>_Detection_Traces.pdf       length + haze, all traps
 │   ├── <id>_Membrane_Kymographs.pdf    membrane kymograph, all traps
-│   └── Trap_XX_Membrane_Kymograph.csv
+│   ├── Full protrusion detection/      trap_XX_detection_full.csv (every frame)
+│   ├── Kymographs/                     Trap_XX_Membrane_Kymograph.csv
+│   └── Movies/                         Trap_XX_Tracking.avi (masks, tip and length trace per frame)
 ├── Cell Morphology/                    aggregate shape metrics
 ├── Dye Uptake/                                                    (if enabled)
-│   ├── <id>_Uptake_Kymographs.pdf      dye kymograph, all traps
-│   ├── <id>_Diffusion_Profiles.pdf     dye profiles, all traps
-│   └── Trap_XX_*.csv / *.avi           per-trap data and debug videos
+│   ├── <id>_*.pdf                      uptake kymographs, diffusion profiles, aggregates
+│   ├── Uptake traces/                  Trap_XX_Uptake_Data.csv
+│   ├── Uptake Kymographs/              Trap_XX_Uptake_Kymograph.csv
+│   └── Uptake Movies/                  Trap_XX_Mask_Debug.avi
 ├── Actin Quantification/                                          (if enabled)
-│   ├── <id>_Actin_Kymographs.pdf       actin kymograph, all traps
-│   ├── <id>_Actin_Zones.pdf            zone dynamics, all traps
-│   └── Trap_XX_*.csv / *.avi           per-trap data and debug videos
+│   ├── <id>_*.pdf                      actin kymographs, zone dynamics
+│   ├── Actin traces/                   Trap_XX_Actin_Data.csv
+│   ├── Actin Kymographs/               Trap_XX_Actin_Kymograph.csv
+│   └── Actin Movies/                   Trap_XX_Actin_Debug_Zones.avi / _Cortex.avi
 └── Fitting results/                    shear analysis and viscoelastic fits   (if enabled)
 ```
 
@@ -214,6 +217,14 @@ for kymographs, one colour scale, so traps can be compared at a glance. To also 
 trap (e.g. for a slide), set `plotting_parameters.save_individual_trap_plots: True` in
 `config/defaults.yaml`; the number of panels per row is `plotting_parameters.multipanel_columns`
 (both are pipeline settings).
+
+The tracking movies (`workflow_settings.save_tracking_movies`, on by default) show the membrane
+image with the protrusion (magenta) and body (cyan) masks, the pipette entrance, the tracked tip,
+the rupture-monitoring box and the length trace with a cursor, so the tracking can be followed
+frame by frame. They are MJPG `.avi` files; VLC plays them on any system.
+
+The bulk analysis reads both this layout and the older flat one (CSVs directly in
+`Full protrusion detection/`, `Dye Uptake/`, `Actin Quantification/`).
 
 Rupture markers on the plots come from the automatic rupture detection, which is not reliable
 enough to cut data on. All CSVs therefore contain every frame; treat the markers as hints.

@@ -13,8 +13,8 @@ Within a figure, panels share their axes and colour scale, so traps can be
 compared directly.
 
 Output (per experiment):
-    Tracking visuals/<id>_Detection_Traces.pdf       length + haze per trap
-    Tracking visuals/<id>_Membrane_Kymographs.pdf    membrane kymograph per trap
+    Protrusion Length Detection/<id>_Detection_Traces.pdf      length + haze per trap
+    Protrusion Length Detection/<id>_Membrane_Kymographs.pdf   membrane kymograph per trap
     Dye Uptake/<id>_Uptake_Kymographs.pdf            dye kymograph per trap
     Dye Uptake/<id>_Diffusion_Profiles.pdf           dye profiles per trap
     Actin Quantification/<id>_Actin_Kymographs.pdf   actin kymograph per trap
@@ -74,11 +74,14 @@ def plot_trap_multipanels(all_results: List[Dict[str, Any]], subdirs: Dict[str, 
     dye_p = params.get('dye_uptake_parameters', {})
     show_dye_pulse = dye_p.get('has_pulse', True)
 
+    # 'protrusion' is the Protrusion Length Detection folder ('tracking_visuals'
+    # was its previous key; still accepted).
+    prot_dir = subdirs.get('protrusion', subdirs.get('tracking_visuals'))
     jobs: List[Tuple[str, Callable[..., Optional[plt.Figure]], Path, dict]] = [
         ("Detection traces", _detection_traces,
-         subdirs['tracking_visuals'] / f"{experiment_id}_Detection_Traces.pdf", {}),
+         prot_dir / f"{experiment_id}_Detection_Traces.pdf", {}),
         ("Membrane kymographs", _membrane_kymographs,
-         subdirs['tracking_visuals'] / f"{experiment_id}_Membrane_Kymographs.pdf", {}),
+         prot_dir / f"{experiment_id}_Membrane_Kymographs.pdf", {}),
         ("Uptake kymographs", _uptake_kymographs,
          subdirs['dye'] / f"{experiment_id}_Uptake_Kymographs.pdf",
          {'show_pulse': show_dye_pulse}),
