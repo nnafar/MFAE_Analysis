@@ -1,21 +1,20 @@
 # ===================================================================
-# MFA SETUP CONFIG: asymmetric E-field (.tif folders)
+# MFA CONFIG: asymmetric E-field (.tif folders)
 # ===================================================================
-# Settings for every experiment recorded on this setup. Run them all at once
-# (finds every folder of .tif images under data_folder, at any depth):
+# Analyse every experiment in the folder(s) listed under data_folder below
+# (searched at any depth for folders of .tif images):
 #   python run_experiment.py config/config_asymmetric_tiff.yaml --batch
-# Results go to Output/Asymmetric_Efield/<experiment>/, so this setup is never pooled
-# with another one; run_bulk_analysis.py also analyses it on its own, with the
-# aspiration-only experiments (Output/Aspiration, config_aspiration_tiff.yaml)
-# as its no-pulse controls.
+# Experiments that need other settings go in another config with their own
+# folders, run the same way. Results go to Output/Asymmetric_Efield/<experiment>/;
+# already analysed experiments are skipped when you run it again.
 # In a batch run, experiment_type (ep / asp) and the pulse are read from each
 # experiment's name (0V = aspiration only).
 #
 # One experiment only:
 #   python run_experiment.py config/config_asymmetric_tiff.yaml --data-folder "<one experiment folder>" --output-dir Output/Asymmetric_Efield
 #
-# Check a config:      python run_experiment.py <this file> --check
-# See all settings:    python run_experiment.py <this file> --show-config
+# Check a config:      python run_experiment.py <this file> --batch --check
+# See all settings:    python run_experiment.py <this file> --data-folder "<one experiment folder>" --show-config
 
 # ep  = electroporation (pulse voltage, duration and frame are read from the
 #       experiment name, e.g. ...-100V-1ms-frame10)
@@ -29,9 +28,11 @@ paths:
   # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
   # (to analyse .czi files, start from config/config_czi.yaml)
   image_format: tiff
-  # Batch: the setup's top folder (searched at any depth). One experiment: its folder.
-  data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield'
-  # Name of the results folder; must follow the naming rule:
+  # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
+  data_folder:
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\5ms_100V'
+    # - 'M:\\...\\another folder'   (add more folders like this)
+  # One experiment (no --batch): name of the results folder; must follow the naming rule:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
   #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
   experiment_id: '260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10'
@@ -91,27 +92,3 @@ workflow_settings:
   # ---------------------------------------------------------------
   # CPU cores to use; lower it if the computer becomes slow
   n_workers: 3
-
-# -------------------------------------------------------------------
-# SETTINGS THAT DIFFER FOR SOME EXPERIMENTS (optional)
-# -------------------------------------------------------------------
-# Each entry applies to the experiments whose name or folder path contains
-# one of its 'match' texts (case-insensitive), e.g. a condition folder
-# (100us_100V) or part of an experiment name (Experiment272). Entries are
-# applied in order on top of the settings above; a later entry wins. Any
-# setting above except paths can be changed. Each run logs the entries it
-# used, and its Run_Info/effective_config.yaml shows the final values.
-overrides:
-  # 100 µs series: settings of the former config_tiff_100us_asym_NN.yaml
-  - match: 100us_100V
-    rupture_detection:
-      enable_smoothing: True
-      enable_outlier_rejection: True
-    workflow_settings:
-      selection_frame_fraction: 0.4
-      default_roi_width_um: 70.0
-      default_roi_height_um: 31.0
-  # Example, one experiment:
-  # - match: Experiment283
-  #   experiment_parameters:
-  #     frame_interval: 1.72

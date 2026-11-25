@@ -1,17 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Batch runs: analyse every experiment found under one folder, with one config.
+Batch runs: analyse every experiment in the folders you choose, with one config.
 
-    python run_experiment.py config/config_czi_symmetric.yaml --batch "M:/.../Symmetric_Efield"
+    python run_experiment.py config/config_asymmetric_tiff.yaml --batch
+    python run_experiment.py config/config_asymmetric_tiff.yaml --batch "M:/.../Asymmetric_Efield/5ms_100V"
 
-* Every experiment under the folder (at any depth) is found: each .czi file
+* Folders: the ones given after --batch, else the config's data_folder (one
+  folder or a list). Experiments with other settings go in another config
+  with their own folders, run the same way.
+* Every experiment in those folders (at any depth) is found: each .czi file
   for a CZI config, each folder holding .tif files for a TIFF config. Only
   names that follow the experiment-naming rule are taken; the pulse and
   ep / asp (0 V = aspiration only) come from each name.
-* One setup = one folder + one config. Results go to Output/<setup>/<experiment>/,
-  <setup> being the folder's name (or --setup NAME), so experiments of
-  different setups (e.g. symmetric and asymmetric field) are never mixed;
-  the bulk analysis also treats each setup on its own.
+* Results go to Output/<setup>/<experiment>/. <setup> is the folder's name
+  (Symmetric_Efield, Aspiration) or, for a condition folder such as 5ms_100V,
+  the setup folder holding it (Asymmetric_Efield); --setup NAME sets it. So
+  different setups are never mixed, and configs for parts of one setup
+  still fill the same setup folder.
 * Pass 1 does the interactive setup of every experiment, one after another
   (saved setups are reused; Esc stops the batch and keeps the setups done so
   far). Pass 2 analyses them all without interaction, e.g. overnight.
@@ -22,6 +27,7 @@ Batch runs: analyse every experiment found under one folder, with one config.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -82,14 +88,39 @@ def is_analysed(results_dir: Path) -> bool:
     return output_layout.experiment_file(output_layout.build(results_dir), 'trap_summary').exists()
 
 
-def batch_folder_and_format(config_path: Path, folder: Optional[str]) -> Tuple[Path, str]:
-    """The batch folder (given, or the config's data_folder) and the config's image format."""
+CONDITION_FOLDER = re.compile(r"^\d+(?:\.\d+)?(?:us|ms|s)_\d+V$", re.IGNORECASE)
+
+
+def setup_name(folder: Path) -> str:
+    """
+    Results sub-folder (setup) of a batch folder: the folder's own name
+    (Symmetric_Efield, Aspiration), or, for a condition folder such as
+    5ms_100V or 100us_100V, the name of the setup folder that holds it.
+    """
+    folder = Path(folder)
+    if CONDITION_FOLDER.match(folder.name) and folder.parent.name:
+        return folder.parent.name
+    return folder.name
+
+
+def batch_folders_and_format(config_path: Path, folders: Optional[List[str]]) -> Tuple[List[Path], str]:
+    """
+    The folders to search (given after --batch, else the config's data_folder,
+    which may be one folder or a list) and the config's image format.
+    """
     raw = config_loader.read_yaml(Path(config_path))
     paths = raw.get("paths") or {}
-    root = Path(folder) if folder else Path(str(paths.get("data_folder", "")))
-    if root.suffix.lower() == ".czi":
-        root = root.parent                 # a single .czi file given: use its folder
-    return root, str(paths.get("image_format", "tiff")).lower()
+    chosen = list(folders or [])
+    if not chosen:
+        df = paths.get("data_folder", "")
+        chosen = [str(x) for x in df] if isinstance(df, list) else [str(df)]
+    roots = []
+    for f in chosen:
+        root = Path(f)
+        if root.suffix.lower() == ".czi":
+            root = root.parent             # a single .czi file given: use its folder
+        roots.append(root)
+    return roots, str(paths.get("image_format", "tiff")).lower()
 
 
 def run_batch(args) -> int:
@@ -97,26 +128,32 @@ def run_batch(args) -> int:
     from mfae.cli import check_setup, load_config, save_effective_config, show_config
 
     try:
-        root, image_format = batch_folder_and_format(args.config_path, args.batch)
-        found = find_experiments(root, image_format)
+        roots, image_format = batch_folders_and_format(args.config_path, args.batch)
     except (FileNotFoundError, config_loader.ConfigFileError, OSError) as e:
         logger.error(str(e))
         return 1
 
-    setup = args.setup or root.name
-    out_root = Path(args.output_dir or default_output_root()) / setup
     what = ".czi files" if image_format == "czi" else "folders with .tif files"
-    logger.info(f"Batch '{setup}': {len(found.experiments)} experiment(s) ({what}) under {root}")
-    logger.info(f"Results go to {out_root}")
-    for p in found.badly_named:
-        logger.warning(f"Skipped (name doesn't follow the naming rule): {p}")
-    if found.other_format:
-        other = "TIFF folders" if image_format == "czi" else ".czi files"
-        logger.warning(f"Also found {len(found.other_format)} {other}; they need a config with "
-                       f"image_format: {'tiff' if image_format == 'czi' else 'czi'} and are not "
-                       f"analysed in this batch.")
-    if not found.experiments:
-        logger.error(f"No {what} with a valid experiment name under {root}.")
+    out_base = Path(args.output_dir or default_output_root())
+    selected: List[Tuple[Path, Path]] = []          # (experiment, results root of its setup)
+    for root in roots:
+        try:
+            found = find_experiments(root, image_format)
+        except (FileNotFoundError, OSError) as e:
+            logger.error(str(e))
+            return 1
+        setup = args.setup or setup_name(root)
+        logger.info(f"{root}: {len(found.experiments)} experiment(s) ({what}) -> Output/{setup}/")
+        for p in found.badly_named:
+            logger.warning(f"Skipped (name doesn't follow the naming rule): {p}")
+        if found.other_format:
+            other = "TIFF folders" if image_format == "czi" else ".czi files"
+            logger.warning(f"Also found {len(found.other_format)} {other} in {root}; they need a "
+                           f"config with image_format: {'tiff' if image_format == 'czi' else 'czi'} "
+                           f"and are not analysed in this batch.")
+        selected += [(e, out_base / setup) for e in found.experiments]
+    if not selected:
+        logger.error(f"No {what} with a valid experiment name in: " + ", ".join(map(str, roots)))
         return 1
     if args.experiment_id:
         logger.warning("--experiment-id is ignored with --batch: each experiment is named after "
@@ -124,7 +161,7 @@ def run_batch(args) -> int:
 
     status: Dict[str, str] = {}
     configs = {}
-    for exp_path in found.experiments:
+    for exp_path, out_root in selected:
         name = default_experiment_id(exp_path)
         if name in configs:
             status[name + " (duplicate)"] = f"skipped: same name as an earlier experiment ({exp_path})"
@@ -138,20 +175,18 @@ def run_batch(args) -> int:
             continue
         if args.debug:
             config.workflow_settings.debug_mode = True
-        configs[name] = (config, layered, exp_path)
-
-    _warn_unused_overrides(args.config_path, found.experiments)
+        configs[name] = (config, layered, exp_path, out_root)
 
     if args.show_config:
-        for name, (config, layered, _) in configs.items():
+        for name, (config, layered, _, _) in configs.items():
             print(f"===== {name} =====\n{show_config(config, layered)}")
         return 0
 
     if args.check:
-        for name, (config, _, _) in configs.items():
+        for name, (config, _, _, out_root) in configs.items():
             logger.info(f"\n===== Check: {name} =====")
             status[name] = "check passed" if check_setup(config, out_root) else "check: PROBLEM"
-        _summary(status, setup, root, out_root, save=False)
+        _summary(status, roots, set(), save=False)
         return 0 if all(v == "check passed" for v in status.values()
                         if not v.startswith("already")) else 1
 
@@ -167,7 +202,7 @@ def run_batch(args) -> int:
     # --- Pass 1: interactive setups (or the saved ones) ---------------------
     logger.info(f"\n== BATCH PASS 1: SETUP OF {len(configs)} EXPERIMENT(S) ==")
     ready: List[str] = []
-    for k, (name, (config, layered, exp_path)) in enumerate(configs.items(), 1):
+    for k, (name, (config, layered, exp_path, out_root)) in enumerate(configs.items(), 1):
         logger.info(f"\n--- Setup {k}/{len(configs)}: {name} ---")
         analysis = None
         try:
@@ -196,7 +231,7 @@ def run_batch(args) -> int:
     # --- Pass 2: analyses, no interaction -----------------------------------
     logger.info(f"\n== BATCH PASS 2: ANALYSIS OF {len(ready)} EXPERIMENT(S) ==")
     for k, name in enumerate(ready, 1):
-        config, layered, exp_path = configs[name]
+        config, layered, exp_path, out_root = configs[name]
         logger.info(f"\n--- Analysis {k}/{len(ready)}: {name} ---")
         analysis = None
         try:
@@ -215,40 +250,29 @@ def run_batch(args) -> int:
                 analysis.cleanup()
 
     utils.setup_logging(debug_mode=args.debug, log_file=None)   # summary: console only
-    _summary(status, setup, root, out_root, save=True)
+    _summary(status, roots, {o for *_, o in configs.values()}, save=True)
     ok = ("done", "already analysed")
     return 0 if all(v.startswith(ok) for v in status.values()) else 1
 
 
-def _warn_unused_overrides(config_path: Path, experiments: List[Path]) -> None:
-    """Warn about 'overrides' entries that match none of the experiments found (usually a typo)."""
-    entries = config_loader.read_yaml(Path(config_path)).get("overrides") or []
-    targets = [t.lower() for p in experiments for t in (p.name, p.as_posix())]
-    for entry in entries:
-        if not isinstance(entry, dict) or "match" not in entry:
-            continue
-        m = entry["match"]
-        patterns = [str(x) for x in (m if isinstance(m, list) else [m])]
-        if not any(pat.lower() in t for pat in patterns for t in targets):
-            logger.warning(f"overrides entry 'match: {', '.join(patterns)}' matches none of the "
-                           f"experiments found (check the spelling).")
-
-
-def _summary(status: Dict[str, str], setup: str, root: Path, out_root: Path, save: bool) -> None:
+def _summary(status: Dict[str, str], roots: List[Path], out_roots: set, save: bool) -> None:
     lines = [f"  {name}: {state}" for name, state in status.items()]
     counts: Dict[str, int] = {}
     for state in status.values():
         key = state.split(" (")[0].split(":")[0]
         counts[key] = counts.get(key, 0) + 1
-    text = (f"== BATCH SUMMARY: {setup} ==\n" + "\n".join(lines) + "\n"
+    text = ("== BATCH SUMMARY ==\n" + "\n".join(lines) + "\n"
             + ", ".join(f"{n} {k}" for k, n in counts.items()))
     logger.info("\n" + text)
     if not save:
         return
-    try:
-        out_root.mkdir(parents=True, exist_ok=True)
-        path = out_root / f"batch_summary_{datetime.now():%Y%m%d_%H%M}.txt"
-        path.write_text(f"Batch over {root}\nResults in {out_root}\n\n{text}\n", encoding="utf-8")
-        logger.info(f"Batch summary saved to {path}")
-    except OSError:
-        logger.warning("Could not write the batch summary file.", exc_info=True)
+    header = "Batch over:\n" + "\n".join(f"  {r}" for r in roots) + "\n\n"
+    stamp = f"{datetime.now():%Y%m%d_%H%M}"
+    for out_root in sorted(out_roots):
+        try:
+            out_root.mkdir(parents=True, exist_ok=True)
+            path = out_root / f"batch_summary_{stamp}.txt"
+            path.write_text(header + text + "\n", encoding="utf-8")
+            logger.info(f"Batch summary saved to {path}")
+        except OSError:
+            logger.warning("Could not write the batch summary file.", exc_info=True)

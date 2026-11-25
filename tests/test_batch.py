@@ -77,7 +77,7 @@ def test_batch_does_all_setups_then_all_analyses_and_skips_finished(tmp_path, mo
     monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
     monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
     args = types.SimpleNamespace(config_path=ROOT / "config" / "config_asymmetric_tiff.yaml",
-                                 batch=str(setup), setup=None, output_dir=out, redo=False,
+                                 batch=[str(setup)], setup=None, output_dir=out, redo=False,
                                  fresh=False, check=False, show_config=False, debug=False,
                                  experiment_id=None)
     assert batch.run_batch(args) == 0
@@ -106,8 +106,8 @@ def test_cli_dispatches_batch(monkeypatch):
     seen = {}
     import mfae.batch as mb
     monkeypatch.setattr(mb, "run_batch", lambda args: seen.setdefault("folder", args.batch) and 0)
-    cli.main([str(ROOT / "config" / "config_asymmetric_tiff.yaml"), "--batch", "D:/data/X"])
-    assert seen["folder"] == "D:/data/X"
+    cli.main([str(ROOT / "config" / "config_asymmetric_tiff.yaml"), "--batch", "D:/data/X", "D:/data/Y"])
+    assert seen["folder"] == ["D:/data/X", "D:/data/Y"]
 
 
 def test_aspiration_controls_join_each_setup_but_only_aspiration_runs(tmp_path, monkeypatch):
@@ -124,48 +124,56 @@ def test_aspiration_controls_join_each_setup_but_only_aspiration_runs(tmp_path, 
     assert [m.full_path.name for _, t in alone.iter_groups() for m in t] == [CZI]
 
 
-def _setup_config(tmp_path, overrides_yaml):
-    src = (ROOT / "config" / "config_asymmetric_tiff.yaml").read_text()
-    src = src[:src.index("\noverrides:")] + "\n" + overrides_yaml
-    path = tmp_path / "setup.yaml"
-    path.write_text(src)
-    return path
+def test_condition_folders_file_into_their_setup():
+    assert batch.setup_name(Path("MFAE/Asymmetric_Efield/5ms_100V")) == "Asymmetric_Efield"
+    assert batch.setup_name(Path("MFAE/Asymmetric_Efield/100us_100V")) == "Asymmetric_Efield"
+    assert batch.setup_name(Path("MFAE/Symmetric_Efield")) == "Symmetric_Efield"
+    assert batch.setup_name(Path("MFAE/Aspiration")) == "Aspiration"
 
 
-def test_overrides_apply_by_folder_or_name_and_later_entries_win(tmp_path):
-    setup = _tree(tmp_path)
-    cfg = _setup_config(tmp_path, """overrides:
-  - match: 5ms_100V
-    rupture_detection:
-      enable_smoothing: True
-    experiment_parameters:
-      frame_interval: 2.0
-  - match: [Experiment3, Experiment999]
-    experiment_parameters:
-      frame_interval: 3.0
-""")
-    pulsed = setup / "5ms_100V" / PULSED
-    config, layered = cli.load_config(cfg, pulsed, type_from_name=True)
-    assert config.rupture_detection.enable_smoothing is True
-    assert config.experiment_parameters.frame_interval == 3.0            # later entry wins
-    assert layered.sources["experiment_parameters.frame_interval"].endswith(
-        "overrides[Experiment3, Experiment999]")
-    other, _ = cli.load_config(cfg, setup / "0ms_0V" / ASP, type_from_name=True)
-    assert other.rupture_detection.enable_smoothing is False             # not matched
-    # the saved settings hold the final values and no 'overrides' section
-    saved = cli.save_effective_config(config, layered, cfg, tmp_path / "res")
-    again, _ = cli.load_config(saved)
-    assert again.experiment_parameters.frame_interval == 3.0
-    assert "\noverrides:" not in saved.read_text()
+def test_two_configs_on_parts_of_one_setup_fill_the_same_setup_folder(tmp_path, monkeypatch):
+    """5 ms with one config, 100 us with another: both end up in Output/Asymmetric_Efield/."""
+    setup = tmp_path / "Asymmetric_Efield"
+    names = {"5ms_100V": PULSED, "100us_100V": "260114_MDAMB231_WT_Chip2_Experiment1-1100Pa-100V-100us-frame10"}
+    for cond, name in names.items():
+        (setup / cond / name).mkdir(parents=True)
+        (setup / cond / name / "C1_t0001.tif").write_bytes(b"")
+    out = tmp_path / "Output"
+    roots = []
+
+    class FakeAnalysis:
+        def __init__(self, path, name, config, output_root=None, use_session_cache=True, log_mode='w'):
+            roots.append((name, Path(output_root)))
+            self.name, self.results_dir, self.stopped_by_user = name, Path(output_root) / name, False
+
+        def run_analysis(self, setup_only=False):
+            return True
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
+    monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
+    for cfg, cond in (("config_asymmetric_tiff.yaml", "5ms_100V"),
+                      ("config_asymmetric_100us_tiff.yaml", "100us_100V")):
+        args = types.SimpleNamespace(config_path=ROOT / "config" / cfg, batch=[str(setup / cond)],
+                                     setup=None, output_dir=out, redo=False, fresh=False,
+                                     check=False, show_config=False, debug=False, experiment_id=None)
+        assert batch.run_batch(args) == 0
+    assert {r for _, r in roots} == {out / "Asymmetric_Efield"}
+    assert {n for n, _ in roots} == set(names.values())
 
 
-@pytest.mark.parametrize("bad", [
-    "  - match: 5ms\n    paths:\n      image_format: czi\n",
-    "  - match: 5ms\n    image_processing:\n      membrane_snr_full_scale: 20\n",
-    "  - rupture_detection:\n      enable_smoothing: True\n",
-])
-def test_overrides_refuse_paths_developer_settings_and_missing_match(tmp_path, bad):
-    setup = _tree(tmp_path)
-    cfg = _setup_config(tmp_path, "overrides:\n" + bad)
-    config, _ = cli.load_config(cfg, setup / "5ms_100V" / PULSED, type_from_name=True)
-    assert config is None
+def test_folders_can_be_listed_in_the_config(tmp_path):
+    a, b = tmp_path / "A", tmp_path / "B"
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"paths:\n  image_format: tiff\n  data_folder:\n    - '{a}'\n    - '{b}'\n")
+    roots, fmt = batch.batch_folders_and_format(cfg, [])
+    assert roots == [a, b] and fmt == "tiff"
+    roots, _ = batch.batch_folders_and_format(cfg, [str(tmp_path / "C")])   # command line wins
+    assert roots == [tmp_path / "C"]
+
+
+def test_a_plain_run_of_a_folder_list_config_asks_for_batch(capsys):
+    assert cli.main([str(ROOT / "config" / "config_asymmetric_tiff.yaml")]) == 1
+    assert "add --batch" in capsys.readouterr().out

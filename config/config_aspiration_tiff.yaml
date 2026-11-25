@@ -1,20 +1,20 @@
 # ===================================================================
-# MFA SETUP CONFIG: aspiration only, no pulse (.tif folders)
+# MFA CONFIG: aspiration only, no pulse (.tif folders)
 # ===================================================================
-# Settings for every experiment recorded on this setup. Run them all at once
-# (finds every folder of .tif images under data_folder, at any depth):
+# Analyse every experiment in the folder(s) listed under data_folder below
+# (searched at any depth for folders of .tif images):
 #   python run_experiment.py config/config_aspiration_tiff.yaml --batch
-# Results go to Output/Aspiration/<experiment>/. run_bulk_analysis.py uses these
-# experiments as the no-pulse controls of every setup (Symmetric_Efield and
-# Asymmetric_Efield, each analysed separately) and also analyses them on their own.
+# Experiments that need other settings go in another config with their own
+# folders, run the same way. Results go to Output/Aspiration/<experiment>/;
+# already analysed experiments are skipped when you run it again.
 # In a batch run, experiment_type (ep / asp) and the pulse are read from each
 # experiment's name (0V = aspiration only).
 #
 # One experiment only:
 #   python run_experiment.py config/config_aspiration_tiff.yaml --data-folder "<one experiment folder>" --output-dir Output/Aspiration
 #
-# Check a config:      python run_experiment.py <this file> --check
-# See all settings:    python run_experiment.py <this file> --show-config
+# Check a config:      python run_experiment.py <this file> --batch --check
+# See all settings:    python run_experiment.py <this file> --data-folder "<one experiment folder>" --show-config
 
 # ep  = electroporation (pulse voltage, duration and frame are read from the
 #       experiment name, e.g. ...-100V-1ms-frame10)
@@ -28,9 +28,9 @@ paths:
   # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
   # (to analyse .czi files, start from config/config_czi.yaml)
   image_format: tiff
-  # Batch: the setup's top folder (searched at any depth). One experiment: its folder.
+  # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
   data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Aspiration'
-  # Name of the results folder; must follow the naming rule:
+  # One experiment (no --batch): name of the results folder; must follow the naming rule:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
   #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
   experiment_id: '260325_MDAMB231_CytD_Chip1_Experiment272-1100Pa-0V-0ms-frame0'
@@ -90,18 +90,3 @@ workflow_settings:
   # ---------------------------------------------------------------
   # CPU cores to use; lower it if the computer becomes slow
   n_workers: 3
-
-# -------------------------------------------------------------------
-# SETTINGS THAT DIFFER FOR SOME EXPERIMENTS (optional)
-# -------------------------------------------------------------------
-# Each entry applies to the experiments whose name or folder path contains
-# one of its 'match' texts (case-insensitive), e.g. a condition folder
-# (100us_100V) or part of an experiment name (Experiment272). Entries are
-# applied in order on top of the settings above; a later entry wins. Any
-# setting above except paths can be changed. Each run logs the entries it
-# used, and its Run_Info/effective_config.yaml shows the final values.
-overrides: []
-  # Example:
-  # - match: Experiment283
-  #   workflow_settings:
-  #     default_roi_width_um: 70.0

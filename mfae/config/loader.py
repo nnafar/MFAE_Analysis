@@ -31,7 +31,7 @@ config_schema.MFAConfig.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import logging
 
@@ -205,15 +205,11 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None,
             f"'experiment_type: ep' or 'experiment_type: asp'. You can delete the 'preset:' line.")
     defaults = read_defaults()
 
-    override_entries = user.pop("overrides", None) or []
     experiment_type = user.pop("experiment_type", None)
     if experiment_type is not None and experiment_type_override is not None:
         experiment_type = experiment_type_override
     if experiment_type is None:
         # Full config (old-style, or a saved effective_config.yaml): stands on its own.
-        if override_entries:
-            raise ConfigFileError(f"{user_path}: 'overrides' only works in an experiment or setup "
-                                  f"config (one with experiment_type), not in a full config.")
         layers = [(user_path.name, user)]
     else:
         experiment_type = str(experiment_type).lower()
@@ -251,7 +247,6 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None,
                 f"{_bullets(missing)}\nCopy them from config/config_tiff_template.yaml (or config_czi_template.yaml) "
                 f"(or start from it with --init-config).")
         layers = [("defaults", defaults), (user_path.name, user)]
-        layers += override_layers(user_path, override_entries, user, overrides, allowed)
 
     if overrides:
         layers.append(("command line", overrides))
@@ -267,58 +262,6 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None,
                             layers=[label for label, _ in layers])
     _apply_pulse(layered, user_path, explicit={user_path.name, "command line"})
     return layered
-
-
-def override_layers(user_path: Path, entries: Any, user: Dict[str, Any],
-                    cli_overrides: Optional[Dict[str, Any]], allowed: set) -> List[Tuple[str, Dict[str, Any]]]:
-    """
-    The 'overrides' entries of a config that apply to this experiment.
-
-    A setup config can hold settings that differ for some of its experiments:
-
-        overrides:
-          - match: 100us_100V              # condition folder ...
-            rupture_detection:
-              enable_smoothing: True
-          - match: [Experiment272, Experiment283]   # ... or part of experiment names
-            experiment_parameters:
-              frame_interval: 1.72
-
-    An entry applies when one of its `match` texts appears in the experiment's
-    name or anywhere in its data path (case-insensitive). Entries are applied
-    in order on top of the config, so a later entry wins. They may change any
-    user setting except the paths (a batch sets those per experiment).
-    """
-    if not entries:
-        return []
-    if not isinstance(entries, list):
-        raise ConfigFileError(f"{user_path}: 'overrides' must be a list of entries, each with "
-                              f"'match:' and the settings to change (see config_asymmetric_tiff.yaml).")
-    paths = {**(user.get("paths") or {}), **((cli_overrides or {}).get("paths") or {})}
-    targets = [str(paths.get("experiment_id", "")), str(paths.get("data_folder", "")).replace("\\", "/")]
-    targets = [t.lower() for t in targets if t]
-    out = []
-    for n, entry in enumerate(entries, 1):
-        if not isinstance(entry, dict) or "match" not in entry:
-            raise ConfigFileError(f"{user_path}: overrides entry {n} needs a 'match:' line "
-                                  f"(part of the experiment name or folder it applies to).")
-        entry = dict(entry)
-        match = entry.pop("match")
-        patterns = [str(m) for m in (match if isinstance(match, list) else [match]) if str(m).strip()]
-        if not patterns:
-            raise ConfigFileError(f"{user_path}: overrides entry {n} has an empty 'match:'.")
-        keys = set(_leaf_keys(entry))
-        bad = sorted(k for k in keys if k not in allowed or k.startswith("paths."))
-        if bad:
-            raise ConfigFileError(
-                f"{user_path}: overrides entry {n} (match: {', '.join(patterns)}) changes setting(s) "
-                f"that can't be overridden:\n{_bullets(bad)}\nOverrides may change user settings "
-                f"except paths (compare with the settings above them in the file).")
-        if not keys:
-            continue
-        if any(p.lower() in t for p in patterns for t in targets):
-            out.append((f"{user_path.name} overrides[{', '.join(patterns)}]", entry))
-    return out
 
 
 EXPERIMENT_NAME_LABEL = "experiment name"

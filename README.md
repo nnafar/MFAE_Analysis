@@ -136,30 +136,38 @@ Typing `python run_experiment.py ...` in the console gives `SyntaxError: invalid
 
 ### Many experiments at once (batch)
 
-Instead of one config per experiment, give one config **per setup** and the setup's top folder.
-Every experiment under it is found, at any depth: each `.czi` file for a CZI config, each folder
-of `.tif` images for a TIFF config. The pulse and the experiment type (0 V = aspiration only) are
-read from each name; names that don't follow the [naming rule](#5-naming-experiment-folders) are
-listed and skipped.
+Put the folders you want to analyse in a config, under `data_folder`, and run it with `--batch`.
+Every experiment in those folders is found (at any depth): each `.czi` file for a CZI config, each
+folder of `.tif` images for a TIFF config. Experiments that need other settings go in another
+config with their own folders; run that one the same way.
 
-```bash
-python run_experiment.py config/config_symmetric_czi.yaml --batch "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Symmetric_Efield"
-```
+The configs for your data are ready:
 
-```bash
-python run_experiment.py config/config_asymmetric_tiff.yaml --batch "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield"
-```
+| Config | Folders | Settings |
+|---|---|---|
+| `config/config_symmetric_czi.yaml` | `MFAE\Symmetric_Efield` | symmetric microscope (.czi) |
+| `config/config_asymmetric_tiff.yaml` | `MFAE\Asymmetric_Efield\5ms_100V` | asymmetric (.tif) |
+| `config/config_asymmetric_100us_tiff.yaml` | `MFAE\Asymmetric_Efield\100us_100V` | asymmetric, 100 µs settings |
+| `config/config_aspiration_tiff.yaml` | `MFAE\Aspiration` | aspiration only (.tif) |
 
-```bash
-python run_experiment.py config/config_aspiration_tiff.yaml --batch "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Aspiration"
-```
-
-`--batch` without a folder uses the config's `data_folder` (the three setup configs already point
-at their folder). In Spyder:
+In Spyder, one line per config:
 
 ```python
 runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_symmetric_czi.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
+runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmetric_tiff.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
+runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmetric_100us_tiff.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
+runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_aspiration_tiff.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
 ```
+
+To add a folder, add a line under `data_folder` in the config:
+
+```yaml
+  data_folder:
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\5ms_100V'
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\10ms_100V'
+```
+
+(or give folders on the command line: `--batch "M:/.../5ms_100V" "M:/.../10ms_100V"`).
 
 What happens:
 
@@ -167,42 +175,23 @@ What happens:
    setups are reused, so experiments set up earlier don't ask again. Esc stops the batch; the
    setups done so far are kept.
 2. **Analysis of all of them, without interaction**: leave it running (e.g. overnight).
-3. A summary of every experiment (done / skipped / failed) is printed and saved as
+3. A summary (done / skipped / failed per experiment) is printed and saved as
    `Output/<setup>/batch_summary_<date>_<time>.txt`. A failure in one experiment doesn't stop the rest.
 
-**Setups are kept apart.** Results go to `Output/<setup folder name>/<experiment>/`, e.g.
-`Output/Symmetric_Efield/...`, `Output/Asymmetric_Efield/...` and `Output/Aspiration/...`, and the
-bulk analysis analyses each E-field setup on its own, with the aspiration-only experiments as the
-no-pulse controls of both (see [Bulk analysis](#6-bulk-analysis-many-experiments)). Use
-`--setup NAME` for a different results folder name.
+The pulse and the experiment type (0 V = aspiration only) are read from each experiment's name;
+names that don't follow the [naming rule](#5-naming-experiment-folders) are listed and skipped.
 
-**Adding data later:** run the same command again. Experiments that already have results are
-skipped; only new ones are set up and analysed. `--redo` analyses everything again (reusing the
-saved setups; add `--fresh` to redo the setups too). `--batch --check` checks every experiment
-without opening windows.
+**Where results go.** `Output/<setup>/<experiment>/`, the setup being the folder's name
+(`Symmetric_Efield`, `Aspiration`) or, for a condition folder such as `5ms_100V`, the setup folder
+that holds it (`Asymmetric_Efield`). So the 5 ms and 100 µs configs both fill
+`Output/Asymmetric_Efield/`, setups are never mixed, and the bulk analysis analyses each setup on
+its own (with the aspiration experiments as controls, see [Bulk analysis](#6-bulk-analysis-many-experiments)).
+`--setup NAME` sets the results folder name yourself.
 
-**Settings that differ for some experiments.** A setup config can end with an `overrides:` list.
-Each entry applies to the experiments whose name or folder path contains its `match` text
-(case-insensitive): a condition folder such as `100us_100V`, or part of a name such as
-`Experiment272`. Entries are applied in order on top of the config, so a later entry wins; they
-can change any user setting except the paths.
-
-```yaml
-overrides:
-  - match: 100us_100V                        # every experiment in that folder
-    rupture_detection:
-      enable_smoothing: True
-    workflow_settings:
-      default_roi_width_um: 70.0
-  - match: [Experiment272, Experiment283]    # these experiments only
-    experiment_parameters:
-      frame_interval: 1.72
-```
-
-Each run logs the entries it used, `--show-config` marks every changed value with its entry, and
-`Run_Info/effective_config.yaml` holds the final values. A batch warns about entries that match no
-experiment (usually a typo). `config_asymmetric_tiff.yaml` already has the 100 µs series'
-settings this way.
+**Adding data later:** run the same line again. Experiments that already have results are skipped;
+only new ones are set up and analysed. `--redo` analyses everything again (reusing the saved
+setups; add `--fresh` to redo the setups too). `--batch --check` checks every experiment without
+opening windows.
 
 ### Command-line options
 
