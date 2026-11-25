@@ -92,3 +92,18 @@ workflow_settings:
   # ---------------------------------------------------------------
   # CPU cores to use; lower it if the computer becomes slow
   n_workers: 3
+
+# -------------------------------------------------------------------
+# SETTINGS THAT DIFFER FOR SOME EXPERIMENTS (optional)
+# -------------------------------------------------------------------
+# Each entry applies to the experiments whose name or folder path contains
+# one of its 'match' texts (case-insensitive), e.g. a condition folder
+# (100us_100V) or part of an experiment name (Experiment272). Entries are
+# applied in order on top of the settings above; a later entry wins. Any
+# setting above except paths can be changed. Each run logs the entries it
+# used, and its Run_Info/effective_config.yaml shows the final values.
+overrides: []
+  # Example:
+  # - match: 1ms_50V
+  #   workflow_settings:
+  #     default_roi_width_um: 70.0

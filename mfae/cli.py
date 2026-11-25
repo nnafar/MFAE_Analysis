@@ -171,6 +171,9 @@ def load_config(config_path: Path, data_folder: Optional[Path] = None,
         logger.error(str(e))
         return None, None
 
+    for label in layered.layers:
+        if "overrides[" in label:
+            logger.info(f"Settings changed for this experiment by {label}")
     try:
         return validate_config(layered.data), layered
     except ValidationError as e:

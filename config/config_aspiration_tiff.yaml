@@ -42,7 +42,7 @@ experiment_parameters:
   # (factor from Jessy's COMSOL simulation)
   constant_pressure: 1100
   # Seconds between frames; used only if the images have no timing metadata
-  frame_interval: 1.75
+  frame_interval: 1.72
   # Maximum number of traps to set up
   max_traps: 18
 
@@ -64,9 +64,9 @@ rupture_detection:
   # Rupture / dead-on-arrival detection (a heuristic; results are hints)
   enable: False
   # 3-frame rolling median on the protrusion length trace
-  enable_smoothing: False
+  enable_smoothing: True
   # Remove outlier length points before viscoelastic fitting
-  enable_outlier_rejection: False
+  enable_outlier_rejection: True
 
 model_parameters:
   # Viscoelastic fitting (skipped automatically for pulsed experiments)
@@ -80,7 +80,7 @@ workflow_settings:
   # INTERACTIVE SETUP
   # ---------------------------------------------------------------
   # Frame shown during setup, as a fraction of the recording (0.5 = middle)
-  selection_frame_fraction: 0.1
+  selection_frame_fraction: 0.3
   # Starting size of the trap box [µm]; adjust it during setup as needed
   default_roi_width_um: 115.0
   default_roi_height_um: 45.0
@@ -90,3 +90,18 @@ workflow_settings:
   # ---------------------------------------------------------------
   # CPU cores to use; lower it if the computer becomes slow
   n_workers: 3
+
+# -------------------------------------------------------------------
+# SETTINGS THAT DIFFER FOR SOME EXPERIMENTS (optional)
+# -------------------------------------------------------------------
+# Each entry applies to the experiments whose name or folder path contains
+# one of its 'match' texts (case-insensitive), e.g. a condition folder
+# (100us_100V) or part of an experiment name (Experiment272). Entries are
+# applied in order on top of the settings above; a later entry wins. Any
+# setting above except paths can be changed. Each run logs the entries it
+# used, and its Run_Info/effective_config.yaml shows the final values.
+overrides: []
+  # Example:
+  # - match: Experiment283
+  #   workflow_settings:
+  #     default_roi_width_um: 70.0

@@ -91,3 +91,27 @@ workflow_settings:
   # ---------------------------------------------------------------
   # CPU cores to use; lower it if the computer becomes slow
   n_workers: 3
+
+# -------------------------------------------------------------------
+# SETTINGS THAT DIFFER FOR SOME EXPERIMENTS (optional)
+# -------------------------------------------------------------------
+# Each entry applies to the experiments whose name or folder path contains
+# one of its 'match' texts (case-insensitive), e.g. a condition folder
+# (100us_100V) or part of an experiment name (Experiment272). Entries are
+# applied in order on top of the settings above; a later entry wins. Any
+# setting above except paths can be changed. Each run logs the entries it
+# used, and its Run_Info/effective_config.yaml shows the final values.
+overrides:
+  # 100 µs series: settings of the former config_tiff_100us_asym_NN.yaml
+  - match: 100us_100V
+    rupture_detection:
+      enable_smoothing: True
+      enable_outlier_rejection: True
+    workflow_settings:
+      selection_frame_fraction: 0.4
+      default_roi_width_um: 70.0
+      default_roi_height_um: 31.0
+  # Example, one experiment:
+  # - match: Experiment283
+  #   experiment_parameters:
+  #     frame_interval: 1.72

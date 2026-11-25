@@ -122,3 +122,50 @@ def test_aspiration_controls_join_each_setup_but_only_aspiration_runs(tmp_path, 
     assert names == sorted([CZI, ASP])
     alone = BulkDataLoader(str(out / "Symmetric_Efield"))
     assert [m.full_path.name for _, t in alone.iter_groups() for m in t] == [CZI]
+
+
+def _setup_config(tmp_path, overrides_yaml):
+    src = (ROOT / "config" / "config_asymmetric_tiff.yaml").read_text()
+    src = src[:src.index("\noverrides:")] + "\n" + overrides_yaml
+    path = tmp_path / "setup.yaml"
+    path.write_text(src)
+    return path
+
+
+def test_overrides_apply_by_folder_or_name_and_later_entries_win(tmp_path):
+    setup = _tree(tmp_path)
+    cfg = _setup_config(tmp_path, """overrides:
+  - match: 5ms_100V
+    rupture_detection:
+      enable_smoothing: True
+    experiment_parameters:
+      frame_interval: 2.0
+  - match: [Experiment3, Experiment999]
+    experiment_parameters:
+      frame_interval: 3.0
+""")
+    pulsed = setup / "5ms_100V" / PULSED
+    config, layered = cli.load_config(cfg, pulsed, type_from_name=True)
+    assert config.rupture_detection.enable_smoothing is True
+    assert config.experiment_parameters.frame_interval == 3.0            # later entry wins
+    assert layered.sources["experiment_parameters.frame_interval"].endswith(
+        "overrides[Experiment3, Experiment999]")
+    other, _ = cli.load_config(cfg, setup / "0ms_0V" / ASP, type_from_name=True)
+    assert other.rupture_detection.enable_smoothing is False             # not matched
+    # the saved settings hold the final values and no 'overrides' section
+    saved = cli.save_effective_config(config, layered, cfg, tmp_path / "res")
+    again, _ = cli.load_config(saved)
+    assert again.experiment_parameters.frame_interval == 3.0
+    assert "\noverrides:" not in saved.read_text()
+
+
+@pytest.mark.parametrize("bad", [
+    "  - match: 5ms\n    paths:\n      image_format: czi\n",
+    "  - match: 5ms\n    image_processing:\n      membrane_snr_full_scale: 20\n",
+    "  - rupture_detection:\n      enable_smoothing: True\n",
+])
+def test_overrides_refuse_paths_developer_settings_and_missing_match(tmp_path, bad):
+    setup = _tree(tmp_path)
+    cfg = _setup_config(tmp_path, "overrides:\n" + bad)
+    config, _ = cli.load_config(cfg, setup / "5ms_100V" / PULSED, type_from_name=True)
+    assert config is None

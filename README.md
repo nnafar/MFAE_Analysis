@@ -181,6 +181,29 @@ skipped; only new ones are set up and analysed. `--redo` analyses everything aga
 saved setups; add `--fresh` to redo the setups too). `--batch --check` checks every experiment
 without opening windows.
 
+**Settings that differ for some experiments.** A setup config can end with an `overrides:` list.
+Each entry applies to the experiments whose name or folder path contains its `match` text
+(case-insensitive): a condition folder such as `100us_100V`, or part of a name such as
+`Experiment272`. Entries are applied in order on top of the config, so a later entry wins; they
+can change any user setting except the paths.
+
+```yaml
+overrides:
+  - match: 100us_100V                        # every experiment in that folder
+    rupture_detection:
+      enable_smoothing: True
+    workflow_settings:
+      default_roi_width_um: 70.0
+  - match: [Experiment272, Experiment283]    # these experiments only
+    experiment_parameters:
+      frame_interval: 1.72
+```
+
+Each run logs the entries it used, `--show-config` marks every changed value with its entry, and
+`Run_Info/effective_config.yaml` holds the final values. A batch warns about entries that match no
+experiment (usually a typo). `config_asymmetric_tiff.yaml` already has the 100 µs series'
+settings this way.
+
 ### Command-line options
 
 | Option | What it does |

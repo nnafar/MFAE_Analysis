@@ -140,6 +140,8 @@ def run_batch(args) -> int:
             config.workflow_settings.debug_mode = True
         configs[name] = (config, layered, exp_path)
 
+    _warn_unused_overrides(args.config_path, found.experiments)
+
     if args.show_config:
         for name, (config, layered, _) in configs.items():
             print(f"===== {name} =====\n{show_config(config, layered)}")
@@ -216,6 +218,20 @@ def run_batch(args) -> int:
     _summary(status, setup, root, out_root, save=True)
     ok = ("done", "already analysed")
     return 0 if all(v.startswith(ok) for v in status.values()) else 1
+
+
+def _warn_unused_overrides(config_path: Path, experiments: List[Path]) -> None:
+    """Warn about 'overrides' entries that match none of the experiments found (usually a typo)."""
+    entries = config_loader.read_yaml(Path(config_path)).get("overrides") or []
+    targets = [t.lower() for p in experiments for t in (p.name, p.as_posix())]
+    for entry in entries:
+        if not isinstance(entry, dict) or "match" not in entry:
+            continue
+        m = entry["match"]
+        patterns = [str(x) for x in (m if isinstance(m, list) else [m])]
+        if not any(pat.lower() in t for pat in patterns for t in targets):
+            logger.warning(f"overrides entry 'match: {', '.join(patterns)}' matches none of the "
+                           f"experiments found (check the spelling).")
 
 
 def _summary(status: Dict[str, str], setup: str, root: Path, out_root: Path, save: bool) -> None:
