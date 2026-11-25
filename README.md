@@ -439,33 +439,37 @@ instead; the bulk analysis will skip that experiment.
 After running `MFA_analysis.py` on each experiment:
 
 ```bash
-python Bulk_Analysis/master_bulk_pipeline.py
-```
-
-```bash
 python Bulk_Analysis/master_bulk_thesis.py
 ```
 
-Both read every experiment folder in `Output/`. Use `--output-root PATH` if your per-experiment
-results live elsewhere. `master_bulk_pipeline.py` writes one folder per run, named by date and time,
-with a `README.txt` describing its contents:
+It reads every experiment folder in `Output/` (use `--output-root PATH` if your per-experiment
+results live elsewhere), groups the cells by condition (from the experiment names) and writes one
+folder per run, named by date and time, with a `README.txt` that lists every file and what it
+shows:
 
 ```
 Output/Bulk_Analysis_results/<YYMMDD_HHMM>/
 ├── README.txt
-├── 0_Tables/              mechanics_results.csv (one row per trap, after pre-pulse QC),
-│                          mechanics_results_all_traps.csv (before QC), excluded_traps_prepulse_QC.csv
-├── 1_Per_Condition/       one folder per condition (e.g. MDAMB231_WT_1100Pa_100V_5ms): every
-│   └── <condition>/       trap's fit and trace for checking by eye, per-trap distributions
-├── 2_Mechanics/           mechanics across conditions (ASP vs EP), post-pulse behaviour
-├── 3_Dye_Uptake/          uptake time constants across conditions
-├── 4_EP_Spatial/          electroporation: uptake vs trap position
-├── 5_Correlations/        correlations between per-trap parameters
-└── 6_Thesis_Figures/      the thesis figure set
+├── 0_Tables/                  mechanics_results_all_traps.csv (one row per trap: fate, every fitted
+│                              parameter and fit-quality flag), attrition_per_experiment.csv (cells
+│                              found / analysed / excluded and why), Figure_Data/ (every plotted value)
+├── 1_Aspiration_Mechanics/    aspiration-only cells: viscoelastic fits, treatments compared, controls
+│   ├── <Treatment>/           one treatment (e.g. WT/, CytD/)
+│   └── All_treatments/        treatments compared
+├── 2_Before_Pulse/            pulsed vs aspiration-only cells, fitted before the pulse; fate vs mechanics
+│   ├── Aspiration/  <pulse>/  one cohort (<pulse> = e.g. 100V_5ms)
+│   └── All_conditions/        cohorts compared
+├── 3_At_Pulse/                fate (intact / ruptured) per pulse and trap, uptake and actin around the pulse
+│   ├── <pulse>/
+│   └── All_conditions/
+└── 4_Whole_Trace/             whole-recording fits, mean uptake traces, uptake per trap
+    ├── <pulse>/
+    └── All_conditions/
 ```
 
-Folders a run has nothing for are left out. `master_bulk_thesis.py` keeps its own
-claim-by-claim layout (`claim1_asp/`, `claim2_ep_vs_asp/`, ...).
+The treatment and pulse folders are made for the conditions in your data; folders a run writes
+nothing to are removed. Figures can be redrawn from `0_Tables/Figure_Data/` without rerunning
+(`thesis_figure_data.load_all(...)`). The layout is defined in `Bulk_Analysis/bulk_layout.py`.
 
 **Marking cells by hand.** Add a tag to a trap's `Trap_XX_protrusion_and_shape.csv` file name
 (e.g. `Trap_03_protrusion_and_shape_R.csv`) to tell the bulk analysis what happened to that cell:

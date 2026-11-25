@@ -36,7 +36,7 @@
 # Standalone afterwards:
 #
 #     import thesis_figure_data as tfd
-#     data = tfd.load_all("Bulk_Analysis_results/<date>/Figure_Data")
+#     data = tfd.load_all("Bulk_Analysis_results/<YYMMDD_HHMM>/0_Tables/Figure_Data")
 #     data["protrusion"]   # long-format DataFrame
 #     data["mechanics"]    # per-cell scalars
 # =============================================================================

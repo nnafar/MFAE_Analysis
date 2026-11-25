@@ -1,6 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Master Pipeline for Bulk MFAE Analysis (Thesis Plotting Mode).
+Bulk analysis: pools the per-experiment results in Output/ into condition-level
+statistics and figures.
+
+    python Bulk_Analysis/master_bulk_thesis.py [--output-root PATH]
+
+Results: Output/Bulk_Analysis_results/<YYMMDD_HHMM>/ with a README.txt
+(layout in bulk_layout.py):
+    0_Tables/                 one row per trap, attrition, Figure_Data/
+    1_Aspiration_Mechanics/   aspiration-only mechanics (<Treatment>/, All_treatments/)
+    2_Before_Pulse/           pulsed vs aspiration-only before the pulse
+    3_At_Pulse/               fate, uptake and actin at the pulse
+    4_Whole_Trace/            whole-recording fits and uptake
 """
 
 import logging
@@ -18,6 +29,7 @@ import bulk_mechanics     as bm
 import thesis_plotting    as tp  
 from thesis_plotting_uptake import register_uptake_plots
 import bulk_utils as utils
+import bulk_layout        as bl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -75,7 +87,7 @@ def _parse_args():
     parser.add_argument(
         "--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT,
         help="Folder holding the per-experiment result folders from MFA_analysis.py "
-             f"(default: %(default)s). Results go to <output-root>/Bulk_Analysis_results/<YYMMDD>.",
+             f"(default: %(default)s). Results go to <output-root>/Bulk_Analysis_results/<YYMMDD_HHMM>.",
     )
     return parser.parse_args()
 
@@ -88,74 +100,27 @@ def main():
                      "Run MFA_analysis.py on your experiments first, or pass --output-root.")
         return
 
-    date_stamp  = datetime.now().strftime("%y%m%d")
-    results_dir = output_root_dir / "Bulk_Analysis_results" / date_stamp
+    # One folder per run, named by date and time, so runs never overwrite
+    # each other. The folders are made once the conditions present are known
+    # (see bulk_layout.py and the README.txt written at the end).
+    run_stamp   = datetime.now().strftime("%y%m%d_%H%M")
+    results_dir = output_root_dir / "Bulk_Analysis_results" / run_stamp
     results_dir.mkdir(parents=True, exist_ok=True)
+    # Working caches (pickled trap data); removed when the run ends.
+    cache_root  = results_dir / "_cache"
+    try:
+        _run(output_root_dir, results_dir, cache_root)
+    finally:
+        shutil.rmtree(cache_root, ignore_errors=True)
+        if results_dir.is_dir():
+            try:
+                bl.write_readme(results_dir, output_root_dir)
+            except Exception as e:
+                logger.error(f"README failed: {e}")
+        logger.info(f"Results: {results_dir}  (see README.txt)")
 
-    mechanics_dir     = results_dir / "mechanics"
-    claim1_dir        = results_dir / "claim1_asp"
-    claim2_dir        = results_dir / "claim2_ep_vs_asp"
 
-    # claim1_asp/ is split by treatment. WT/ and CytD/ hold single-
-    # condition figures (per-condition trap boxplots, per-condition
-    # best-fit multipanels); combined/ holds every cross-treatment
-    # figure (protrusion overlay, parameter boxplots, actin-vs-mechanics,
-    # trap dependency, body volume vs E, protrusion length vs mechanics).
-    claim1_wt_dir       = claim1_dir / "WT"
-    claim1_cytd_dir     = claim1_dir / "CytD"
-    claim1_combined_dir = claim1_dir / "combined"
-
-    # claim2_ep_vs_asp/ is split three ways along the analysis timeline
-    # (pre-pulse / at-pulse / whole-trace). pre-pulse/ has a per-
-    # condition subfolder (100V_100us, 100V_5ms), an ASP/ subfolder for
-    # the ASP baseline plots that are pulse-independent but shown next
-    # to the pulse cohorts, and a combined/ subfolder for cross-cohort
-    # comparisons. at-pulse/ and whole-trace/ follow the same shape but
-    # without an ASP subfolder (they are pulse-aligned by definition).
-    prepulse_dir       = claim2_dir / "pre-pulse"
-    at_pulse_dir       = claim2_dir / "at_pulse"
-    whole_trace_dir    = claim2_dir / "whole-trace"
-
-    prepulse_100us_dir   = prepulse_dir / "100V_100us"
-    prepulse_5ms_dir     = prepulse_dir / "100V_5ms"
-    prepulse_asp_dir     = prepulse_dir / "ASP"
-    prepulse_combined_dir= prepulse_dir / "combined"
-
-    at_pulse_100us_dir   = at_pulse_dir / "100V_100us"
-    at_pulse_5ms_dir     = at_pulse_dir / "100V_5ms"
-    at_pulse_combined_dir= at_pulse_dir / "combined"
-
-    whole_trace_100us_dir   = whole_trace_dir / "100V_100us"
-    whole_trace_5ms_dir     = whole_trace_dir / "100V_5ms"
-    whole_trace_combined_dir= whole_trace_dir / "combined"
-
-    for d in (mechanics_dir,
-              claim1_wt_dir, claim1_cytd_dir, claim1_combined_dir,
-              prepulse_100us_dir, prepulse_5ms_dir, prepulse_asp_dir, prepulse_combined_dir,
-              at_pulse_100us_dir, at_pulse_5ms_dir, at_pulse_combined_dir,
-              whole_trace_100us_dir, whole_trace_5ms_dir, whole_trace_combined_dir):
-        d.mkdir(parents=True, exist_ok=True)
-
-    # ------------------------------------------------------------------
-    # Routing maps consumed by the plot suites. Each map keys a small
-    # folder-token onto the destination Path. Plot functions fall back
-    # to their `output_dir` argument when the token is missing, so
-    # additions of new keys don't break anything.
-    # ------------------------------------------------------------------
-    claim1_treatment_map = {
-        'WT'  : claim1_wt_dir,
-        'CytD': claim1_cytd_dir,
-    }
-    prepulse_bucket_map = {
-        'ASP'  : prepulse_asp_dir,
-        '100us': prepulse_100us_dir,
-        '5ms'  : prepulse_5ms_dir,
-    }
-    at_pulse_duration_map = {
-        '100us': at_pulse_100us_dir,
-        '5ms'  : at_pulse_5ms_dir,
-    }
-
+def _run(output_root_dir: Path, results_dir: Path, cache_root: Path) -> None:
     logger.info(f"Results will be saved to: {results_dir}")
 
     r_eff = bm.DEFAULT_R_EFF
@@ -185,9 +150,30 @@ def main():
         logger.error(f"Initialization failed: {e}", exc_info=True)
         return
 
-    all_grouped_data = DiskBackedDict(results_dir / "cache_all")
+    all_grouped_data = DiskBackedDict(cache_root / "all")
     for group_key, traps in loader.iter_groups():
         all_grouped_data.update({group_key: traps})
+
+    # --- Output folders for the conditions present --------------------------
+    asp_treatments, pulses = set(), set()
+    for gk, traps in all_grouped_data.items():
+        if not traps:
+            continue
+        m = traps[0].metadata
+        if m.condition_type == 'ASP':
+            asp_treatments.add(m.treatment)
+        elif m.condition_type == 'EP':
+            pulses.add((m.voltage, m.duration_label))
+    out = bl.build(results_dir, asp_treatments, pulses)
+    claim1_combined_dir      = out['asp_all']           # 1_Aspiration_Mechanics/All_treatments
+    claim1_treatment_map     = out['asp_by_treatment']  # 1_Aspiration_Mechanics/<Treatment>
+    prepulse_combined_dir    = out['pre_all']           # 2_Before_Pulse/All_conditions
+    prepulse_bucket_map      = out['pre_by_pulse']      # 2_Before_Pulse/{Aspiration,<pulse>}
+    at_pulse_combined_dir    = out['at_all']            # 3_At_Pulse/All_conditions
+    at_pulse_duration_map    = out['at_by_pulse']       # 3_At_Pulse/<pulse>
+    whole_trace_combined_dir = out['whole_all']         # 4_Whole_Trace/All_conditions
+    logger.info(f"Conditions: aspiration {sorted(asp_treatments) or '-'}; "
+                f"pulses {[bl.pulse_folder(v, d) for v, d in sorted(pulses)] or '-'}")
 
     # --- Phase 1.5: Compute shortest median duration for each trace type ---
     asp_meds, pre_meds, whole_meds = [], [], []
@@ -263,9 +249,9 @@ def main():
     mechanics_df = pd.concat(all_mechanics_dfs, ignore_index=True)
     df_scalars   = pd.concat(all_scalars_dfs,   ignore_index=True)
 
-    raw_path = mechanics_dir / "mechanics_results_all_traps.csv"
+    raw_path = bl.table(out, 'results')
     mechanics_df.to_csv(raw_path, index=False)
-    logger.info(f"Saved results to: mechanics/{raw_path.name}  ({len(mechanics_df)} traps)")
+    logger.info(f"Saved results to: {raw_path.relative_to(results_dir)}  ({len(mechanics_df)} traps)")
 
     # ------------------------------------------------------------------
     # Filter all_grouped_data to the pure ASP viscoelastic cohort
@@ -287,7 +273,7 @@ def main():
         f"[{n_asp} pure ASP cells]."
     )
 
-    filtered_grouped_data = DiskBackedDict(results_dir / "cache_visco")
+    filtered_grouped_data = DiskBackedDict(cache_root / "visco")
     for gk, traps in all_grouped_data.items():
         if traps and traps[0].metadata.condition_type != "ASP":
             continue
@@ -301,7 +287,7 @@ def main():
     if filtered_grouped_data.keys():
         # Cross-treatment ASP figures land in claim1_combined_dir; per-
         # treatment trap boxplots and best-fit multipanels are routed
-        # via claim1_treatment_map into claim1_wt_dir / claim1_cytd_dir.
+        # via claim1_treatment_map into 1_Aspiration_Mechanics/<Treatment>/.
         _try("Thesis Plot Suite",
              tp.run_thesis_plots,
              filtered_grouped_data, mechanics_df,
@@ -347,7 +333,7 @@ def main():
         mechanics_df.loc[pp_pass_mask, 'Trap_ID'],
     ))
 
-    mi_filtered_grouped_data = DiskBackedDict(results_dir / "cache_prepulse")
+    mi_filtered_grouped_data = DiskBackedDict(cache_root / "prepulse")
     for gk, traps in all_grouped_data.items():
         kept = [
             t for t in traps
@@ -374,7 +360,7 @@ def main():
         mechanics_df.loc[mi_whole_pass_mask, 'Trap_ID'],
     ))
 
-    mi_whole_filtered_grouped_data = DiskBackedDict(results_dir / "cache_mi_whole")
+    mi_whole_filtered_grouped_data = DiskBackedDict(cache_root / "mi_whole")
     for gk, traps in all_grouped_data.items():
         kept = [
             t for t in traps
@@ -388,7 +374,7 @@ def main():
     # ------------------------------------------------------------------
     attrition_df = loader.get_attrition_df()
     if not attrition_df.empty:
-        attrition_path = results_dir / "attrition_per_experiment.csv"
+        attrition_path = bl.table(out, 'attrition')
         attrition_df.to_csv(attrition_path, index=False)
         logger.info(f"Saved attrition tally: {attrition_path.name}  "
                     f"({len(attrition_df)} experiments)")
@@ -401,12 +387,12 @@ def main():
     # ------------------------------------------------------------------
     _try("Figure Data Export",
          tfd.export_all,
-         all_grouped_data, mechanics_df, attrition_df, results_dir)
+         all_grouped_data, mechanics_df, attrition_df, out['figure_data_parent'])
 
     if mi_filtered_grouped_data.keys():
         # Cross-cohort pre-pulse figures land in prepulse_combined_dir;
         # per-bucket Thesis_MI_Boxplot_*.pdf files are routed via
-        # prepulse_bucket_map into ASP/, 100V_100us/, 100V_5ms/.
+        # prepulse_bucket_map into 2_Before_Pulse/Aspiration/ and /<pulse>/.
         _try("Thesis Pre-Pulse Plot Suite",
              tp.run_thesis_mi_prepulse_plots,
              mi_filtered_grouped_data, mechanics_df,
@@ -418,8 +404,8 @@ def main():
     # Uses the FULL grouped data (not the pre-pulse-filtered subset) so
     # ruptured EP cells are visible. Filtering by fate + fit quality
     # happens inside each plot function. Pre-pulse fate boxplot lands
-    # under pre-pulse/combined/, whole-trace fate boxplot and the
-    # whole-trace-by-fate trace plot land under whole-trace/combined/.
+    # under 2_Before_Pulse/All_conditions/, whole-trace fate boxplot and the
+    # whole-trace-by-fate trace plot under 4_Whole_Trace/All_conditions/.
     # ------------------------------------------------------------------
     _try("Thesis Claim 2 Core Plots",
          tp.run_thesis_claim2_plots,
@@ -430,8 +416,8 @@ def main():
     # ------------------------------------------------------------------
     # Fate cohort figures: pie chart per pulse condition + per-trap
     # intact/ruptured stacked bar per pulse condition. Both belong to
-    # the at-pulse timeline slice; per-condition PDFs go into
-    # 100V_100us/ and 100V_5ms/ via at_pulse_duration_map, while the
+    # 3_At_Pulse; per-condition PDFs go into 3_At_Pulse/<pulse>/
+    # via at_pulse_duration_map, while the
     # cross-condition CSV (Thesis_Fate_Counts_by_Pulse.csv) stays in
     # at_pulse_combined_dir.
     # ------------------------------------------------------------------
@@ -449,7 +435,7 @@ def main():
     #   - Time-resolved mean actin trace aligned to the pulse frame
     # These use the full grouped data because they need the per-trap
     # actin / uptake CSVs; filtering to the analysis cohort happens
-    # inside each plot function via mechanics_df. Routed to at-pulse
+    # inside each plot function via mechanics_df. Routed to 3_At_Pulse
     # combined since all three are aligned to the pulse.
     # ------------------------------------------------------------------
     _try("Thesis Claim 2 Uptake / Actin Plots",
@@ -462,7 +448,7 @@ def main():
          all_grouped_data, mechanics_df, whole_trace_combined_dir)
 
     # ------------------------------------------------------------------
-    # Whole-trace MI plots (was: supplementary/, now: whole-trace/combined/).
+    # Whole-trace MI plots (4_Whole_Trace/All_conditions/).
     # Includes the 5ms cohort which is too short pre-pulse for a matched
     # viscoelastic fit but produces usable whole-trace MI fits.
     # ------------------------------------------------------------------

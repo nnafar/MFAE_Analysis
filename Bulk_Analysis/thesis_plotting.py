@@ -4,6 +4,7 @@ Thesis Plotting Module for ASP Mechanics and Model-Independent (MI) Analysis.
 """
 
 import logging
+import re
 import warnings
 import numpy as np
 import pandas as pd
@@ -672,13 +673,29 @@ def _bucket_to_folder_key(bucket_label: str) -> str:
     return ''
 
 
+def _match_map_key(label: str, output_dir_map: Dict[str, Path]) -> str:
+    """
+    The output_dir_map key that names this label's condition ('' if none).
+    The map holds the conditions present in the data (e.g. 'ASP', '100us',
+    '1ms', or treatments 'WT', 'LifeAct'), so any condition is routed, not
+    just a fixed list. Longest keys are tried first ('15ms' before '5ms').
+    """
+    s = str(label)
+    if s in output_dir_map:
+        return s
+    for key in sorted(output_dir_map, key=len, reverse=True):
+        if key and re.search(rf'(?<![0-9A-Za-z]){re.escape(key)}(?![0-9A-Za-z])', s):
+            return key
+    return ''
+
+
 def _resolve_output_dir(bucket_label: str,
                         default_dir: Path,
                         output_dir_map: Optional[Dict[str, Path]] = None) -> Path:
     """Route a single-condition plot into the right subfolder."""
     if output_dir_map is None:
         return default_dir
-    key = _bucket_to_folder_key(bucket_label)
+    key = _match_map_key(bucket_label, output_dir_map) or _bucket_to_folder_key(bucket_label)
     return output_dir_map.get(key, default_dir)
 
 
@@ -703,7 +720,7 @@ def _resolve_treatment_dir(cond_or_treatment: str,
                            output_dir_map: Optional[Dict[str, Path]] = None) -> Path:
     if output_dir_map is None:
         return default_dir
-    key = _treatment_to_folder_key(cond_or_treatment)
+    key = _match_map_key(cond_or_treatment, output_dir_map) or _treatment_to_folder_key(cond_or_treatment)
     return output_dir_map.get(key, default_dir)
 
 def plot_mi_protrusion_dynamics(grouped_data: Dict,

@@ -113,13 +113,30 @@ def test_readme_describes_the_files_present(tmp_path):
 def test_bulk_layout_and_readme(tmp_path):
     sys.path.insert(0, str(Path(__file__).parent.parent / 'Bulk_Analysis'))
     import bulk_layout as bl
-    out = bl.build(tmp_path / 'run')
-    cond = bl.condition_dir(out, 'MDAMB231_WT_1100Pa_100V_5ms')
-    (cond / 'Uptake_MeanSD_MDAMB231_WT_1100Pa_100V_5ms.png').write_text('x')
-    bl.file(out, 'results').write_text('x')
-    bl.ensure(out, 'spatial')                       # created but left empty
+    out = bl.build(tmp_path / 'run', treatments=['WT', 'LifeAct'], pulses=[(100, '1ms'), (100, '5ms')])
+    assert out['asp_by_treatment']['LifeAct'] == tmp_path / 'run' / '1_Aspiration_Mechanics' / 'LifeAct'
+    assert out['pre_by_pulse']['ASP'] == tmp_path / 'run' / '2_Before_Pulse' / 'Aspiration'
+    assert out['at_by_pulse']['1ms'] == tmp_path / 'run' / '3_At_Pulse' / '100V_1ms'
+    assert out['whole_all'] == tmp_path / 'run' / '4_Whole_Trace' / 'All_conditions'
+    (out['at_by_pulse']['1ms'] / 'Thesis_Fate_Pie_WT_1ms.pdf').write_text('x')
+    bl.table(out, 'results').write_text('x')
     text = bl.write_readme(out['root']).read_text()
-    assert cond == tmp_path / 'run' / '1_Per_Condition' / 'MDAMB231_WT_1100Pa_100V_5ms'
-    assert '0_Tables/' in text and 'mechanics_results.csv' in text
-    assert 'Uptake_MeanSD_*' in text and 'mean +- SD uptake' in text
-    assert '4_EP_Spatial' not in text and not (tmp_path / 'run' / '4_EP_Spatial').exists()
+    assert 'mechanics_results_all_traps.csv' in text
+    assert '100V_1ms/Thesis_Fate_Pie_WT_1ms.pdf' in text and 'intact vs ruptured' in text
+    # folders nothing was written to are removed and not listed
+    assert '4_Whole_Trace' not in text and not (tmp_path / 'run' / '4_Whole_Trace').exists()
+    assert not (tmp_path / 'run' / '3_At_Pulse' / '100V_5ms').exists()
+
+
+def test_thesis_routing_follows_the_conditions_present(tmp_path):
+    sys.path.insert(0, str(Path(__file__).parent.parent / 'Bulk_Analysis'))
+    import thesis_plotting as tp
+    m = {'ASP': tmp_path / 'a', '5ms': tmp_path / 'b', '15ms': tmp_path / 'c', '1ms': tmp_path / 'd'}
+    assert tp._resolve_output_dir('EP-pre 100V 15ms (intact)', tmp_path, m) == tmp_path / 'c'
+    assert tp._resolve_output_dir('EP-pre 100V 5ms', tmp_path, m) == tmp_path / 'b'
+    assert tp._resolve_output_dir('EP-pre 100V 1ms', tmp_path, m) == tmp_path / 'd'
+    assert tp._resolve_output_dir('ASP', tmp_path, m) == tmp_path / 'a'
+    assert tp._resolve_output_dir('EP-pre 100V 2ms', tmp_path, m) == tmp_path   # unknown -> combined
+    t = {'WT': tmp_path / 'wt', 'LifeAct': tmp_path / 'la'}
+    assert tp._resolve_treatment_dir('MDAMB231_LifeAct_1100Pa_ASP', tmp_path, t) == tmp_path / 'la'
+    assert tp._resolve_treatment_dir('MDAMB231_WT_1100Pa_ASP', tmp_path, t) == tmp_path / 'wt'
