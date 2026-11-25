@@ -229,6 +229,11 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             params['image_processing'] = {**params.get('image_processing', {}),
                                           'membrane_denoise_sigma_along':
                                               float(config_dict['tuned_denoise_sigma_along'])}
+        # Per-trap 8-bit full scale fitted to the cell's brightness during setup.
+        if config_dict.get('tuned_snr_full_scale') is not None:
+            params['image_processing'] = {**params.get('image_processing', {}),
+                                          'membrane_snr_full_scale':
+                                              float(config_dict['tuned_snr_full_scale'])}
         params['rupture_detection'].pop('pulse_frame_idx', None)
         params['dye_uptake_parameters'].pop('pulse_frame_idx', None)
 
@@ -704,6 +709,7 @@ class MFAAnalysis:
                     'thr_prot':   float(cfg['thr_prot']),
                     'thr_body':   float(cfg['thr_body']),
                     'smooth':     (float(cfg['smooth']) if cfg.get('smooth') is not None else None),
+                    'snr_scale':  (float(cfg['snr_scale']) if cfg.get('snr_scale') is not None else None),
                 }
                 for cfg in trap_configs
             ],
@@ -842,6 +848,8 @@ class MFAAnalysis:
                         'thr_body':   int(cfg['thr_body']),
                         # Older caches have no per-trap smoothing -> config default.
                         'smooth':     cfg.get('smooth'),
+                        # Older caches: thresholds were on the configured full scale.
+                        'snr_scale':  cfg.get('snr_scale'),
                     }
                     for cfg in existing_cache['trap_configs']
                 ]
@@ -941,6 +949,7 @@ class MFAAnalysis:
                     'tuned_threshold_prot': config['thr_prot'],
                     'tuned_threshold_body': config['thr_body'],
                     'tuned_denoise_sigma_along': config.get('smooth'),
+                    'tuned_snr_full_scale': config.get('snr_scale'),
                     
                     'results_dir': self.results_dir,
                     'output_dirs': self.subdirs,
@@ -1104,6 +1113,7 @@ class MFAAnalysis:
                     'thr_prot': interactive_res['threshold_prot'],
                     'thr_body': interactive_res.get('threshold_body', interactive_res['threshold_prot']),
                     'smooth': interactive_res.get('denoise_sigma_along'),
+                    'snr_scale': interactive_res.get('snr_full_scale'),
                 })
                 setup_progress.finish_trap(i, False)
                 

@@ -292,6 +292,8 @@ class LineDetectionMFA:
         if utils.membrane_enhancement_enabled(self.params):
             self.results['denoise_sigma_along'] = float(
                 self.params['image_processing'].get('membrane_denoise_sigma_along', 1.0))
+            self.results['snr_full_scale'] = float(
+                self.params['image_processing'].get('membrane_snr_full_scale', 40.0))
 
         # --- Step 4: Automated Processing (Protrusion Detection) ---
         # We only process length using the protrusion threshold here
@@ -325,6 +327,8 @@ class LineDetectionMFA:
         if utils.membrane_enhancement_enabled(self.params):
             self.results['denoise_sigma_along'] = float(
                 self.params['image_processing'].get('membrane_denoise_sigma_along', 1.0))
+            self.results['snr_full_scale'] = float(
+                self.params['image_processing'].get('membrane_snr_full_scale', 40.0))
         # Store the body threshold explicitly so _process_all_frames can read it
         # via self.results['threshold_body'].  Using 'or' here would misfire when
         # the caller legitimately passes 0 (GUV mode), so we check for None directly.
@@ -588,9 +592,14 @@ class LineDetectionMFA:
         # chosen per trap. The first threshold window picks a starting level
         # from the cell's SNR; F cycles through the levels. The body window
         # inherits whatever was chosen in the protrusion window.
+        # The 8-bit full scale is then fitted to this trap's brightness (and
+        # refitted when F changes the smoothing, which changes the noise), so
+        # a bright cell and the medium around it do not both clip to 255.
         if enhanced_mode and clip_walls and not getattr(self, '_smoothing_chosen', False):
             image_params['membrane_denoise_sigma_along'] = utils.suggest_membrane_smoothing(
                 test_image, pipette_start_x, self.params)
+            self._configured_full_scale = float(image_params.get('membrane_snr_full_scale', 40.0))
+            self._fit_full_scale(test_image)
             self._smoothing_chosen = True
 
         def _prepare():
@@ -729,7 +738,15 @@ class LineDetectionMFA:
                 cur = float(image_params.get('membrane_denoise_sigma_along', levels[0]))
                 nxt = next((l for l in levels if l > cur + 1e-6), levels[0])
                 image_params['membrane_denoise_sigma_along'] = nxt
+                if clip_walls:
+                    self._fit_full_scale(test_image)
                 test_image_8bit, roi_for_stats = _prepare()
+
+    def _fit_full_scale(self, test_image: np.ndarray) -> None:
+        """Set membrane_snr_full_scale for this trap from its brightness (never below the config value)."""
+        image_params = self.params['image_processing']
+        image_params['membrane_snr_full_scale'] = self._configured_full_scale
+        image_params['membrane_snr_full_scale'] = utils.suggest_membrane_full_scale(test_image, self.params)
 
     # Visualization Helper Methods
 

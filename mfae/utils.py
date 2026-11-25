@@ -708,6 +708,32 @@ def suggest_membrane_smoothing(image: np.ndarray, pipette_x: int,
     return levels[3]
 
 
+def suggest_membrane_full_scale(image: np.ndarray, params: Optional[Dict[str, Any]] = None) -> float:
+    """
+    SNR to map to 255 for one trap, so the threshold range covers the cell.
+
+    The background is the most common intensity of the ROI, which is often
+    the dark PDMS rather than the medium. The medium (and any free dye in it)
+    is then already tens of noise units above "background" and a bright cell
+    hundreds, so with a fixed 40-sigma full scale the medium, the halo and the
+    cell all clip to 255: the slider cannot separate them, and the mask fills
+    the whole channel lumen at any threshold.
+
+    Returns the configured membrane_snr_full_scale, or more when the trap's
+    brightest signal (99.5th percentile SNR, at the current smoothing) would
+    clip, rounded up to two significant digits with 10 % headroom.
+    """
+    cfg_scale = _membrane_enhancement_settings(params)['snr_full_scale']
+    snr = membrane_snr_image(image, params)
+    if snr.size == 0:
+        return cfg_scale
+    peak = float(np.percentile(snr, 99.5)) * 1.1
+    if not np.isfinite(peak) or peak <= cfg_scale:
+        return cfg_scale
+    mag = 10.0 ** (np.floor(np.log10(peak)) - 1)
+    return float(np.ceil(peak / mag) * mag)
+
+
 def threshold_to_snr(threshold: float, params: Optional[Dict[str, Any]] = None) -> float:
     """Convert a 0-255 threshold on the enhanced image into noise units (sigma)."""
     return float(threshold) * _membrane_enhancement_settings(params)['snr_full_scale'] / 255.0

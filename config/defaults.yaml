@@ -233,7 +233,8 @@ image_processing:
                                      # in the threshold window (auto from cell brightness, F to change);
                                      # this value is only used when no per-trap choice exists.
   membrane_temporal_window: 3        # Masks from the median of 3 consecutive frames (1 = off); steadier tips
-  membrane_snr_full_scale: 40.0      # SNR shown as 255; threshold T = T*40/255 sigma above background
+  membrane_snr_full_scale: 40.0      # SNR shown as 255 (minimum): raised per trap in the threshold window when
+                                     # the cell is brighter, so a bright cell and the medium do not both clip
   protrusion_leak_fraction: 0.4      # Mask running to the box edge: cut where signal is < 40 % of the protrusion's (0 = off)
   max_tip_refinement_px: 15.0        # Tip refinement farther than this beyond the mask edge is ignored [px]
   tip_level_fraction: 0.25           # Tip = where the centre-line profile drops to bg + this x (protrusion - bg); lower follows dimmer tips

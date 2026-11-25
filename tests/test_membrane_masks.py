@@ -638,3 +638,43 @@ def test_baseline_window_stays_inside_the_cell():
     assert bw(0, 20, 50, 5, True) == (15, 20)        # left before the pulse: its last frames
     assert bw(50, 100, 50, 5, True) == (50, 55)      # entered at the pulse: its first frames
     assert bw(10, 100, None, 5, False) == (10, 15)   # no pulse: first frames after entry
+
+
+def _bright_cell_in_fluorescent_medium():
+    """Dark PDMS (most pixels), dimly fluorescent medium, very bright cell."""
+    import cv2
+    rng = np.random.default_rng(0)
+    h, w, pip = 90, 200, 120
+    img = np.full((h, w), 100.0)
+    img[30:60, :pip] = 300                      # channel lumen (medium)
+    cv2.circle(img, (160, 45), 40, 300, -1)     # chamber medium
+    cell = np.zeros((h, w), np.uint8)
+    cv2.circle(cell, (160, 45), 28, 1, -1)
+    cell[36:54, 80:pip + 5] = 1
+    img[cell > 0] = 3000
+    img = cv2.GaussianBlur(img, (0, 0), 2) + rng.normal(0, 10, img.shape)
+    return img, cell > 0, pip
+
+
+def test_full_scale_fitted_so_bright_cell_and_medium_do_not_clip():
+    """With background = PDMS, medium sits at ~70 sigma and the cell at ~1000;
+    a fixed 40-sigma scale clips both, so the mask swallowed the channel lumen."""
+    import cv2
+    img, cell, pip = _bright_cell_in_fluorescent_medium()
+    p = _params()
+    fs = utils.suggest_membrane_full_scale(img, p)
+    assert fs > 40.0
+    p['image_processing']['membrane_snr_full_scale'] = fs
+    enh = utils.enhance_membrane_image(img, p)
+    assert (enh[cell] == 255).mean() < 0.05
+    otsu, _ = cv2.threshold(enh[:, pip:], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = utils.threshold_membrane(img, int(otsu), p) > 0
+    assert (mask & cell).sum() / (mask | cell).sum() > 0.95
+    assert mask[32:34, 10:60].mean() == 0      # medium in the lumen is not cell
+
+
+def test_full_scale_unchanged_for_dim_cells():
+    rng = np.random.default_rng(1)
+    img = 100 + rng.normal(0, 10, (60, 120))
+    img[25:35, 20:100] += 40                    # ~14 sigma after smoothing
+    assert utils.suggest_membrane_full_scale(img, _params()) == 40.0
