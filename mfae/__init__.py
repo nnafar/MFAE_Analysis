@@ -8,6 +8,7 @@ Run it with the two scripts in the project folder:
 Package layout (one sub-package per step of the analysis):
     pipeline         runs one experiment: setup, per-trap workers, export
     cli              command line of run_experiment.py (--check, --init-config, ...)
+    batch            --batch: every experiment under a setup folder, one config
     config/          settings: schema (validation), loader (defaults + your file), naming
     files/           reading images (.tif / .czi) and where results are written
     imaging/         trap boxes, rotation, interactive trap selection

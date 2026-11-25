@@ -134,6 +134,47 @@ runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/my_experiment.
 
 Typing `python run_experiment.py ...` in the console gives `SyntaxError: invalid syntax`.
 
+### Many experiments at once (batch)
+
+Instead of one config per experiment, give one config **per setup** and the setup's top folder.
+Every experiment under it is found, at any depth: each `.czi` file for a CZI config, each folder
+of `.tif` images for a TIFF config. The pulse and the experiment type (0 V = aspiration only) are
+read from each name; names that don't follow the [naming rule](#5-naming-experiment-folders) are
+listed and skipped.
+
+```bash
+python run_experiment.py config/config_symmetric_czi.yaml --batch "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Symmetric_Efield"
+```
+
+```bash
+python run_experiment.py config/config_asymmetric_tiff.yaml --batch "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield"
+```
+
+`--batch` without a folder uses the config's `data_folder` (both setup configs already point at
+their setup folder). In Spyder:
+
+```python
+runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_symmetric_czi.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
+```
+
+What happens:
+
+1. **Setup of every experiment, one after another** (trap boxes, entrances, thresholds). Saved
+   setups are reused, so experiments set up earlier don't ask again. Esc stops the batch; the
+   setups done so far are kept.
+2. **Analysis of all of them, without interaction**: leave it running (e.g. overnight).
+3. A summary of every experiment (done / skipped / failed) is printed and saved as
+   `Output/<setup>/batch_summary_<date>_<time>.txt`. A failure in one experiment doesn't stop the rest.
+
+**Setups are kept apart.** Results go to `Output/<setup folder name>/<experiment>/`, e.g.
+`Output/Symmetric_Efield/...` and `Output/Asymmetric_Efield/...`, and the bulk analysis analyses
+each setup on its own. Use `--setup NAME` for a different results folder name.
+
+**Adding data later:** run the same command again. Experiments that already have results are
+skipped; only new ones are set up and analysed. `--redo` analyses everything again (reusing the
+saved setups; add `--fresh` to redo the setups too). `--batch --check` checks every experiment
+without opening windows.
+
 ### Command-line options
 
 | Option | What it does |
@@ -454,13 +495,17 @@ After running `run_experiment.py` on each experiment:
 python run_bulk_analysis.py
 ```
 
-It reads every experiment folder in `Output/` (use `--output-root PATH` if your per-experiment
-results live elsewhere), groups the cells by condition (from the experiment names) and writes one
-folder per run, named by date and time, with a `README.txt` that lists every file and what it
-shows:
+It reads the experiment results in `Output/` (use `--output-root PATH` if they live elsewhere),
+groups the cells by condition (from the experiment names) and writes one folder per run, named by
+date and time, with a `README.txt` that lists every file and what it shows.
+
+**Each setup is analysed on its own, never pooled with another.** Every folder in `Output/` that
+holds experiment results (e.g. `Symmetric_Efield/`, `Asymmetric_Efield/` from batch runs) is one
+setup and gets its own `Bulk_Analysis_results/` inside it; experiments directly in `Output/` count
+as one more setup.
 
 ```
-Output/Bulk_Analysis_results/<YYMMDD_HHMM>/
+Output/<setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/
 ├── README.txt
 ├── 0_Tables/                  mechanics_results_all_traps.csv (one row per trap: fate, every fitted
 │                              parameter and fit-quality flag), attrition_per_experiment.csv (cells
@@ -533,6 +578,7 @@ adds the same two commands, `mfae-experiment` and `mfae-bulk`, usable from any f
 |---|---|
 | `mfae/pipeline.py` | One experiment: setup, parallel per-trap workers, export (`MFAAnalysis`, `static_parallel_worker`) |
 | `mfae/cli.py` | Command line of `run_experiment.py` (`--check`, `--init-config`, `--show-config`) |
+| `mfae/batch.py` | `--batch`: find every experiment under a setup folder, setups first, then analyses |
 | `mfae/paths.py` | Project, `config/` and default `Output/` folders |
 | `mfae/config/schema.py` | Config validation (pydantic); every allowed setting is defined here |
 | `mfae/config/loader.py` | Combining `config/defaults.yaml` with a user config |

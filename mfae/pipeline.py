@@ -567,7 +567,8 @@ class MFAAnalysis:
     def __init__(self, path: Path, experiment_id: str,
                  params: Optional[Union['MFAConfig', Dict[str, Any]]] = None,
                  output_root: Optional[Path] = None,
-                 use_session_cache: bool = True) -> None:
+                 use_session_cache: bool = True,
+                 log_mode: str = 'w') -> None:
         """
         Args:
             path: Folder containing the raw .tif image sequence.
@@ -578,6 +579,8 @@ class MFAAnalysis:
                 scripts read from there by default).
             use_session_cache: If False, ignore any saved session_cache.json
                 and run the interactive trap setup again.
+            log_mode: 'w' starts a new analysis.log, 'a' appends to it (batch
+                runs do the setup and the analysis in separate passes).
         """
         if not path.exists():
             raise FileNotFoundError(f"The specified data path does not exist: {path}")
@@ -585,6 +588,8 @@ class MFAAnalysis:
         self.experiment_id = experiment_id
         self.output_root = Path(output_root) if output_root is not None else None
         self.use_session_cache = use_session_cache
+        self.log_mode = log_mode
+        self.stopped_by_user = False       # Esc during the interactive setup
         
         # Accept a validated MFAConfig object (typed) or a plain dict (backward compat).
         if hasattr(params, 'model_dump'):
@@ -606,7 +611,7 @@ class MFAAnalysis:
         self.file_saver = FileSave(output_dir=self.results_dir)
         
         utils.setup_logging(self.params.get('workflow_settings', {}).get('debug_mode', False),
-                            output_layout.experiment_file(self.subdirs, 'log'))
+                            output_layout.experiment_file(self.subdirs, 'log'), mode=self.log_mode)
         
         self.trap_results = []
         self.skipped = []
@@ -773,9 +778,11 @@ class MFAAnalysis:
 
         return cache
 
-    def run_analysis(self) -> bool:
+    def run_analysis(self, setup_only: bool = False) -> bool:
         """
-        Main execution method.
+        Run the experiment: setup (interactive, or the saved one), then analysis.
+        setup_only: stop once the setup is done and saved (batch runs do every
+        setup first, then every analysis without interaction).
         """
         try:
             logger.info("== MFA ANALYSIS START ==")
@@ -857,14 +864,18 @@ class MFAAnalysis:
 
                     setup_signal = self.cropper.run(self.file_reader)
                     if setup_signal in ('stop', 'restart'):
-                        if setup_signal == 'stop': return False
+                        if setup_signal == 'stop':
+                            self.stopped_by_user = True
+                            return False
                         continue
 
                     # --- Phase 1b: Per-Trap Parameter Tuning ---
                     setup_signal, trap_configs = self._collect_interactive_parameters()
 
                     if setup_signal in ('stop', 'restart'):
-                        if setup_signal == 'stop': return False
+                        if setup_signal == 'stop':
+                            self.stopped_by_user = True
+                            return False
                         continue
                     if setup_signal == 'confirm': break
 
@@ -877,6 +888,10 @@ class MFAAnalysis:
                 return True
 
             if self.cropper: self.cropper.save_trap_map(self.subdirs['overview'])
+
+            if setup_only:
+                logger.info(f"Setup saved for {self.experiment_id} ({len(trap_configs)} trap(s)).")
+                return True
 
             # --- Phase 2: Parallel Processing ---
             logger.info("\n== PHASE 2: PARALLEL PROCESSING ==")
