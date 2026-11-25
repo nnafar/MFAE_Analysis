@@ -150,8 +150,12 @@ python run_experiment.py config/config_symmetric_czi.yaml --batch "M:/tnw/bn/gk/
 python run_experiment.py config/config_asymmetric_tiff.yaml --batch "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield"
 ```
 
-`--batch` without a folder uses the config's `data_folder` (both setup configs already point at
-their setup folder). In Spyder:
+```bash
+python run_experiment.py config/config_aspiration_tiff.yaml --batch "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Aspiration"
+```
+
+`--batch` without a folder uses the config's `data_folder` (the three setup configs already point
+at their folder). In Spyder:
 
 ```python
 runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_symmetric_czi.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
@@ -167,8 +171,10 @@ What happens:
    `Output/<setup>/batch_summary_<date>_<time>.txt`. A failure in one experiment doesn't stop the rest.
 
 **Setups are kept apart.** Results go to `Output/<setup folder name>/<experiment>/`, e.g.
-`Output/Symmetric_Efield/...` and `Output/Asymmetric_Efield/...`, and the bulk analysis analyses
-each setup on its own. Use `--setup NAME` for a different results folder name.
+`Output/Symmetric_Efield/...`, `Output/Asymmetric_Efield/...` and `Output/Aspiration/...`, and the
+bulk analysis analyses each E-field setup on its own, with the aspiration-only experiments as the
+no-pulse controls of both (see [Bulk analysis](#6-bulk-analysis-many-experiments)). Use
+`--setup NAME` for a different results folder name.
 
 **Adding data later:** run the same command again. Experiments that already have results are
 skipped; only new ones are set up and analysed. `--redo` analyses everything again (reusing the
@@ -503,6 +509,12 @@ date and time, with a `README.txt` that lists every file and what it shows.
 holds experiment results (e.g. `Symmetric_Efield/`, `Asymmetric_Efield/` from batch runs) is one
 setup and gets its own `Bulk_Analysis_results/` inside it; experiments directly in `Output/` count
 as one more setup.
+
+**Aspiration-only controls are shared.** The experiments in `Output/Aspiration/` (no pulse, so no
+field geometry) are added as the control group to every setup's analysis, so each setup's
+pulse-vs-aspiration figures use them. Only aspiration-only (0 V) runs are taken from that folder.
+`Aspiration/` also gets its own bulk analysis (aspiration-only mechanics). Use
+`--controls FOLDER` for a different control folder, or `--controls none` for no shared controls.
 
 ```
 Output/<setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/

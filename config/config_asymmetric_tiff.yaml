@@ -5,7 +5,9 @@
 # (finds every folder of .tif images under data_folder, at any depth):
 #   python run_experiment.py config/config_asymmetric_tiff.yaml --batch
 # Results go to Output/Asymmetric_Efield/<experiment>/, so this setup is never pooled
-# with another one; run_bulk_analysis.py also analyses it on its own.
+# with another one; run_bulk_analysis.py also analyses it on its own, with the
+# aspiration-only experiments (Output/Aspiration, config_aspiration_tiff.yaml)
+# as its no-pulse controls.
 # In a batch run, experiment_type (ep / asp) and the pulse are read from each
 # experiment's name (0V = aspiration only).
 #

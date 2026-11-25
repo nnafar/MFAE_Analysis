@@ -108,3 +108,17 @@ def test_cli_dispatches_batch(monkeypatch):
     monkeypatch.setattr(mb, "run_batch", lambda args: seen.setdefault("folder", args.batch) and 0)
     cli.main([str(ROOT / "config" / "config_asymmetric_tiff.yaml"), "--batch", "D:/data/X"])
     assert seen["folder"] == "D:/data/X"
+
+
+def test_aspiration_controls_join_each_setup_but_only_aspiration_runs(tmp_path, monkeypatch):
+    from mfae.bulk.loader import BulkDataLoader
+    out = tmp_path / "Output"
+    (out / "Symmetric_Efield" / CZI).mkdir(parents=True)
+    (out / "Aspiration" / ASP).mkdir(parents=True)
+    (out / "Aspiration" / PULSED).mkdir(parents=True)               # misplaced pulsed run: ignored
+    monkeypatch.setattr(BulkDataLoader, "_load_experiment_traps", lambda self, meta: [meta])
+    loader = BulkDataLoader(str(out / "Symmetric_Efield"), control_dirs=[out / "Aspiration"])
+    names = sorted(m.full_path.name for _, traps in loader.iter_groups() for m in traps)
+    assert names == sorted([CZI, ASP])
+    alone = BulkDataLoader(str(out / "Symmetric_Efield"))
+    assert [m.full_path.name for _, t in alone.iter_groups() for m in t] == [CZI]

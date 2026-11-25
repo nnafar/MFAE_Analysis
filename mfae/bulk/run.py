@@ -22,7 +22,7 @@ import pickle
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import numpy as np
 import pandas as pd
 
@@ -98,6 +98,11 @@ def _parse_args(argv=None):
              "batch runs) is analysed on its own, into <setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/; "
              "experiments directly in it go to <output-root>/Bulk_Analysis_results/.",
     )
+    parser.add_argument(
+        "--controls", default="Aspiration", metavar="FOLDER",
+        help="Folder in the output root with the aspiration-only experiments that serve as the "
+             "no-pulse controls of every setup (default: %(default)s). 'none' = no shared controls.",
+    )
     return parser.parse_args(argv)
 
 
@@ -134,6 +139,9 @@ def main(argv=None) -> int:
                      "Run run_experiment.py on your experiments first, or pass --output-root.")
         return 1
     setups = find_setups(output_root_dir)
+    controls = None
+    if str(args.controls).lower() != "none":
+        controls = next((d for d in setups if d.name == args.controls), None)
     if not setups:
         logger.error(f"No experiment results found in {output_root_dir} or its sub-folders. "
                      "Run run_experiment.py on your experiments first, or pass --output-root.")
@@ -141,14 +149,21 @@ def main(argv=None) -> int:
     if len(setups) > 1:
         logger.info("Setups found (each analysed separately, never pooled): "
                     + ", ".join(d.name for d in setups))
+    if controls is not None:
+        logger.info(f"Aspiration-only controls for every setup: {controls}")
     for setup_dir in setups:
-        logger.info(f"\n{'#' * 60}\nSETUP: {setup_dir.name}  ({setup_dir})\n{'#' * 60}")
-        run_setup(setup_dir)
+        extra = [controls] if controls is not None and setup_dir != controls else []
+        logger.info(f"\n{'#' * 60}\nSETUP: {setup_dir.name}  ({setup_dir})"
+                    + (f"\n  + controls from {controls.name}/" if extra else "") + f"\n{'#' * 60}")
+        run_setup(setup_dir, extra)
     return 0
 
 
-def run_setup(output_root_dir: Path) -> Path:
-    """Bulk analysis of the experiments directly in one folder (one setup)."""
+def run_setup(output_root_dir: Path, control_dirs: Optional[List[Path]] = None) -> Path:
+    """
+    Bulk analysis of one setup: the experiments directly in `output_root_dir`,
+    plus the aspiration-only experiments in `control_dirs` (shared controls).
+    """
     # One folder per run, named by date and time, so runs never overwrite
     # each other. The folders are made once the conditions present are known
     # (see mfae/bulk/layout.py and the README.txt written at the end).
@@ -158,19 +173,20 @@ def run_setup(output_root_dir: Path) -> Path:
     # Working caches (pickled trap data); removed when the run ends.
     cache_root  = results_dir / "_cache"
     try:
-        _run(output_root_dir, results_dir, cache_root)
+        _run(output_root_dir, results_dir, cache_root, control_dirs or [])
     finally:
         shutil.rmtree(cache_root, ignore_errors=True)
         if results_dir.is_dir():
             try:
-                bl.write_readme(results_dir, output_root_dir)
+                bl.write_readme(results_dir, output_root_dir, controls=control_dirs)
             except Exception as e:
                 logger.error(f"README failed: {e}")
         logger.info(f"Results: {results_dir}  (see README.txt)")
     return results_dir
 
 
-def _run(output_root_dir: Path, results_dir: Path, cache_root: Path) -> None:
+def _run(output_root_dir: Path, results_dir: Path, cache_root: Path,
+         control_dirs: List[Path]) -> None:
     logger.info(f"Results will be saved to: {results_dir}")
 
     r_eff = bm.DEFAULT_R_EFF
@@ -195,6 +211,7 @@ def _run(output_root_dir: Path, results_dir: Path, cache_root: Path) -> None:
             channel_width_um=bm.CHANNEL_WIDTH_UM,
             channel_height_um=bm.CHANNEL_HEIGHT_UM,
             r_eff_um=r_eff,
+            control_dirs=control_dirs,
         )
     except Exception as e:
         logger.error(f"Initialization failed: {e}", exc_info=True)

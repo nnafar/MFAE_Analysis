@@ -223,6 +223,7 @@ class BulkDataLoader:
         channel_width_um: float = 6.7,
         channel_height_um: float = 5.0,
         r_eff_um: Optional[float] = None,
+        control_dirs: Optional[List[Path]] = None,
     ):
         """
         Parameters
@@ -236,8 +237,14 @@ class BulkDataLoader:
             Effective aspiration radius (um). If None, computed from
             channel_width_um and channel_height_um. Pass an explicit value to
             keep the loader in lockstep with bulk_mechanics.DEFAULT_R_EFF.
+        control_dirs
+            Extra folders whose aspiration-only (0 V) experiments are added as
+            the no-pulse control group, e.g. Output/Aspiration shared by the
+            symmetric and asymmetric setups. Pulsed experiments in them are
+            ignored (with a warning).
         """
         self.root_dir = Path(root_output_dir)
+        self.control_dirs = [Path(d) for d in (control_dirs or []) if Path(d).is_dir()]
         if not self.root_dir.exists():
             raise FileNotFoundError(f"Root directory not found: {self.root_dir}")
         self.grouped_data: Dict[Tuple[str, str, int, int, float], List[TrapData]] = {}
@@ -266,9 +273,16 @@ class BulkDataLoader:
         logger.info(f"Scanning root directory: {self.root_dir}")
         grouped_metadata = {}
 
-        for entry in self.root_dir.iterdir():
+        entries = [(e, False) for e in sorted(self.root_dir.iterdir())]
+        for d in self.control_dirs:
+            logger.info(f"Adding aspiration-only controls from: {d}")
+            entries += [(e, True) for e in sorted(d.iterdir())]
+        for entry, is_control in entries:
             if entry.is_dir():
                 metadata = self._parse_folder_name(entry.name, entry)
+                if metadata and is_control and metadata.condition_type != "ASP":
+                    logger.warning(f"   Ignored in the control folder (not aspiration-only): {entry.name}")
+                    continue
                 if metadata:
                     group_key = (
                         metadata.cell_type,
