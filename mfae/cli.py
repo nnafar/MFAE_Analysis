@@ -355,12 +355,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         listed = (config_loader.read_yaml(Path(args.config_path)).get("paths") or {}).get("data_folder")
     except config_loader.ConfigFileError:
         listed = None
-    if isinstance(listed, list) and args.data_folder is None:
-        logger.error(f"{args.config_path} lists several data folders: add --batch to analyse every "
-                     f"experiment in them, or --data-folder to analyse one experiment.")
+    folder_list = isinstance(listed, list)
+    if folder_list and args.data_folder is None:
+        logger.error(f"{args.config_path} lists the folders for a batch: add --batch to analyse "
+                     f"every experiment in them, or --data-folder \"<experiment>\" to analyse one.")
         return 1
+    output_root = args.output_dir
+    if folder_list:
+        # One experiment with a batch config: same results folder and type
+        # rules as the batch, so batch runs and the bulk analysis see it.
+        from mfae.batch import setup_for_experiment
+        setup = args.setup or setup_for_experiment(Path(args.data_folder), [Path(str(f)) for f in listed])
+        output_root = Path(args.output_dir or default_output_root()) / setup
+        logger.info(f"Results go to {output_root} (setup '{setup}')")
 
-    config, layered = load_config(args.config_path, args.data_folder, args.experiment_id)
+    config, layered = load_config(args.config_path, args.data_folder, args.experiment_id,
+                                  type_from_name=folder_list)
     if config is None:
         return 1
 
@@ -369,7 +379,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.check:
-        return 0 if check_setup(config, args.output_dir) else 1
+        return 0 if check_setup(config, output_root) else 1
 
     # Find the image data before creating any output, so a wrong path or file
     # name stops the run with a short message instead of a traceback.
@@ -395,7 +405,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     analysis = None
     try:
         analysis = MFAAnalysis(config.paths.data_folder, str(config.paths.experiment_id), config,
-                               output_root=args.output_dir,
+                               output_root=output_root,
                                use_session_cache=not args.fresh)
         saved = save_effective_config(config, layered, args.config_path, analysis.results_dir)
         logger.info(f"Settings for this run saved to {saved}")

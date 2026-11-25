@@ -10,8 +10,8 @@
 # In a batch run, experiment_type (ep / asp) and the pulse are read from each
 # experiment's name (0V = aspiration only).
 #
-# One experiment only:
-#   python run_experiment.py config/config_symmetric_czi.yaml --data-folder "<one .czi file>" --output-dir Output/Symmetric_Efield
+# One experiment only (results go to the same place as in the batch):
+#   python run_experiment.py config/config_symmetric_czi.yaml --data-folder "<one .czi file>"
 #
 # Check a config:      python run_experiment.py <this file> --batch --check
 # See all settings:    python run_experiment.py <this file> --data-folder "<one .czi file>" --show-config
@@ -28,7 +28,9 @@ paths:
   # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
   image_format: czi
   # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
-  data_folder: 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Symmetric_Efield'
+  data_folder:
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Symmetric_Efield'
+    # - 'M:\...\another folder'   (add more folders like this)
   # One experiment (no --batch): name of the results folder (defaults to the .czi file name); must follow the naming rule:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
   #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10

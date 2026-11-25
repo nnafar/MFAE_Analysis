@@ -10,8 +10,8 @@
 # In a batch run, experiment_type (ep / asp) and the pulse are read from each
 # experiment's name (0V = aspiration only).
 #
-# One experiment only:
-#   python run_experiment.py config/config_asymmetric_tiff.yaml --data-folder "<one experiment folder>" --output-dir Output/Asymmetric_Efield
+# One experiment only (results go to the same place as in the batch):
+#   python run_experiment.py config/config_asymmetric_tiff.yaml --data-folder "<one experiment folder>"
 #
 # Check a config:      python run_experiment.py <this file> --batch --check
 # See all settings:    python run_experiment.py <this file> --data-folder "<one experiment folder>" --show-config
@@ -31,7 +31,7 @@ paths:
   # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
   data_folder:
     - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\5ms_100V'
-    # - 'M:\\...\\another folder'   (add more folders like this)
+    # - 'M:\...\another folder'   (add more folders like this)
   # One experiment (no --batch): name of the results folder; must follow the naming rule:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
   #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
