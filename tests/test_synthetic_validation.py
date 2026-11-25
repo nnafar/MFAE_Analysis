@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import specific functions to test
-from Calculation_MFA import (
+from mfae.mechanics.models import (
     calculate_recommended_fstar, 
     compute_shear_metrics,
     jeffreys_length, 
@@ -125,7 +125,7 @@ def test_cusum_detects_synthetic_rupture():
     )
     
     # Instantiate detector with strict but valid params
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     detector = LineDetectionMFA(
         roi_images=[np.zeros((10,10))], pipette_coords=[0,0],
         params={'rupture_detection': {
@@ -153,7 +153,7 @@ def test_protrusion_length_measurement():
     true_len = 30.5
     image, _ = create_synthetic_protrusion_image(protrusion_length_px=true_len)
     
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     detector = LineDetectionMFA(
         roi_images=[image], pipette_coords=[150, 25],
         params={'scale_factor': 1.0, 'workflow_settings': {'verify_traps_interactively': False}}
@@ -178,7 +178,7 @@ def test_parameter_recovery_jeffreys():
         noise_level_um=0.05
     )
     
-    from Fitting_MFA import FittingMFA
+    from mfae.mechanics.fitting import FittingMFA
     fitter = FittingMFA(time, lengths, r_eff=5.0, delta_p=1000.0)
     
     # Use global optimization for best chance of recovery

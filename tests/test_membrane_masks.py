@@ -15,7 +15,7 @@ import pytest
 cv2 = pytest.importorskip("cv2")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import Utils_MFA as utils  # noqa: E402
+from mfae import utils  # noqa: E402
 
 H, W, PIP = 72, 216, 116
 
@@ -102,7 +102,7 @@ def test_legacy_path_still_available():
 
 def test_actin_uses_raw_pixels_when_sharing_membrane_channel():
     """Actin on the membrane channel: masks from the enhanced image, means from raw pixels."""
-    from ActinQuantification import ActinAnalyzer
+    from mfae.quantification.actin import ActinAnalyzer
 
     img, _, _ = _trap_image()
     rois = [img] * 6
@@ -126,7 +126,7 @@ def test_actin_uses_raw_pixels_when_sharing_membrane_channel():
 
 
 def _detector(params):
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     return LineDetectionMFA([np.zeros((H, W), np.uint16)], [PIP, 0], params)
 
 
@@ -221,7 +221,7 @@ def test_temporal_median_frame_skips_missing_and_keeps_input():
 
 def test_temporal_window_steadies_faint_protrusion_length():
     """Faint protrusion: masks from a 3-frame median jitter less than per-frame masks."""
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     rois = []
     for t in range(40):
         img, _ = _channel_scene(int(70 - t * 0.5), prot_amp=55.0, seed=100 + t)
@@ -244,7 +244,7 @@ def test_temporal_window_steadies_faint_protrusion_length():
 
 def test_tracking_stops_when_tip_leaves_roi():
     """Tip at the left ROI edge for 3+ frames: tracking stops before it; the next cell is not tracked."""
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     yy, xx = np.mgrid[0:H, 0:W]
     lengths = [0] * 3 + list(range(20, 110, 10)) + [PIP] * 6 + [25, 30, 35, 40, 45]
     rois = []
@@ -271,7 +271,7 @@ def test_tracking_stops_when_tip_leaves_roi():
 
 def test_protrusion_mask_does_not_leak_into_faint_glow_ahead():
     """Faint glow in the channel ahead of the tip must not extend the protrusion to the box edge."""
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     yy, xx = np.mgrid[0:H, 0:W]
     rng = np.random.default_rng(1)
     L = 50
@@ -305,7 +305,7 @@ def _cell_sequence(lengths):
 
 
 def _run_cells(lengths, pulse_idx=None):
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     params = _params()
     params['image_processing']['membrane_temporal_window'] = 1
     params['rupture_detection'] = {'enable_smoothing': False, 'pulse_frame_idx': pulse_idx}
@@ -351,7 +351,7 @@ def test_no_cell_at_pulse_keeps_last_cell_before_and_flags_it():
 
 def test_leak_cut_works_with_a_high_threshold_on_a_bright_protrusion():
     """High thresholds used to disable the cut (8-bit image saturates at 255)."""
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     yy, xx = np.mgrid[0:H, 0:W]
     rng = np.random.default_rng(2)
     L = 50
@@ -386,7 +386,7 @@ def test_tip_refinement_stays_near_the_mask_edge():
 
 def test_thin_tip_inside_the_box_is_not_cut():
     """A narrow dim tip (Trap 15) is real protrusion; the leak cut only acts at the box edge."""
-    from LineDetection_MFA import LineDetectionMFA
+    from mfae.membrane.detection import LineDetectionMFA
     yy, xx = np.mgrid[0:H, 0:W]
     rng = np.random.default_rng(5)
     sig = np.where((xx >= PIP - 30) & (xx < PIP) & (np.abs(yy - 36) <= 8), 900.0, 0.0)   # wide bright base
@@ -489,8 +489,8 @@ def test_relative_level_drops_the_halo_around_a_bright_protrusion(seed):
 def test_debug_movies_show_the_linedetection_mask_of_the_same_frame(tmp_path):
     """Dye and actin debug movies draw LineDetection's own mask for each frame, and
     frame i of the results (which start at the cell's entry) is frame start_idx + i."""
-    from ActinQuantification import ActinAnalyzer
-    from UptakeQuantification import DyeUptakeAnalyzer
+    from mfae.quantification.actin import ActinAnalyzer
+    from mfae.quantification.dye_uptake import DyeUptakeAnalyzer
 
     img, _, _ = _trap_image()
     n, start = 8, 3
@@ -531,8 +531,8 @@ def test_debug_movies_show_the_linedetection_mask_of_the_same_frame(tmp_path):
 
 def test_actin_times_start_at_the_cell_entry():
     """Actin per-frame values start at start_idx; their time stamps must too (as for dye)."""
-    from ActinQuantification import ActinAnalyzer
-    from UptakeQuantification import DyeUptakeAnalyzer
+    from mfae.quantification.actin import ActinAnalyzer
+    from mfae.quantification.dye_uptake import DyeUptakeAnalyzer
 
     img, _, _ = _trap_image()
     n, start = 8, 3
@@ -555,8 +555,8 @@ def test_actin_times_start_at_the_cell_entry():
 
 def test_downstream_never_resegments_a_frame_without_a_linedetection_mask(monkeypatch, tmp_path):
     """Dye and actin only use LineDetection's masks; a frame without one is skipped."""
-    from ActinQuantification import ActinAnalyzer
-    from UptakeQuantification import DyeUptakeAnalyzer
+    from mfae.quantification.actin import ActinAnalyzer
+    from mfae.quantification.dye_uptake import DyeUptakeAnalyzer
 
     img, _, _ = _trap_image()
     n = 6
@@ -600,8 +600,8 @@ def test_masks_exist_only_for_the_tracked_cell():
 def test_dye_and_actin_only_measure_the_tracked_cell(tmp_path):
     """Frames outside entry..exit (another cell, empty trap) are never measured or
     used for the baseline, even if they are bright."""
-    from ActinQuantification import ActinAnalyzer
-    from UptakeQuantification import DyeUptakeAnalyzer
+    from mfae.quantification.actin import ActinAnalyzer
+    from mfae.quantification.dye_uptake import DyeUptakeAnalyzer
 
     img, _, _ = _trap_image()
     n, entry, exit_ = 12, 3, 7

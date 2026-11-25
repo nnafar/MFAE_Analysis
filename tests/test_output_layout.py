@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import output_layout as ol  # noqa: E402
+from mfae.files import output_layout as ol  # noqa: E402
 
 
 def test_build_layout(tmp_path):
@@ -57,7 +57,7 @@ def test_readers_fall_back_to_old_layouts(tmp_path):
 def test_session_cache_with_other_threshold_scale_is_not_reused(tmp_path):
     import json
     import types
-    import MFA_analysis as mfa
+    from mfae import pipeline
 
     def fake(enhance, full_scale=40.0):
         obj = types.SimpleNamespace()
@@ -66,10 +66,10 @@ def test_session_cache_with_other_threshold_scale_is_not_reused(tmp_path):
                       'guv_settings': {'enable': False}}
         obj.results_dir = tmp_path
         obj.file_reader = types.SimpleNamespace(tif_files=[])
-        obj._threshold_scale = types.MethodType(mfa.MFAAnalysis._threshold_scale, obj)
+        obj._threshold_scale = types.MethodType(pipeline.MFAAnalysis._threshold_scale, obj)
         return obj
 
-    load = mfa.MFAAnalysis._load_session_cache
+    load = pipeline.MFAAnalysis._load_session_cache
     cache = {'trap_configs': [], 'source_files': []}          # old cache: no scale recorded
     (tmp_path / 'session_cache.json').write_text(json.dumps(cache))
     assert load(fake(enhance=True)) is None                   # CLAHE thresholds, SNR pipeline
@@ -85,12 +85,12 @@ def test_session_cache_with_other_threshold_scale_is_not_reused(tmp_path):
 
 
 def test_trap_summary_row_counts_frames_from_one():
-    import MFA_analysis as mfa
+    from mfae import pipeline
     det = {'cell_segments': [(0, 9, 'cell change'), (12, 29, None)], 'selected_cell': 2,
            'cell_at_pulse': True, 'entry_confirmed': True, 'entry_frame_index': 12,
            'exit_frame_index': 29, 'exit_reason': None, 'rupture_detected': False,
            'protrusion_lengths_um': [float('nan')] * 12 + [float(i) for i in range(18)]}
-    row = mfa.trap_summary_row(4, det, [0.5 * i for i in range(30)], 20, 'analysed', dye_done=True)
+    row = pipeline.trap_summary_row(4, det, [0.5 * i for i in range(30)], 20, 'analysed', dye_done=True)
     assert row['Trap'] == 5 and row['Cells_seen_in_trap'] == 2 and row['Analysed_cell'] == 2
     assert (row['First_frame'], row['Last_frame'], row['Pulse_frame']) == (13, 30, 21)
     assert row['First_time_s'] == 6.0 and row['Why_tracking_ended'] == 'end of recording'
@@ -111,8 +111,7 @@ def test_readme_describes_the_files_present(tmp_path):
 
 
 def test_bulk_layout_and_readme(tmp_path):
-    sys.path.insert(0, str(Path(__file__).parent.parent / 'Bulk_Analysis'))
-    import bulk_layout as bl
+    from mfae.bulk import layout as bl
     out = bl.build(tmp_path / 'run', treatments=['WT', 'LifeAct'], pulses=[(100, '1ms'), (100, '5ms')])
     assert out['asp_by_treatment']['LifeAct'] == tmp_path / 'run' / '1_Aspiration_Mechanics' / 'LifeAct'
     assert out['pre_by_pulse']['ASP'] == tmp_path / 'run' / '2_Before_Pulse' / 'Aspiration'
@@ -129,8 +128,7 @@ def test_bulk_layout_and_readme(tmp_path):
 
 
 def test_thesis_routing_follows_the_conditions_present(tmp_path):
-    sys.path.insert(0, str(Path(__file__).parent.parent / 'Bulk_Analysis'))
-    import thesis_plotting as tp
+    from mfae.bulk.plots import figures as tp
     m = {'ASP': tmp_path / 'a', '5ms': tmp_path / 'b', '15ms': tmp_path / 'c', '1ms': tmp_path / 'd'}
     assert tp._resolve_output_dir('EP-pre 100V 15ms (intact)', tmp_path, m) == tmp_path / 'c'
     assert tp._resolve_output_dir('EP-pre 100V 5ms', tmp_path, m) == tmp_path / 'b'

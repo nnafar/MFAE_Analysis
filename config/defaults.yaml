@@ -9,7 +9,7 @@
 #   - user settings live ONLY in the user configs (each must set all of them),
 #   - the settings here can NOT be changed from a user config.
 # The pipeline refuses to start if either rule is broken. The user settings
-# (USER_KEYS in config_loader.py) are:
+# (USER_KEYS in mfae/config/loader.py) are:
 #     experiment_type        ep / asp
 #     paths                  data_folder, experiment_id
 #     experiment_parameters  scale_factor, constant_pressure, frame_interval, max_traps
@@ -25,7 +25,7 @@
 #
 # Each run saves the complete combined settings to
 #     Output/<experiment_id>/effective_config.yaml
-# and you can print them with:  python MFA_analysis.py my.yaml --show-config
+# and you can print them with:  python run_experiment.py my.yaml --show-config
 
 # ===================================================================
 # 1. DYE UPTAKE & ACTIN
