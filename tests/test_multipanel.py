@@ -19,8 +19,8 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
-import Plotting_Multipanel as pmu  # noqa: E402
-from config_schema import MFAConfig  # noqa: E402
+from mfae.plotting import multipanel as pmu  # noqa: E402
+from mfae.config.schema import MFAConfig  # noqa: E402
 
 N_FRAMES = 40
 DT = 0.5
@@ -71,17 +71,17 @@ def test_all_six_figures_written(tmp_path):
     written = pmu.plot_trap_multipanels(results, _subdirs(tmp_path), 'EXP', PARAMS)
     names = sorted(p.name for p in written)
     assert names == sorted([
-        'EXP_Detection_Traces.pdf', 'EXP_Membrane_Kymographs.pdf',
-        'EXP_Uptake_Kymographs.pdf', 'EXP_Diffusion_Profiles.pdf',
-        'EXP_Actin_Kymographs.pdf', 'EXP_Actin_Zones.pdf'])
+        'All_traps_protrusion_length.pdf', 'All_traps_membrane_kymographs.pdf',
+        'All_traps_dye_kymographs.pdf', 'All_traps_dye_profiles_along_cell.pdf',
+        'All_traps_actin_kymographs.pdf', 'All_traps_actin_zones.pdf'])
     assert all(p.stat().st_size > 0 for p in written)
 
 
 def test_figures_skipped_when_channel_missing(tmp_path):
     results = [_fake_trap(i, with_dye=False, with_actin=False) for i in range(3)]
     written = pmu.plot_trap_multipanels(results, _subdirs(tmp_path), 'EXP', PARAMS)
-    assert sorted(p.name for p in written) == ['EXP_Detection_Traces.pdf',
-                                               'EXP_Membrane_Kymographs.pdf']
+    assert sorted(p.name for p in written) == ['All_traps_membrane_kymographs.pdf',
+                                               'All_traps_protrusion_length.pdf']
 
 
 def test_failed_traps_are_ignored(tmp_path):
@@ -102,9 +102,9 @@ def test_nothing_to_plot(tmp_path):
 @pytest.mark.parametrize('save_singles', [False, True])
 def test_worker_outputs(tmp_path, save_singles):
     from synthetic_data_generators import create_synthetic_protrusion_image
-    import MFA_analysis as mfa
+    from mfae import pipeline
 
-    import config_loader
+    from mfae.config import loader as config_loader
     raw = config_loader.load_layers(ROOT / 'config' / 'config_tiff_template.yaml', {
         'paths': {'data_folder': tempfile.gettempdir()},
         'plotting_parameters': {'save_individual_trap_plots': save_singles},
@@ -129,7 +129,7 @@ def test_worker_outputs(tmp_path, save_singles):
     for d in dirs.values():
         d.mkdir()
     channel = {'path': str(mmap_path), 'shape': stack.shape, 'dtype': stack.dtype}
-    result = mfa.static_parallel_worker({
+    result = pipeline.static_parallel_worker({
         'trap_index': 0, 'params': params, 'output_dirs': dirs,
         'mmap_path': str(mmap_path), 'dtype': stack.dtype, 'shape': stack.shape,
         'rotation_angle': 0.0, 'roi_coords': (0, 50, 0, 200),
@@ -140,19 +140,22 @@ def test_worker_outputs(tmp_path, save_singles):
 
     assert result['status'] in ('success', 'detection_only'), result.get('error')
     assert {'trace', 'membrane_kymo', 'actin', 'pipette_x'} <= set(result['plot_data'])
-    assert (dirs['full_csv'] / 'trap_01_detection_full.csv').exists()
+    from mfae.files import output_layout as ol
+    d = ol.complete(dirs)
+    assert (d['full_csv'] / 'Trap_01_protrusion_and_shape.csv').exists()
     assert not list(tmp_path.rglob('*filtered*'))       # filtered CSV no longer written
 
     # Output layout: CSVs, kymograph CSVs and movies in their own sub-folders.
     prot = dirs['protrusion']
-    assert (prot / 'Movies' / 'Trap_01_Tracking.avi').stat().st_size > 0
-    assert (prot / 'Kymographs' / 'Trap_01_Membrane_Kymograph.csv').exists()
-    assert (dirs['actin'] / 'Actin traces' / 'Trap_01_Actin_Data.csv').exists()
-    assert (dirs['actin'] / 'Actin Kymographs' / 'Trap_01_Actin_Kymograph.csv').exists()
-    assert (dirs['actin'] / 'Actin Movies' / 'Trap_01_Actin_Debug_Zones.avi').exists()
-    assert (dirs['dye'] / 'Uptake traces' / 'Trap_01_Uptake_Data.csv').exists()
-    assert (dirs['dye'] / 'Uptake Kymographs' / 'Trap_01_Uptake_Kymograph.csv').exists()
-    assert (dirs['dye'] / 'Uptake Movies' / 'Trap_01_Mask_Debug.avi').exists()
+    assert (d['movies'] / 'Trap_01_tracking.avi').stat().st_size > 0
+    assert (d['membrane_kymo'] / 'Trap_01_membrane_kymograph.csv').exists()
+    assert (d['actin_traces'] / 'Trap_01_actin.csv').exists()
+    assert (d['actin_kymo'] / 'Trap_01_actin_kymograph.csv').exists()
+    assert (d['actin_movies'] / 'Trap_01_actin_zones.avi').exists()
+    assert (d['actin_movies'] / 'Trap_01_actin_cortex.avi').exists()
+    assert (d['dye_traces'] / 'Trap_01_dye_uptake.csv').exists()
+    assert (d['dye_kymo'] / 'Trap_01_dye_kymograph.csv').exists()
+    assert (d['dye_movies'] / 'Trap_01_dye_masks.avi').exists()
     for top in (prot, dirs['dye'], dirs['actin']):   # only PDFs directly in the main folders
         assert all(f.suffix == '.pdf' for f in top.iterdir() if f.is_file())
 
@@ -167,8 +170,8 @@ def test_shared_actin_channel_gives_identical_results(tmp_path):
     """Reusing the membrane frames for actin must match reading a separate copy."""
     import shutil
     from synthetic_data_generators import create_synthetic_protrusion_image
-    import MFA_analysis as mfa
-    import config_loader
+    from mfae import pipeline
+    from mfae.config import loader as config_loader
 
     params = MFAConfig(**config_loader.load_layers(
         ROOT / 'config' / 'config_tiff_template.yaml', {'paths': {'data_folder': tempfile.gettempdir()}}).data).model_dump()
@@ -189,21 +192,22 @@ def test_shared_actin_channel_gives_identical_results(tmp_path):
         for d in dirs.values():
             d.mkdir(parents=True)
         chan = {'path': str(actin_path), 'shape': stack.shape, 'dtype': stack.dtype}
-        mfa.static_parallel_worker({
+        pipeline.static_parallel_worker({
             'trap_index': 0, 'params': params, 'output_dirs': dirs, 'mmap_path': str(mem),
             'dtype': stack.dtype, 'shape': stack.shape, 'rotation_angle': 0.0,
             'roi_coords': (0, 50, 0, 200), 'tuned_pipette_x': 150, 'tuned_threshold_prot': 110,
             'tuned_threshold_body': 110, 'time_data': [i * DT for i in range(len(frames))],
             'first_frame_number': 1, 'dye_mmap': {'path': None}, 'actin_mmap': chan,
         })
-        return (dirs['actin'] / 'Actin traces' / 'Trap_01_Actin_Data.csv').read_text()
+        from mfae.files import output_layout as ol
+        return (ol.complete(dirs)['actin_traces'] / 'Trap_01_actin.csv').read_text()
 
     assert run(mem, tmp_path / 'shared') == run(copy, tmp_path / 'separate')
 
 
 def test_file_reader_reuses_membrane_files_for_actin(tmp_path):
     cv2 = pytest.importorskip("cv2")
-    from FileHandling_MFA import FileRead
+    from mfae.files.readers import FileRead
     for t in range(1, 6):
         for c in ('C1', 'C2'):
             cv2.imwrite(str(tmp_path / f"exp_{c}_t{t:04d}.tif"), np.full((8, 8), 50, np.uint8))

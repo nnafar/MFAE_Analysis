@@ -6,11 +6,11 @@
 # share a setting, and every setting below must be present.
 #
 # Start a new experiment by copying a config, with the paths filled in:
-#   python MFA_analysis.py --init-config config/my_exp.yaml --data-folder "D:/MFAE/<folder>"
+#   python run_experiment.py --init-config config/my_exp.yaml --data-folder "D:/MFAE/<folder>"
 #   (add  --from config/<other config>.yaml  to copy a different config)
 #
-# Check a config:      python MFA_analysis.py <this file> --check
-# See all settings:    python MFA_analysis.py <this file> --show-config
+# Check a config:      python run_experiment.py <this file> --check
+# See all settings:    python run_experiment.py <this file> --show-config
 
 # ep  = electroporation (pulse voltage, duration and frame are read from the
 #       experiment name, e.g. ...-100V-1ms-frame10)

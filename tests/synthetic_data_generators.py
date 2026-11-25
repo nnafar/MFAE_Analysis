@@ -188,7 +188,7 @@ def create_synthetic_time_series(
     Args:
         n_frames: Number of time points to generate
         model: Which model to use ('jeffreys', 'kelvin_voigt', 'burgers')
-        E, eta1, eta2: Model parameters (see Calculation_MFA.py for definitions)
+        E, eta1, eta2: Model parameters (see mfae/mechanics/models.py for definitions)
         r_eff: Effective channel radius (μm)
         delta_p: Applied pressure (Pa)
         C: Geometric correction factor
@@ -214,7 +214,7 @@ def create_synthetic_time_series(
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from Calculation_MFA import jeffreys_length, kelvin_voigt_length, burgers_length
+    from mfae.mechanics.models import jeffreys_length, kelvin_voigt_length, burgers_length
     
     # 1. Create time array
     time = np.arange(n_frames) * frame_interval

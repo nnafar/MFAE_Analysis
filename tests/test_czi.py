@@ -22,8 +22,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 pyczi = pytest.importorskip("pylibCZIrw.czi")
 
-from FileHandling_MFA import CziFrame, CziRead, resolve_czi_file, valid_timestamps  # noqa: E402
-import Utils_MFA as utils  # noqa: E402
+from mfae.files.readers import CziFrame, CziRead, resolve_czi_file, valid_timestamps  # noqa: E402
+from mfae import utils  # noqa: E402
 
 EXP_NAME = "260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10"
 N_FRAMES = 20
@@ -135,13 +135,13 @@ def test_resolve_czi_file(tmp_path, czi_file):
 
 def test_frames_cached_for_workers_match_the_file(tmp_path, czi_file):
     """The shared-memory stack the workers read is built correctly from a CZI."""
-    import MFA_analysis as mfa
-    import config_loader
-    from config_schema import MFAConfig
+    from mfae import cli, pipeline
+    from mfae.config import loader as config_loader
+    from mfae.config.schema import MFAConfig
     cfg = MFAConfig(**config_loader.load_layers(
         ROOT / "config" / "config_czi_template.yaml",
         {"paths": {"data_folder": str(czi_file), "experiment_id": EXP_NAME}}).data)
-    analysis = mfa.MFAAnalysis(czi_file, EXP_NAME, cfg, output_root=tmp_path / "out")
+    analysis = pipeline.MFAAnalysis(czi_file, EXP_NAME, cfg, output_root=tmp_path / "out")
     try:
         analysis.file_reader.run()
         path, shape, dtype = analysis._prepare_shared_memory_stack(
@@ -159,14 +159,14 @@ def test_frames_cached_for_workers_match_the_file(tmp_path, czi_file):
 # -----------------------------------------------------------------------------
 
 def test_init_and_check_a_czi_experiment(tmp_path, czi_file, capsys):
-    import MFA_analysis as mfa
+    from mfae import cli, pipeline
     dest = tmp_path / "exp.yaml"
-    assert mfa.main(["--init-config", str(dest), "--data-folder", str(czi_file)]) == 0
+    assert cli.main(["--init-config", str(dest), "--data-folder", str(czi_file)]) == 0
     data = yaml.safe_load(dest.read_text(encoding="utf-8"))
     assert data["paths"]["image_format"] == "czi"                 # czi template chosen
     assert data["paths"]["experiment_id"] == EXP_NAME              # from the file name
     capsys.readouterr()
-    assert mfa.main([str(dest), "--check"]) == 0
+    assert cli.main([str(dest), "--check"]) == 0
     out = capsys.readouterr().out
     assert "Membrane      : 20 frames (channel 2 'CellMask')" in out
     assert "Dye           : 20 frames (channel 1 'PI')" in out
@@ -175,22 +175,22 @@ def test_init_and_check_a_czi_experiment(tmp_path, czi_file, capsys):
 
 
 def test_tiff_template_refused_for_a_czi_file(tmp_path, czi_file):
-    import MFA_analysis as mfa
+    from mfae import cli, pipeline
     dest = tmp_path / "exp.yaml"
-    assert mfa.main(["--init-config", str(dest), "--data-folder", str(czi_file),
+    assert cli.main(["--init-config", str(dest), "--data-folder", str(czi_file),
                      "--from", str(ROOT / "config" / "config_tiff_template.yaml")]) == 1
     assert not dest.exists()
 
 
 def test_format_mismatch_is_reported(tmp_path, czi_file):
-    import MFA_analysis as mfa
+    from mfae import cli, pipeline
     # TIFF config pointed at a .czi file
-    config, _ = mfa.load_config(ROOT / "config" / "config_tiff_template.yaml", data_folder=czi_file)
+    config, _ = cli.load_config(ROOT / "config" / "config_tiff_template.yaml", data_folder=czi_file)
     assert config is None
 
 
 def test_channel_settings_of_the_other_format_are_refused(tmp_path, czi_file):
-    import config_loader
+    from mfae.config import loader as config_loader
     text = (ROOT / "config" / "config_czi_template.yaml").read_text(encoding="utf-8")
     bad = tmp_path / "bad.yaml"
     bad.write_text(text.replace("  dye_channel_number: 1\n", "  dye_channel_pattern: 'C2'\n"),
@@ -210,15 +210,15 @@ def test_folder_of_many_czi_files_uses_the_experiment_name(tmp_path, czi_file):
 
 
 def test_missing_czi_stops_before_any_output(tmp_path, czi_file, capsys):
-    import MFA_analysis as mfa
+    from mfae import cli, pipeline
     write_czi(czi_file.parent / "another.czi", n_frames=2)
     dest = tmp_path / "exp.yaml"
-    mfa.main(["--init-config", str(dest), "--data-folder", str(czi_file)])
+    cli.main(["--init-config", str(dest), "--data-folder", str(czi_file)])
     text = dest.read_text(encoding="utf-8")
     dest.write_text(text.replace(str(czi_file), str(czi_file.parent)).replace(
         EXP_NAME, "260101_MDAMB231_WT_Chip1_Experiment9-1100Pa-100V-1ms-frame10"), encoding="utf-8")
     out_dir = tmp_path / "out"
     capsys.readouterr()
-    assert mfa.main([str(dest), "--output-dir", str(out_dir)]) == 1
+    assert cli.main([str(dest), "--output-dir", str(out_dir)]) == 1
     assert "none is named after the experiment" in capsys.readouterr().out
     assert not out_dir.exists()

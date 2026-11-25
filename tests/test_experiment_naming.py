@@ -10,9 +10,9 @@ import pytest
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-import config_loader  # noqa: E402
-from config_schema import MFAConfig  # noqa: E402
-from experiment_naming import parse_experiment_name  # noqa: E402
+from mfae.config import loader as config_loader  # noqa: E402
+from mfae.config.schema import MFAConfig  # noqa: E402
+from mfae.config.naming import parse_experiment_name  # noqa: E402
 
 EP_1MS = "260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-50V-1ms-frame12"
 ASP = "260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0"
@@ -31,9 +31,8 @@ def test_parse(name, voltage, duration_ms, frame, pulse):
 
 
 def test_bulk_loader_uses_the_same_rule():
-    sys.path.insert(0, str(ROOT / "Bulk_Analysis"))
-    import bulk_file_handling
-    import experiment_naming
+    from mfae.bulk import loader as bulk_file_handling
+    from mfae.config import naming as experiment_naming
     assert bulk_file_handling.BulkDataLoader.FOLDER_PATTERN is experiment_naming.FOLDER_PATTERN
 
 

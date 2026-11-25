@@ -1,0 +1,27 @@
+Experiment folder naming
+========================
+
+The analysis reads the pulse (voltage, duration, pulse frame) from this name,
+and the bulk analysis groups experiments by it. The rule is defined once in
+mfae/config/naming.py.
+
+Name each experiment's data folder (and its experiment_id in the config) as:
+
+    YYMMDD_CellType_Treatment_Chip_Experiment-<Pressure>Pa-<Voltage>V-<Duration><unit>-frame<PulseFrame>
+
+  * exactly five underscore-separated fields before the first '-'
+    (no extra '_' or '-' inside a field)
+  * whole numbers only; unit is ms, us or s
+  * Pa, V and frame are literal text
+
+Electroporated cells:
+
+    260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10
+
+Aspiration only (no pulse): use 0V, 0ms and frame0:
+
+    260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0
+
+Folders that don't match are skipped by Bulk_Analysis. Check a name with:
+
+    python run_experiment.py config/my_config.yaml --check

@@ -18,9 +18,9 @@ from pydantic import ValidationError
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-import config_loader  # noqa: E402
-from config_schema import MFAConfig  # noqa: E402
-from LineDetection_MFA import LineDetectionMFA  # noqa: E402
+from mfae.config import loader as config_loader  # noqa: E402
+from mfae.config.schema import MFAConfig  # noqa: E402
+from mfae.membrane.detection import LineDetectionMFA  # noqa: E402
 
 
 # =============================================================================
