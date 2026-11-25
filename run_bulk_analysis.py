@@ -23,4 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mfae.bulk.run import main  # noqa: E402
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    if hasattr(sys, "ps1") or "IPython" in sys.modules:
+        # Interactive (Spyder / IPython): don't raise SystemExit, which shows
+        # up there as "An exception has occurred"; just say how it ended.
+        if code:
+            print("\nFinished with problems (see the messages above).")
+    else:
+        sys.exit(code)
