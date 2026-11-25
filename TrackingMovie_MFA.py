@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Per-trap tracking movie (Protrusion Length Detection/Movies/Trap_XX_Tracking.avi).
+Per-trap tracking movie (1_Protrusion_and_Shape/Movies/Trap_XX_tracking.avi).
 
 Each video frame shows
   * the membrane image, enlarged, with a FIXED per-trap contrast window

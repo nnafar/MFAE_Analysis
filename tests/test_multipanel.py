@@ -71,17 +71,17 @@ def test_all_six_figures_written(tmp_path):
     written = pmu.plot_trap_multipanels(results, _subdirs(tmp_path), 'EXP', PARAMS)
     names = sorted(p.name for p in written)
     assert names == sorted([
-        'EXP_Detection_Traces.pdf', 'EXP_Membrane_Kymographs.pdf',
-        'EXP_Uptake_Kymographs.pdf', 'EXP_Diffusion_Profiles.pdf',
-        'EXP_Actin_Kymographs.pdf', 'EXP_Actin_Zones.pdf'])
+        'All_traps_protrusion_length.pdf', 'All_traps_membrane_kymographs.pdf',
+        'All_traps_dye_kymographs.pdf', 'All_traps_dye_profiles_along_cell.pdf',
+        'All_traps_actin_kymographs.pdf', 'All_traps_actin_zones.pdf'])
     assert all(p.stat().st_size > 0 for p in written)
 
 
 def test_figures_skipped_when_channel_missing(tmp_path):
     results = [_fake_trap(i, with_dye=False, with_actin=False) for i in range(3)]
     written = pmu.plot_trap_multipanels(results, _subdirs(tmp_path), 'EXP', PARAMS)
-    assert sorted(p.name for p in written) == ['EXP_Detection_Traces.pdf',
-                                               'EXP_Membrane_Kymographs.pdf']
+    assert sorted(p.name for p in written) == ['All_traps_membrane_kymographs.pdf',
+                                               'All_traps_protrusion_length.pdf']
 
 
 def test_failed_traps_are_ignored(tmp_path):
@@ -140,19 +140,22 @@ def test_worker_outputs(tmp_path, save_singles):
 
     assert result['status'] in ('success', 'detection_only'), result.get('error')
     assert {'trace', 'membrane_kymo', 'actin', 'pipette_x'} <= set(result['plot_data'])
-    assert (dirs['full_csv'] / 'trap_01_detection_full.csv').exists()
+    import output_layout as ol
+    d = ol.complete(dirs)
+    assert (d['full_csv'] / 'Trap_01_protrusion_and_shape.csv').exists()
     assert not list(tmp_path.rglob('*filtered*'))       # filtered CSV no longer written
 
     # Output layout: CSVs, kymograph CSVs and movies in their own sub-folders.
     prot = dirs['protrusion']
-    assert (prot / 'Movies' / 'Trap_01_Tracking.avi').stat().st_size > 0
-    assert (prot / 'Kymographs' / 'Trap_01_Membrane_Kymograph.csv').exists()
-    assert (dirs['actin'] / 'Actin traces' / 'Trap_01_Actin_Data.csv').exists()
-    assert (dirs['actin'] / 'Actin Kymographs' / 'Trap_01_Actin_Kymograph.csv').exists()
-    assert (dirs['actin'] / 'Actin Movies' / 'Trap_01_Actin_Debug_Zones.avi').exists()
-    assert (dirs['dye'] / 'Uptake traces' / 'Trap_01_Uptake_Data.csv').exists()
-    assert (dirs['dye'] / 'Uptake Kymographs' / 'Trap_01_Uptake_Kymograph.csv').exists()
-    assert (dirs['dye'] / 'Uptake Movies' / 'Trap_01_Mask_Debug.avi').exists()
+    assert (d['movies'] / 'Trap_01_tracking.avi').stat().st_size > 0
+    assert (d['membrane_kymo'] / 'Trap_01_membrane_kymograph.csv').exists()
+    assert (d['actin_traces'] / 'Trap_01_actin.csv').exists()
+    assert (d['actin_kymo'] / 'Trap_01_actin_kymograph.csv').exists()
+    assert (d['actin_movies'] / 'Trap_01_actin_zones.avi').exists()
+    assert (d['actin_movies'] / 'Trap_01_actin_cortex.avi').exists()
+    assert (d['dye_traces'] / 'Trap_01_dye_uptake.csv').exists()
+    assert (d['dye_kymo'] / 'Trap_01_dye_kymograph.csv').exists()
+    assert (d['dye_movies'] / 'Trap_01_dye_masks.avi').exists()
     for top in (prot, dirs['dye'], dirs['actin']):   # only PDFs directly in the main folders
         assert all(f.suffix == '.pdf' for f in top.iterdir() if f.is_file())
 
@@ -196,7 +199,8 @@ def test_shared_actin_channel_gives_identical_results(tmp_path):
             'tuned_threshold_body': 110, 'time_data': [i * DT for i in range(len(frames))],
             'first_frame_number': 1, 'dye_mmap': {'path': None}, 'actin_mmap': chan,
         })
-        return (dirs['actin'] / 'Actin traces' / 'Trap_01_Actin_Data.csv').read_text()
+        import output_layout as ol
+        return (ol.complete(dirs)['actin_traces'] / 'Trap_01_actin.csv').read_text()
 
     assert run(mem, tmp_path / 'shared') == run(copy, tmp_path / 'separate')
 

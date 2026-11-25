@@ -16,6 +16,7 @@ import numpy as np
 import cv2
 
 import Utils_MFA as utils
+import output_layout
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def plot_dye_uptake_dashboard(results: Dict[str, Any], trap_idx: int, output_dir
         ax.set_title(f"Trap {trap_idx}: Uptake Kymograph")
         if show_pulse is not None or rupture_time is not None:
             ax.legend(loc='upper right')
-        utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Uptake_Kymograph.png")
+        utils.save_plot_pdf(output_dir / output_layout.trap_file('dye_kymo_fig', trap_idx))
         plt.close(fig)
 
         # Diffusion Profiles
@@ -304,10 +305,10 @@ def plot_kymograph(kymograph_matrix: np.ndarray, trap_index: int, output_dir: Pa
     ax.set_ylabel('Time (s)')
     ax.legend(loc='upper right')
 
-    if channel_label:
-        fname = f"Trap_{trap_index:02d}_{channel_label}_Kymograph.png"
+    if channel_label and channel_label.lower() != 'membrane':
+        fname = f"Trap_{trap_index:02d}_{channel_label.lower()}_kymograph.pdf"
     else:
-        fname = f"trap_{trap_index:02d}_kymograph.png"
+        fname = output_layout.trap_file('membrane_kymo_fig', trap_index)
     utils.save_plot_pdf(Path(output_dir) / fname)
     plt.close(fig)
 
@@ -461,7 +462,7 @@ def plot_actin_kymograph(results: Dict[str, Any], trap_idx: int, output_dir: Pat
     if rupture_time is not None or pulse_time is not None:
         ax.legend()
 
-    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Kymograph.png")
+    utils.save_plot_pdf(output_dir / output_layout.trap_file('actin_kymo_fig', trap_idx))
     plt.close(fig)
 
 
@@ -504,7 +505,7 @@ def plot_actin_zones(results: Dict[str, Any], trap_idx: int, output_dir: Path, p
     ax_didt.legend(fontsize=10)
 
     fig.tight_layout()
-    utils.save_plot_pdf(output_dir / f"Trap_{trap_idx:02d}_Actin_Zones.png")
+    utils.save_plot_pdf(output_dir / output_layout.trap_file('actin_zones_fig', trap_idx))
     plt.close(fig)
 
 
@@ -716,7 +717,7 @@ def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[fl
 
     fig_area.suptitle(suptitle, fontsize=14, fontweight='bold', y=1.01)
     plt.tight_layout()
-    utils.save_plot_pdf(output_dir / f"{experiment_id}_Aggregate_Delta_Area.png")
+    utils.save_plot_pdf(output_dir / output_layout.EXPERIMENT_FILES['area_change'][1])
     plt.close(fig_area)
 
     # ======================================================================
@@ -786,7 +787,7 @@ def plot_aggregate_metrics(all_results: List[Dict[str, Any]], time_data: List[fl
     ax_sol.set_title(f"Cell Body Solidity — {title_suffix} — {experiment_id}")
 
     plt.tight_layout()
-    utils.save_plot_pdf(output_dir / f"{experiment_id}_Aggregate_Delta_Solidity.png")
+    utils.save_plot_pdf(output_dir / output_layout.EXPERIMENT_FILES['solidity_change'][1])
     plt.close(fig_sol)
     
 
@@ -861,7 +862,7 @@ def plot_aggregate_dye_metrics(all_results: List[Dict[str, Any]], output_dir: Pa
             
             fig.suptitle(f"{experiment_id} - {title}", y=1.05, fontsize=16, weight='bold')
             plt.tight_layout()
-            utils.save_plot_pdf(output_dir / f"{experiment_id}_Aggregate_Uptake{filename_suffix}.png")
+            utils.save_plot_pdf(output_dir / output_layout.EXPERIMENT_FILES['dye_uptake_all'][1])
         plt.close(fig)
 
     # Only the absolute aggregate uptake plot is retained.  The _Normalized

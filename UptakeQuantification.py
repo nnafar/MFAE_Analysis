@@ -13,6 +13,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
 import Utils_MFA as utils
+import output_layout
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ class DyeUptakeAnalyzer:
             # Un-subtracted mean per-pixel dye intensity in each region and
             # the raw pixel count for that region's mask.  These plus the
             # scalar F0 stored on self are the only quantities exported to
-            # Trap_XX_Uptake_Data.csv.  All the other lists below are still
+            # Trap_XX_dye_uptake.csv.  All the other lists below are still
             # populated internally for the retained dashboard / debug plots.
             'raw_mean_body': [],
             'raw_mean_prot': [],
@@ -480,7 +481,7 @@ class DyeUptakeAnalyzer:
         """
         if not self.results['time_s']:
             return
-        save_path = output_dir / f"Trap_{trap_idx:02d}_Mask_Debug.avi"
+        save_path = output_dir / output_layout.trap_file('dye_movie', trap_idx)
 
         if not self.mem_imgs:
             return
@@ -615,7 +616,7 @@ class DyeUptakeAnalyzer:
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        save_path = output_dir / f"Trap_{trap_idx:02d}_Uptake_Data.csv"
+        save_path = output_dir / output_layout.trap_file('dye_csv', trap_idx)
         df.to_csv(save_path, index=False)
         logger.info(f"Uptake data saved: {save_path.name}")
 
@@ -677,7 +678,7 @@ class DyeUptakeAnalyzer:
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        save_path = output_dir / f"Trap_{trap_idx:02d}_Uptake_Kymograph.csv"
+        save_path = output_dir / output_layout.trap_file('dye_kymo_csv', trap_idx)
         df.to_csv(save_path, index=False)
         logger.info(f"Uptake kymograph CSV saved: {save_path.name}")
 

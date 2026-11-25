@@ -102,6 +102,48 @@ def default_output_root() -> Path:
 # TOP-LEVEL STATIC WORKER FUNCTION (Optimized for Shared Memory)
 # =============================================================================
 
+def trap_summary_row(trap_index: int, det_res: Optional[Dict[str, Any]], time_data: List[float],
+                     pulse_idx: Optional[int], status: str, dye_done: bool = False,
+                     actin_done: bool = False) -> Dict[str, Any]:
+    """
+    One row of 0_Overview/trap_summary.csv: what happened in this trap.
+    Frame numbers count from 1, as in Fiji and the movie labels.
+    """
+    def frame(i):
+        return int(i) + 1 if i is not None else None
+
+    def t(i):
+        return round(float(time_data[i]), 3) if i is not None and 0 <= i < len(time_data) else None
+
+    row: Dict[str, Any] = {'Trap': trap_index + 1, 'Status': status}
+    if not det_res:
+        return row
+    segs = det_res.get('cell_segments') or []
+    e, x = det_res.get('entry_frame_index'), det_res.get('exit_frame_index')
+    lengths = np.asarray(det_res.get('protrusion_lengths_um') or [], dtype=float)
+    finite = lengths[np.isfinite(lengths)] if lengths.size else lengths
+    at_pulse = (float(lengths[pulse_idx]) if pulse_idx is not None and 0 <= pulse_idx < lengths.size
+                and np.isfinite(lengths[pulse_idx]) else None)
+    row.update({
+        'Cells_seen_in_trap':   len(segs),
+        'Analysed_cell':        det_res.get('selected_cell'),
+        'Cell_present_at_pulse': det_res.get('cell_at_pulse'),
+        'Entry_confirmed':      det_res.get('entry_confirmed'),
+        'First_frame':          frame(e),
+        'First_time_s':         t(e),
+        'Last_frame':           frame(x),
+        'Last_time_s':          t(x),
+        'Why_tracking_ended':   det_res.get('exit_reason') or 'end of recording',
+        'Pulse_frame':          frame(pulse_idx),
+        'Protrusion_at_pulse_um': round(at_pulse, 3) if at_pulse is not None else None,
+        'Max_protrusion_um':    round(float(finite.max()), 3) if finite.size else None,
+        'Rupture_detected':     bool(det_res.get('rupture_detected')),
+        'Dye_analysed':         bool(dye_done),
+        'Actin_analysed':       bool(actin_done),
+    })
+    return row
+
+
 def _init_worker_logging(log_queue) -> None:
     """Pool initializer: route every log record of this worker to the main process."""
     root = logging.getLogger()
@@ -224,7 +266,9 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
 
         # 5. Data Safety Check
         if not (det_res and det_res['protrusion_lengths_um'] and any(p > 0 for p in det_res['protrusion_lengths_um'])):
-            return {'trap_index': trap_index, 'status': 'no_detection'}
+            return {'trap_index': trap_index, 'status': 'no_detection',
+                    'summary': trap_summary_row(trap_index, None, time_data, pf_idx,
+                                                'no cell detected')}
 
         # --- Build the pulse-window frame set ---
         # Used to annotate exported CSVs with an Is_Pulse_Window flag.
@@ -277,6 +321,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 dirs['root'], f"trap_{trap_index+1:02d}",
                 dir_full=dirs['full_csv'],
                 time_points=time_data,
+                full_name=output_layout.trap_file('protrusion_csv', trap_index + 1),
             )
         except Exception:
             worker_logger.warning(f"Trap {trap_index+1}: CSV export failed.", exc_info=True)
@@ -288,7 +333,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                     time_points=np.array(time_data),
                     protrusions=np.array(det_res['protrusion_lengths_um']),
                     trap_index=trap_index + 1,
-                    save_path=dirs['protrusion'] / f"trap_{trap_index+1:02d}_detection_trace.png",
+                    save_path=dirs['protrusion'] / output_layout.trap_file('protrusion_fig', trap_index + 1),
                     params=params,
                     rupture_time=rupture_time,
                     intensities=det_res.get('downstream_intensities'),
@@ -323,12 +368,12 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 )
 
         # 6b. Tracking movie: membrane image with the masks, tip and length
-        # trace, frame by frame (Protrusion Length Detection/Movies).
+        # trace, frame by frame (1_Protrusion_and_Shape/Movies).
         if params.get('workflow_settings', {}).get('save_tracking_movies', True):
             try:
                 save_tracking_movie(
                     rois, det_res, time_data, params,
-                    dirs['movies'] / f"Trap_{trap_index+1:02d}_Tracking.avi",
+                    dirs['movies'] / output_layout.trap_file('tracking_movie', trap_index + 1),
                     trap_number=trap_index + 1, pulse_idx=pf_idx,
                 )
             except Exception:
@@ -397,7 +442,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                             plotter = Plotting_MFA.MFAPlotter(fitter_full, params=params)
                             plotter.create_analysis_plot(
                                 trap_index + 1,
-                                dirs['fitting'] / f"trap_{trap_index+1:02d}_analysis_plot.png"
+                                dirs['fitting'] / output_layout.trap_file('fit_fig', trap_index + 1)
                             )
                         except Exception:                          # ← this was missing
                             worker_logger.warning(f"Trap {trap_index+1}: Fit plot failed.", exc_info=True)
@@ -443,6 +488,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 worker_logger.warning(f"Trap {trap_index+1}: Dye uptake analysis failed.", exc_info=True)
 
         # 9. Actin Quantification
+        actin_results = None
         actin_config = config_dict.get('actin_mmap')
         if params.get('actin_parameters', {}).get('enable', False) and actin_config and actin_config['path']:
             try:
@@ -484,7 +530,14 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 worker_logger.warning(f"Trap {trap_index+1}: Actin analysis failed.", exc_info=True)
                 
+        status_text = {'success': 'analysed', 'detection_only': 'analysed',
+                       'fit_failed': 'analysed (fit failed)'}.get(fit_status, fit_status)
+        if not det_res.get('entry_confirmed', True):
+            status_text = 'entry not confirmed (check movie)'
         return {
+            'summary':    trap_summary_row(trap_index, det_res, time_data, pf_idx, status_text,
+                                           dye_done=dye_results is not None,
+                                           actin_done=actin_results is not None),
             'trap_index': trap_index,
             'status':     fit_status,   # 'success' | 'detection_only' | 'fit_failed'
             'data':       trap_data,
@@ -495,7 +548,8 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             
     except Exception:
         worker_logger.error("A fatal error occurred in worker", exc_info=True)
-        return {'trap_index': trap_index, 'status': 'error', 'error': traceback.format_exc()}
+        return {'trap_index': trap_index, 'status': 'error', 'error': traceback.format_exc(),
+                'summary': {'Trap': trap_index + 1, 'Status': 'error (see Run_Info/analysis.log)'}}
 
     finally:
         # --- Cleanup: Explicitly release all Shared Memory handles ---
@@ -556,7 +610,8 @@ class MFAAnalysis:
         self.results_dir, self.subdirs = self._setup_output_directory()
         self.file_saver = FileSave(output_dir=self.results_dir)
         
-        utils.setup_logging(self.params.get('workflow_settings', {}).get('debug_mode', False), self.results_dir / f"{self.experiment_id}_analysis.log")
+        utils.setup_logging(self.params.get('workflow_settings', {}).get('debug_mode', False),
+                            output_layout.experiment_file(self.subdirs, 'log'))
         
         self.trap_results = []
         self.skipped = []
@@ -594,15 +649,13 @@ class MFAAnalysis:
         results_dir = output_base / self.experiment_id
         results_dir.mkdir(parents=True, exist_ok=True)
         
-        # Folder layout is defined in output_layout.py:
-        #   Protrusion Length Detection/{Full protrusion detection, Kymographs, Movies}
-        #   Dye Uptake/{Uptake traces, Uptake Kymographs, Uptake Movies}
-        #   Actin Quantification/{Actin traces, Actin Kymographs, Actin Movies}
-        #   Cell Morphology/, Fitting results/
+        # Folder layout and file names are defined in output_layout.py:
+        #   0_Overview/, 1_Protrusion_and_Shape/{Figures,Data,Movies},
+        #   2_Dye_Uptake/..., 3_Actin/..., 4_Mechanics/, Run_Info/
         subdirs = output_layout.build(results_dir)
 
-        # Create core folders immediately (dye/actin/fitting are created on demand)
-        for key in ('protrusion', 'full_csv', 'membrane_kymo', 'morphology'):
+        # Create core folders immediately (dye/actin/mechanics are created on demand)
+        for key in ('overview', 'run_info', 'protrusion', 'full_csv', 'membrane_kymo'):
             subdirs[key].mkdir(parents=True, exist_ok=True)
             
         return results_dir, subdirs
@@ -659,7 +712,8 @@ class MFAAnalysis:
             'source_files': [str(p) for p in self.file_reader.tif_files],
         }
 
-        cache_path = self.results_dir / 'session_cache.json'
+        cache_path = output_layout.experiment_file(self.subdirs, 'session_cache')
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, 'w') as fh:
             json.dump(cache, fh, indent=2)
         logger.info(f"Session cache saved → {cache_path.name}")
@@ -679,9 +733,20 @@ class MFAAnalysis:
         """
         import json
 
-        cache_path = self.results_dir / 'session_cache.json'
-        if not cache_path.exists():
+        # Run_Info/session_cache.json; results from older versions kept it in
+        # the experiment folder itself
+        found = [c for c in output_layout.session_cache_candidates(self.results_dir) if c.exists()]
+        if not found:
             return None
+        cache_path = max(found, key=lambda c: c.stat().st_mtime)   # newest, if both exist
+        new_path = output_layout.experiment_file(output_layout.build(self.results_dir), 'session_cache')
+        if cache_path != new_path:
+            # move a cache from an older version into Run_Info/
+            try:
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path = Path(cache_path).replace(new_path)
+            except OSError:
+                pass
 
         with open(cache_path, 'r') as fh:
             cache = json.load(fh)
@@ -816,7 +881,7 @@ class MFAAnalysis:
                 logger.info("No traps selected.")
                 return True
 
-            if self.cropper: self.cropper.save_trap_map(self.results_dir)
+            if self.cropper: self.cropper.save_trap_map(self.subdirs['overview'])
 
             # --- Phase 2: Parallel Processing ---
             logger.info("\n== PHASE 2: PARALLEL PROCESSING ==")
@@ -1052,9 +1117,18 @@ class MFAAnalysis:
             self.subdirs['fitting'].mkdir(parents=True, exist_ok=True)
             df = pd.DataFrame(all_fits_data)
             df['Experiment_ID'] = self.experiment_id
-            df.to_csv(self.subdirs['fitting'] / f"{self.experiment_id}_summary_fits.csv", index=False)
+            df.to_csv(output_layout.experiment_file(self.subdirs, 'fits_csv'), index=False)
 
         self._perform_shear_analysis()
+
+        # 0_Overview/trap_summary.csv: one row per trap
+        rows = [r['summary'] for r in sorted(all_results, key=lambda r: r.get('trap_index', 0))
+                if r.get('summary')]
+        if rows:
+            path = output_layout.experiment_file(self.subdirs, 'trap_summary')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(rows).to_csv(path, index=False)
+            logger.info(f"Trap summary saved: {path.relative_to(self.results_dir)}")
 
         # All traps' per-trap plots, one multipanel PDF per plot type.
         Plotting_Multipanel.plot_trap_multipanels(
@@ -1077,6 +1151,12 @@ class MFAAnalysis:
                 self.params
             )
 
+        # README.txt: what every folder and file in this result holds
+        try:
+            output_layout.write_readme(self.results_dir, self.experiment_id)
+        except Exception:
+            logger.warning("Could not write README.txt", exc_info=True)
+
     def _perform_shear_analysis(self):
         """Calculates Son (2007) shear metrics."""
         model_params = self.params.get('model_parameters', {})
@@ -1094,11 +1174,11 @@ class MFAAnalysis:
         shear_df['Experiment_ID'] = self.experiment_id
         
         self.subdirs['fitting'].mkdir(parents=True, exist_ok=True)
-        save_path = self.subdirs['fitting'] / f"{self.experiment_id}_shear_analysis.csv"
+        save_path = output_layout.experiment_file(self.subdirs, 'flow_csv')
         shear_df.to_csv(save_path, index=False)
         Plotting_MFA.plot_shear_analysis_card(
             metrics, 
-            self.subdirs['fitting'] / f"{self.experiment_id}_shear_analysis_card.png"
+            output_layout.experiment_file(self.subdirs, 'flow_card')
         )
         
 # =============================================================================
@@ -1247,7 +1327,8 @@ def save_effective_config(config: MFAConfig, layered: config_loader.LayeredConfi
                           config_path: Path, results_dir: Path) -> Path:
     """Record exactly which settings produced this run's results."""
     from datetime import datetime
-    path = Path(results_dir) / "effective_config.yaml"
+    path = output_layout.experiment_file(output_layout.build(results_dir), 'effective_config')
+    path.parent.mkdir(parents=True, exist_ok=True)
     header = (f"# Complete settings used for this run (written {datetime.now():%Y-%m-%d %H:%M}).\n"
               f"# Config file: {Path(config_path).resolve()}\n"
               f"# This file is a full config: run it again with\n"
@@ -1356,7 +1437,8 @@ def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
             notes.append(f"constant_pressure is {cfg_p:g} Pa but the experiment name says "
                          f"{name.pressure_pa} Pa. The config value is used for the analysis.")
 
-    cache = (output_root or default_output_root()) / config.paths.experiment_id / "session_cache.json"
+    cache = output_layout.first_existing(output_layout.session_cache_candidates(
+        (output_root or default_output_root()) / config.paths.experiment_id))
     if cache.exists():
         import json
         try:

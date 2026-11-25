@@ -921,6 +921,8 @@ class CropImage():
                 (x_min, y_min - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
             )
 
+        results_dir = Path(results_dir)
+        results_dir.mkdir(parents=True, exist_ok=True)
         save_path = results_dir / "trap_map.png"
         cv2.imwrite(str(save_path), display)
         logger.info(f"Trap map saved to: {save_path.name}")

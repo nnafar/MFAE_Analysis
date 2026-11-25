@@ -14,8 +14,8 @@ normalization used for display) to a long-format CSV so the same signal
 that appears in the kymograph image is available as data.
 
 Outputs per trap:
-    Trap_XX_Membrane_Kymograph.png   (plot; via Plotting_MFA.plot_kymograph; PDF in output_dir, CSV in csv_dir)
-    Trap_XX_Membrane_Kymograph.csv   (Time_s, Position_um, Intensity)
+    Trap_XX_membrane_kymograph.pdf   (plot; via Plotting_MFA.plot_kymograph; in output_dir, CSV in csv_dir)
+    Trap_XX_membrane_kymograph.csv   (Time_s, Position_um, Intensity)
 
 The dye-channel kymograph is produced separately by
 UptakeQuantification.export_kymograph_csv, because that one is
@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 import Utils_MFA as utils
+import output_layout
 import Plotting_MFA
 
 logger = logging.getLogger(__name__)
@@ -218,7 +219,7 @@ class KymographAnalysis:
             'Intensity':   int_col,
         })
 
-        save_path = output_dir / f"Trap_{trap_index:02d}_Membrane_Kymograph.csv"
+        save_path = output_dir / output_layout.trap_file('membrane_kymo_csv', trap_index)
         df.to_csv(save_path, index=False)
         logger.info(f"Membrane kymograph CSV saved: {save_path.name}")
 

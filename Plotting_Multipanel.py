@@ -12,13 +12,13 @@ both always look the same.
 Within a figure, panels share their axes and colour scale, so traps can be
 compared directly.
 
-Output (per experiment):
-    Protrusion Length Detection/<id>_Detection_Traces.pdf      length + haze per trap
-    Protrusion Length Detection/<id>_Membrane_Kymographs.pdf   membrane kymograph per trap
-    Dye Uptake/<id>_Uptake_Kymographs.pdf            dye kymograph per trap
-    Dye Uptake/<id>_Diffusion_Profiles.pdf           dye profiles per trap
-    Actin Quantification/<id>_Actin_Kymographs.pdf   actin kymograph per trap
-    Actin Quantification/<id>_Actin_Zones.pdf        zone dynamics per trap
+Output (per experiment; names and folders from output_layout.EXPERIMENT_FILES):
+    1_Protrusion_and_Shape/Figures/All_traps_protrusion_length.pdf     length + haze per trap
+    1_Protrusion_and_Shape/Figures/All_traps_membrane_kymographs.pdf   membrane kymograph per trap
+    2_Dye_Uptake/Figures/All_traps_dye_kymographs.pdf                  dye kymograph per trap
+    2_Dye_Uptake/Figures/All_traps_dye_profiles_along_cell.pdf         dye profiles per trap
+    3_Actin/Figures/All_traps_actin_kymographs.pdf                     actin kymograph per trap
+    3_Actin/Figures/All_traps_actin_zones.pdf                          zone dynamics per trap
 """
 
 import logging
@@ -33,6 +33,7 @@ import numpy as np
 
 import Plotting_MFA as pm
 import Utils_MFA as utils
+import output_layout
 
 logger = logging.getLogger(__name__)
 
@@ -74,23 +75,28 @@ def plot_trap_multipanels(all_results: List[Dict[str, Any]], subdirs: Dict[str, 
     dye_p = params.get('dye_uptake_parameters', {})
     show_dye_pulse = dye_p.get('has_pulse', True)
 
-    # 'protrusion' is the Protrusion Length Detection folder ('tracking_visuals'
+    # 'protrusion' is 1_Protrusion_and_Shape/Figures ('tracking_visuals'
     # was its previous key; still accepted).
-    prot_dir = subdirs.get('protrusion', subdirs.get('tracking_visuals'))
+    subdirs = output_layout.complete(subdirs)
+    prot_dir = subdirs['protrusion']
+
+    def _name(kind: str) -> str:
+        return output_layout.EXPERIMENT_FILES[kind][1]
+
     jobs: List[Tuple[str, Callable[..., Optional[plt.Figure]], Path, dict]] = [
         ("Detection traces", _detection_traces,
-         prot_dir / f"{experiment_id}_Detection_Traces.pdf", {}),
+         prot_dir / _name('protrusion_all'), {}),
         ("Membrane kymographs", _membrane_kymographs,
-         prot_dir / f"{experiment_id}_Membrane_Kymographs.pdf", {}),
+         prot_dir / _name('membrane_kymo_all'), {}),
         ("Uptake kymographs", _uptake_kymographs,
-         subdirs['dye'] / f"{experiment_id}_Uptake_Kymographs.pdf",
+         subdirs['dye'] / _name('dye_kymo_all'),
          {'show_pulse': show_dye_pulse}),
         ("Diffusion profiles", _diffusion_profiles,
-         subdirs['dye'] / f"{experiment_id}_Diffusion_Profiles.pdf", {}),
+         subdirs['dye'] / _name('dye_profiles_all'), {}),
         ("Actin kymographs", _actin_kymographs,
-         subdirs['actin'] / f"{experiment_id}_Actin_Kymographs.pdf", {}),
+         subdirs['actin'] / _name('actin_kymo_all'), {}),
         ("Actin zones", _actin_zones,
-         subdirs['actin'] / f"{experiment_id}_Actin_Zones.pdf", {}),
+         subdirs['actin'] / _name('actin_zones_all'), {}),
     ]
 
     utils.set_paper_style()

@@ -47,6 +47,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 
 import Utils_MFA as utils
+import output_layout
 
 logger = logging.getLogger(__name__)
 
@@ -792,7 +793,7 @@ class ActinAnalyzer:
             LIGHT RED   – Distal body     (far 2/3 of body)
 
         Info strip shows current time and pixel count of each zone.
-        Saved as Trap_XX_Actin_Debug_Zones.avi
+        Saved as Trap_XX_actin_zones.avi
         """
         n_frames = len(self.results.get('time_s', []))
         if n_frames == 0:
@@ -808,7 +809,7 @@ class ActinAnalyzer:
         STRIP_H = max(6 + 2*15 + 6, 6 + 4*(10+6) - 6 + 6)  # = 70px
         total_h = h + STRIP_H
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Debug_Zones.avi"
+        save_path = Path(output_dir) / output_layout.trap_file('actin_zones_movie', trap_idx)
         writer    = self._make_video_writer(save_path, w, total_h)
 
         col_tip         = utils.get_bgr_color('dark_blue')
@@ -890,7 +891,7 @@ class ActinAnalyzer:
 
         If lumen=0px in the strip, the body is too narrow for the erosion —
         reduce cortex_thickness_px in config/defaults.yaml.
-        Saved as Trap_XX_Actin_Debug_Cortex.avi
+        Saved as Trap_XX_actin_cortex.avi
         """
         n_frames = len(self.results.get('time_s', []))
         if n_frames == 0:
@@ -906,7 +907,7 @@ class ActinAnalyzer:
         STRIP_H = max(6 + 3*15 + 6, 6 + 4*(10+6) - 6 + 6)  # = 69px
         total_h = h + STRIP_H
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Debug_Cortex.avi"
+        save_path = Path(output_dir) / output_layout.trap_file('actin_cortex_movie', trap_idx)
         writer    = self._make_video_writer(save_path, w, total_h)
 
         col_b_cortex = utils.get_bgr_color('dark_red')
@@ -1074,7 +1075,7 @@ class ActinAnalyzer:
         })
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Data.csv"
+        save_path = Path(output_dir) / output_layout.trap_file('actin_csv', trap_idx)
         df.to_csv(save_path, index=False)
         logger.info(f"Actin data saved: {save_path.name}")
 
@@ -1138,6 +1139,6 @@ class ActinAnalyzer:
         })
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        save_path = Path(output_dir) / f"Trap_{trap_idx:02d}_Actin_Kymograph.csv"
+        save_path = Path(output_dir) / output_layout.trap_file('actin_kymo_csv', trap_idx)
         df.to_csv(save_path, index=False)
         logger.info(f"Actin kymograph CSV saved: {save_path.name}")

@@ -69,7 +69,7 @@ def _compute_reff(width_um: float, height_um: float) -> float:
 # Filename-tag policy
 # ---------------------------------------------------------------------------
 # Full-protrusion detection CSVs are named
-#     trap_XX_detection_full[_<TAG>].csv
+#     Trap_XX_protrusion_and_shape[_<TAG>].csv   (older results: trap_XX_detection_full[_<TAG>].csv)
 # where <TAG> is a manual annotation. The loader routes each candidate CSV
 # into one of three outcomes:
 #
@@ -353,9 +353,11 @@ class BulkDataLoader:
         bucket_counts: Dict[str, int] = {b: 0 for b in ATTRITION_BUCKET_ORDER}
 
         # ---- f* from shear CSV (unchanged) ----------------------------
-        dir_fitting = meta.full_path / "Fitting results"
+        dir_fitting = output_layout.first_existing(output_layout.mechanics_candidates(meta.full_path))
         if dir_fitting.exists():
-            shear_files = list(dir_fitting.glob("*_shear_analysis.csv"))
+            # Flow_conditions.csv (current) or <experiment>_shear_analysis.csv (older)
+            shear_files = (sorted(dir_fitting.glob("Flow_conditions.csv"))
+                           + sorted(dir_fitting.glob("*_shear_analysis.csv")))
             if shear_files:
                 try:
                     shear_df = pd.read_csv(shear_files[0])
@@ -365,23 +367,26 @@ class BulkDataLoader:
                 except Exception as e:
                     logger.warning(f"   Could not read shear CSV: {e}")
 
-        # New layout (Protrusion Length Detection/..., Dye Uptake/Uptake traces,
-        # Actin Quantification/Actin traces) first, old flat layout as fallback.
+        # Current layout (1_Protrusion_and_Shape/Data, 2_Dye_Uptake/Data,
+        # 3_Actin/Data) first, then the older layouts.
         dir_uptake = output_layout.first_existing(output_layout.dye_traces_candidates(meta.full_path))
         dir_full   = output_layout.first_existing(output_layout.full_csv_candidates(meta.full_path))
         dir_actin  = output_layout.first_existing(output_layout.actin_traces_candidates(meta.full_path))
 
-        all_full_candidates = (
-            sorted(dir_full.glob("trap_*_detection_full*.csv"))
-            if dir_full.exists() else []
-        )
+        # Trap_XX_protrusion_and_shape[_TAG].csv (current) or
+        # trap_XX_detection_full[_TAG].csv (older results)
+        all_full_candidates = sorted(
+            {f for pat in ("[Tt]rap_*_protrusion_and_shape*.csv", "[Tt]rap_*_detection_full*.csv")
+             for f in dir_full.glob(pat)}
+        ) if dir_full.exists() else []
 
         for f_file in all_full_candidates:
             stem = f_file.stem
             # Strip the fixed prefix so _parse_fate_tag only sees the trailing
-            # annotation. Expected stem shape: 'trap_XX_detection_full[_TAG]'.
+            # annotation. Expected stem shape: 'Trap_XX_protrusion_and_shape[_TAG]'
+            # (or the older 'trap_XX_detection_full[_TAG]').
             prefix_match = re.match(
-                r"^trap_\d+_detection_full", stem, re.IGNORECASE
+                r"^trap_\d+_(?:protrusion_and_shape|detection_full)", stem, re.IGNORECASE
             )
             if not prefix_match:
                 logger.debug(f"  Unrecognised filename shape, skipping: {f_file.name}")
@@ -409,10 +414,8 @@ class BulkDataLoader:
 
             # Load uptake (support zero-padded and unpadded trap IDs)
             uptake_dict: Dict[str, np.ndarray] = {}
-            u_candidates = [
-                dir_uptake / f"Trap_{trap_id:02d}_Uptake_Data.csv",
-                dir_uptake / f"Trap_{trap_id}_Uptake_Data.csv",
-            ]
+            u_candidates = [dir_uptake / name for name in
+                            output_layout.trap_file_candidates('dye_csv', trap_id)]
             for u_file in u_candidates:
                 if u_file.exists():
                     uptake_dict = self._csv_to_dict(u_file, comment='#')
@@ -423,10 +426,8 @@ class BulkDataLoader:
 
             # Load actin (same padding fallback pattern)
             actin_dict: Dict[str, np.ndarray] = {}
-            a_candidates = [
-                dir_actin / f"Trap_{trap_id:02d}_Actin_Data.csv",
-                dir_actin / f"Trap_{trap_id}_Actin_Data.csv",
-            ]
+            a_candidates = [dir_actin / name for name in
+                            output_layout.trap_file_candidates('actin_csv', trap_id)]
             for a_file in a_candidates:
                 if a_file.exists():
                     actin_dict = self._csv_to_dict(a_file, comment='#')

@@ -2468,9 +2468,10 @@ class LineDetectionMFA:
     
     def export_results_to_csv(self, output_dir: Union[str, Path], experiment_id: str = "experiment", 
                               dir_full: Optional[Path] = None, dir_filtered: Optional[Path] = None,
-                              time_points: Optional[List[float]] = None) -> List[Path]:
+                              time_points: Optional[List[float]] = None,
+                              full_name: Optional[str] = None) -> List[Path]:
         """
-        Saves `..._detection_full.csv` with every frame of data.
+        Saves `..._detection_full.csv` (or `full_name`) with every frame of data.
 
         Only when `dir_filtered` is given, also saves `..._detection_filtered.csv`,
         which is the same table cut off at the detected rupture frame. The
@@ -2543,7 +2544,7 @@ class LineDetectionMFA:
         path_full = dir_full if dir_full else Path(output_dir)
         path_full.mkdir(parents=True, exist_ok=True)  
         
-        filename_full = f"{experiment_id}_detection_full.csv" 
+        filename_full = full_name or f"{experiment_id}_detection_full.csv" 
         full_path = path_full / filename_full
         df.to_csv(full_path, index=False)
         created_files.append(full_path)
