@@ -177,3 +177,33 @@ def test_folders_can_be_listed_in_the_config(tmp_path):
 def test_a_plain_run_of_a_folder_list_config_asks_for_batch(capsys):
     assert cli.main([str(ROOT / "config" / "config_asymmetric_tiff.yaml")]) == 1
     assert "add --batch" in capsys.readouterr().out
+
+
+def test_single_experiment_with_a_batch_config_goes_where_the_batch_would(tmp_path, monkeypatch):
+    setup = _tree(tmp_path)
+    cfg = tmp_path / "asym.yaml"
+    src = (ROOT / "config" / "config_asymmetric_tiff.yaml").read_text()
+    cfg.write_text(src.replace(r"M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\5ms_100V",
+                               str(setup / "5ms_100V")))
+    out = tmp_path / "Output"
+    seen = {}
+
+    class FakeAnalysis:
+        def __init__(self, path, name, config, output_root=None, use_session_cache=True):
+            seen.update(root=Path(output_root), name=name, pulse=config.dye_uptake_parameters.has_pulse)
+            self.results_dir = Path(output_root) / name
+            self.results_dir.mkdir(parents=True, exist_ok=True)
+
+        def run_analysis(self):
+            return True
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(cli, "MFAAnalysis", FakeAnalysis)
+    # an experiment inside the config's folder
+    assert cli.main([str(cfg), "--data-folder", str(setup / "5ms_100V" / PULSED), "--output-dir", str(out)]) == 0
+    assert seen == {"root": out / "Asymmetric_Efield", "name": PULSED, "pulse": True}
+    # one outside it, in another condition folder of the setup; 0 V -> aspiration only
+    assert cli.main([str(cfg), "--data-folder", str(setup / "0ms_0V" / ASP), "--output-dir", str(out)]) == 0
+    assert seen == {"root": out / "Asymmetric_Efield", "name": ASP, "pulse": False}

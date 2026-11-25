@@ -159,6 +159,15 @@ runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmet
 runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_aspiration_tiff.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
 ```
 
+**One experiment** with the same config: give it with `--data-folder` instead of `--batch`. Its
+results go to the same place the batch would put them (and the batch later skips it):
+
+```python
+runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmetric_tiff.yaml --data-folder "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10"', wdir='C:/GitHub/MFAE_Analysis')
+```
+
+For a .czi experiment, `--data-folder` is the .czi file itself.
+
 To add a folder, add a line under `data_folder` in the config:
 
 ```yaml

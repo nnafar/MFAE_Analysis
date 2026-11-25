@@ -27,6 +27,7 @@ Batch runs: analyse every experiment in the folders you choose, with one config.
 """
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -101,6 +102,20 @@ def setup_name(folder: Path) -> str:
     if CONDITION_FOLDER.match(folder.name) and folder.parent.name:
         return folder.parent.name
     return folder.name
+
+
+def setup_for_experiment(experiment: Path, folders: List[Path]) -> str:
+    """
+    Setup (results sub-folder) of one experiment run on its own with a config
+    that lists folders: the same as a batch over those folders would use, so
+    single runs and batch runs fill the same Output/<setup>/.
+    """
+    exp = os.path.normcase(os.path.abspath(str(experiment)))
+    for folder in folders:
+        f = os.path.normcase(os.path.abspath(str(folder))).rstrip("\\/")
+        if exp == f or exp.startswith(f + os.sep):
+            return setup_name(Path(folder))
+    return setup_name(Path(experiment).parent)
 
 
 def batch_folders_and_format(config_path: Path, folders: Optional[List[str]]) -> Tuple[List[Path], str]:
