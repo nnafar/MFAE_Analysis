@@ -47,7 +47,8 @@ class _ShortNameFormatter(logging.Formatter):
         return super().format(record)
 
 
-def setup_logging(debug_mode: bool = False, log_file: Path = Path('mfa_analysis.log')) -> None:
+def setup_logging(debug_mode: bool = False, log_file: Optional[Path] = Path('mfa_analysis.log'),
+                  mode: str = 'w') -> None:
     """
     Configures the Python logging system.
     - Console: Shows INFO (progress) or DEBUG (detailed) messages.
@@ -77,13 +78,14 @@ def setup_logging(debug_mode: bool = False, log_file: Path = Path('mfa_analysis.
     root_logger.addHandler(console_handler)
     
     # File handler
-    try:
-        file_handler = logging.FileHandler(log_file, mode='w')
-        file_handler.setLevel(logging.DEBUG) # Always log DEBUG to file
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-    except (IOError, PermissionError) as e:
-        root_logger.warning(f"Could not open log file {log_file}: {e}. Logging to console only.")
+    if log_file is not None:                    # None: console only
+        try:
+            file_handler = logging.FileHandler(log_file, mode=mode)
+            file_handler.setLevel(logging.DEBUG) # Always log DEBUG to file
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+        except (IOError, PermissionError) as e:
+            root_logger.warning(f"Could not open log file {log_file}: {e}. Logging to console only.")
 
     # Suppress overly verbose logs from third-party libraries
     logging.getLogger('matplotlib').setLevel(logging.WARNING)

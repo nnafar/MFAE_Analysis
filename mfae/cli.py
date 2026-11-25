@@ -41,6 +41,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  2. python run_experiment.py my_exp.yaml --check     (no windows; checks config and images)\n"
             "  3. python run_experiment.py my_exp.yaml             (interactive setup, then analysis)\n"
             "\n"
+            "Many experiments at once (one config per setup):\n"
+            "  python run_experiment.py config/my_setup.yaml --batch                (folders listed in the config)\n"
+            "  python run_experiment.py config/my_setup.yaml --batch D:/data/A D:/data/B\n"
+            "\n"
             "Your file holds the experiment's settings; everything else comes from\n"
             "config/defaults.yaml. See README.md for details."
         ),
@@ -56,6 +60,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=f"Where result folders are written (default: {default_output_root()}).")
     parser.add_argument("--check", action="store_true",
                         help="Validate the config and scan the images, then exit. Opens no windows.")
+    parser.add_argument("--batch", nargs="*", default=None, metavar="FOLDER",
+                        help="Analyse every experiment in the given folder(s), at any depth: each "
+                             ".czi file (CZI config) or each folder of .tif files (TIFF config). "
+                             "Without folders: the config's data_folder (one folder or a list). "
+                             "All setups first, then all analyses. Results go to "
+                             "<output-dir>/<setup>/, the setup being the folder's name, or its "
+                             "parent's for a condition folder such as 5ms_100V.")
+    parser.add_argument("--setup", metavar="NAME",
+                        help="With --batch: name of the results sub-folder (setup) for all "
+                             "folders (default: worked out per folder, e.g. Asymmetric_Efield).")
+    parser.add_argument("--redo", action="store_true",
+                        help="With --batch: also analyse experiments that already have results.")
     parser.add_argument("--fresh", action="store_true",
                         help="Ignore a saved session_cache.json and redo the interactive trap setup.")
     parser.add_argument("--debug", action="store_true",
@@ -131,11 +147,13 @@ def init_config(dest: Path, source: Optional[Path], data_folder: Optional[Path],
 
 
 def load_config(config_path: Path, data_folder: Optional[Path] = None,
-                experiment_id: Optional[str] = None
+                experiment_id: Optional[str] = None, type_from_name: bool = False
                 ) -> Tuple[Optional[MFAConfig], Optional[config_loader.LayeredConfig]]:
     """
     Combine the defaults, the user's file and command-line overrides, then
     validate. Logs a readable error and returns (None, None) on failure.
+    type_from_name: take experiment_type (ep / asp) from the experiment name
+    instead of the config (batch runs over folders with mixed experiments).
     """
     overrides: Dict[str, Any] = {}
     if data_folder is not None:
@@ -144,8 +162,14 @@ def load_config(config_path: Path, data_folder: Optional[Path] = None,
     if experiment_id is not None:
         overrides["experiment_id"] = experiment_id
 
+    type_override = None
+    if type_from_name and experiment_id is not None:
+        info = experiment_naming.parse_experiment_name(experiment_id)
+        if info is not None:
+            type_override = "ep" if info.has_pulse else "asp"
     try:
-        layered = config_loader.load_layers(config_path, {"paths": overrides} if overrides else None)
+        layered = config_loader.load_layers(config_path, {"paths": overrides} if overrides else None,
+                                            experiment_type_override=type_override)
     except config_loader.ConfigFileError as e:
         logger.error(str(e))
         return None, None
@@ -322,6 +346,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.config_path is None:
         parser.print_help()
         return 2
+
+    if args.batch is not None:
+        from mfae.batch import run_batch   # imported here: mfae.batch uses this module
+        return run_batch(args)
+
+    try:
+        listed = (config_loader.read_yaml(Path(args.config_path)).get("paths") or {}).get("data_folder")
+    except config_loader.ConfigFileError:
+        listed = None
+    if isinstance(listed, list) and args.data_folder is None:
+        logger.error(f"{args.config_path} lists several data folders: add --batch to analyse every "
+                     f"experiment in them, or --data-folder to analyse one experiment.")
+        return 1
 
     config, layered = load_config(args.config_path, args.data_folder, args.experiment_id)
     if config is None:

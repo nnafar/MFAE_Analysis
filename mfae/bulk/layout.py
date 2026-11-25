@@ -181,14 +181,19 @@ def remove_empty_folders(root: Union[str, Path]) -> None:
             d.rmdir()
 
 
-def write_readme(results_dir: Union[str, Path], source: Union[str, Path, None] = None) -> Path:
+def write_readme(results_dir: Union[str, Path], source: Union[str, Path, None] = None,
+                 controls=None) -> Path:
     """README.txt listing the folders and files of this run, with what they show."""
     root = Path(results_dir)
     remove_empty_folders(root)
     title = f"Bulk analysis run {root.name}"
     lines = [title, "=" * len(title), ""]
     if source is not None:
-        lines += [f"Pooled from the per-experiment results in: {source}", ""]
+        lines += [f"Pooled from the per-experiment results in: {source}"]
+    for c in controls or []:
+        lines += [f"Aspiration-only controls (no pulse) added from: {c}"]
+    if source is not None or controls:
+        lines += [""]
     lines += [
         "Start with 0_Tables/mechanics_results_all_traps.csv (one row per trap) and",
         "0_Tables/attrition_per_experiment.csv (which cells were analysed and why others were not).",

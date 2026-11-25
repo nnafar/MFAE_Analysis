@@ -182,10 +182,14 @@ def read_defaults() -> Dict[str, Any]:
     return defaults
 
 
-def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> LayeredConfig:
+def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None,
+                experiment_type_override: Optional[str] = None) -> LayeredConfig:
     """
     Combine config/defaults.yaml with a user config (or load a full config on
     its own), apply command-line overrides and the experiment name.
+    experiment_type_override ('ep' / 'asp') replaces the config's
+    experiment_type: batch runs use it so each experiment's type follows its
+    name (0 V = asp) while a whole setup shares one config.
     Raises ConfigFileError with a user-facing message on any problem.
     """
     user_path = Path(user_path)
@@ -202,6 +206,8 @@ def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None) -> 
     defaults = read_defaults()
 
     experiment_type = user.pop("experiment_type", None)
+    if experiment_type is not None and experiment_type_override is not None:
+        experiment_type = experiment_type_override
     if experiment_type is None:
         # Full config (old-style, or a saved effective_config.yaml): stands on its own.
         layers = [(user_path.name, user)]
