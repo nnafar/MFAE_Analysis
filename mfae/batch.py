@@ -274,7 +274,7 @@ def _summary(status: Dict[str, str], roots: List[Path], out_roots: set, save: bo
     lines = [f"  {name}: {state}" for name, state in status.items()]
     counts: Dict[str, int] = {}
     for state in status.values():
-        key = state.split(" (")[0].split(":")[0]
+        key = state.split(" (")[0]
         counts[key] = counts.get(key, 0) + 1
     text = ("== BATCH SUMMARY ==\n" + "\n".join(lines) + "\n"
             + ", ".join(f"{n} {k}" for k, n in counts.items()))
