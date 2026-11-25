@@ -35,6 +35,7 @@ import bulk_plotting      as bp
 import thesis_plotting    as tp  
 import bulk_spatial       as bs
 import bulk_utils as utils
+import bulk_layout        as bl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,7 +61,7 @@ def _parse_args():
     parser.add_argument(
         "--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT,
         help="Folder holding the per-experiment result folders from MFA_analysis.py "
-             f"(default: %(default)s). Results go to <output-root>/Bulk_Analysis_results/<YYMMDD>.",
+             f"(default: %(default)s). Results go to <output-root>/Bulk_Analysis_results/<YYMMDD_HHMM>.",
     )
     return parser.parse_args()
 
@@ -76,12 +77,11 @@ def main():
                      "Run MFA_analysis.py on your experiments first, or pass --output-root.")
         return
 
-    # NEW: Create a date-stamped subfolder for today's run.
-    # Format: YYMMDD (e.g. "250701").  Each run gets its own folder so
-    # you can compare results across days without overwriting.
-    date_stamp  = datetime.now().strftime("%y%m%d")
-    results_dir = output_root_dir / "Bulk_Analysis_results" / date_stamp
-    results_dir.mkdir(parents=True, exist_ok=True)
+    # One folder per run, named by date and time (YYMMDD_HHMM), so runs never
+    # overwrite each other. Topic sub-folders: see bulk_layout.py / README.txt.
+    run_stamp   = datetime.now().strftime("%y%m%d_%H%M")
+    results_dir = output_root_dir / "Bulk_Analysis_results" / run_stamp
+    out = bl.build(results_dir)
     logger.info(f"Results will be saved to: {results_dir}")
 
     # ------------------------------------------------------------------
@@ -181,34 +181,36 @@ def main():
                 )
 
         # --- 2c. Per-group verification plots ---
+        # Everything for one condition goes into 1_Per_Condition/<condition>/
+        cond_dir = bl.condition_dir(out, bp.get_cond_label(traps[0].metadata)) if traps else out['per_condition']
         # Multipanel verification grids
         _try("Uptake fits multipanel",
-             bp.plot_uptake_fits_multipanel, grouped_data_chunk, results_dir)
+             bp.plot_uptake_fits_multipanel, grouped_data_chunk, cond_dir)
         _try("Uptake traces multipanel",
-             bp.plot_uptake_traces_multipanel, grouped_data_chunk, results_dir)
-        _try("Viscoelastic fits multipanel",
-             bp.plot_viscoelastic_fits_multipanel,
-             grouped_data_chunk, results_dir, r_eff, bm.HALFSPACE_C)
+             bp.plot_uptake_traces_multipanel, grouped_data_chunk, cond_dir)
+        # (bulk_plotting.plot_viscoelastic_fits_multipanel no longer exists; the
+        #  call crashed the whole run here. The viscoelastic fit grids come from
+        #  the thesis plot suite, 6_Thesis_Figures.)
 
         # NEW: Model-independent fits multipanel (both ASP and EP)
         _try("Model-independent fits multipanel",
              bp.plot_model_independent_fits_multipanel,
-             grouped_data_chunk, results_dir)
+             grouped_data_chunk, cond_dir)
 
         # EP-only multipanel plots — skip for ASP-only groups
         if ctype == "EP":
             _try("Recoil fits multipanel",
-                 bp.plot_recoil_fits_multipanel, grouped_data_chunk, results_dir)
+                 bp.plot_recoil_fits_multipanel, grouped_data_chunk, cond_dir)
 
         # Per-group aggregate plots
         _try("Uptake dynamics",
-             bp.plot_uptake_dynamics, grouped_data_chunk, results_dir)
+             bp.plot_uptake_dynamics, grouped_data_chunk, cond_dir)
         _try("Per-trap protrusion distribution",
-             bp.plot_per_trap_protrusion_distribution, grouped_data_chunk, results_dir)
+             bp.plot_per_trap_protrusion_distribution, grouped_data_chunk, cond_dir)
         _try("Per-trap uptake distribution",
-             bp.plot_per_trap_uptake_distribution, grouped_data_chunk, results_dir)
+             bp.plot_per_trap_uptake_distribution, grouped_data_chunk, cond_dir)
         _try("Uptake exponential fit",
-             bp.plot_uptake_exponential_fit, grouped_data_chunk, results_dir)
+             bp.plot_uptake_exponential_fit, grouped_data_chunk, cond_dir)
 
         # Accumulate for cross-group plots in Phase 3
         all_grouped_data.update(grouped_data_chunk)
@@ -235,7 +237,7 @@ def main():
     # and all Phase 3 plots are consistent.
     #
     # The unfiltered table is saved first as an audit trail.
-    raw_path = results_dir / "mechanics_results_all_traps.csv"
+    raw_path = bl.file(out, 'all_traps')
     mechanics_df.to_csv(raw_path, index=False)
     logger.info(f"Saved unfiltered results to: {raw_path.name}  ({len(mechanics_df)} traps)")
 
@@ -245,7 +247,7 @@ def main():
         mechanics_df = mechanics_df[~contaminated_mask].copy()
 
         if not excluded_df.empty:
-            excl_path = results_dir / "excluded_traps_prepulse_QC.csv"
+            excl_path = bl.file(out, 'excluded')
             excluded_df.to_csv(excl_path, index=False)
             logger.info(
                 f"Pre-pulse QC: {len(excluded_df)} EP trap(s) excluded "
@@ -261,7 +263,7 @@ def main():
         ].copy()
 
     # --- Save master CSV (filtered) ---
-    mech_path = results_dir / "mechanics_results.csv"
+    mech_path = bl.file(out, 'results')
     mechanics_df.to_csv(mech_path, index=False)
     logger.info(f"Saved mechanics results to: {mech_path.name}  ({len(mechanics_df)} traps after QC)")
 
@@ -277,16 +279,16 @@ def main():
 
     # --- Global mechanics plots ---
     _try("Model-independent comparison (ASP vs EP)",
-         bp.plot_model_independent_comparison, mechanics_df, results_dir)
+         bp.plot_model_independent_comparison, mechanics_df, bl.ensure(out, 'mechanics'))
     _try("Uptake tau boxplots",
-         bp.plot_uptake_tau_boxplot, mechanics_df, results_dir)
+         bp.plot_uptake_tau_boxplot, mechanics_df, bl.ensure(out, 'dye'))
     _try("Slope comparison (ASP vs EP)",
-         bp.plot_slope_comparison, mechanics_df, results_dir)
+         bp.plot_slope_comparison, mechanics_df, bl.ensure(out, 'mechanics'))
 
     # --- EP-only global plots (skip when dataset is ASP-only) ---
     if has_ep_data:
         _try("EP post-pulse behavior",
-             bp.plot_ep_post_pulse_behavior, mechanics_df, results_dir)
+             bp.plot_ep_post_pulse_behavior, mechanics_df, bl.ensure(out, 'mechanics'))
 
         # --- Spatial field analysis (EP only) ---
         # Run each spatial plot for both the cell body and the protrusion ROI.
@@ -296,13 +298,13 @@ def main():
         for _region in ('body', 'protrusion'):
             # Q1+Q2: Does uptake vary across trap positions?  Is there a gradient?
             _try(f"Spatial trap gradient ({_region})",
-                 bs.plot_trap_gradient, mechanics_df, results_dir, _region)
+                 bs.plot_trap_gradient, mechanics_df, bl.ensure(out, 'spatial'), _region)
             # Visual check for replicate-to-replicate consistency of the gradient
             _try(f"Spatial heatmap (trap × experiment) ({_region})",
-                 bs.plot_ep_spatial_heatmap, mechanics_df, results_dir, _region)
+                 bs.plot_ep_spatial_heatmap, mechanics_df, bl.ensure(out, 'spatial'), _region)
             # Q3: Is cell body area a confound for the spatial gradient?
             _try(f"Cell size spatial confound ({_region})",
-                 bs.plot_cell_size_spatial, mechanics_df, results_dir, _region)
+                 bs.plot_cell_size_spatial, mechanics_df, bl.ensure(out, 'spatial'), _region)
     else:
         logger.info("Skipping EP-only plots (no EP data in this dataset).")
 
@@ -321,7 +323,7 @@ def main():
     # --- Execute Thesis Plots for ASP ---
     if all_grouped_data:
         _try("Thesis Plot Suite",
-             tp.run_thesis_plots, all_grouped_data, mechanics_df, results_dir, r_eff)
+             tp.run_thesis_plots, all_grouped_data, mechanics_df, bl.ensure(out, 'thesis'), r_eff)
 
     # --- Spearman correlation (needs all scalars) ---
     # Merge the fitted exponential amplitude A (ADU) from mechanics_df into
@@ -349,11 +351,12 @@ def main():
         )
 
         _try("Spearman correlation",
-             bp.plot_spearman_correlation, df_scalars, results_dir)
+             bp.plot_spearman_correlation, df_scalars, bl.ensure(out, 'correlations'))
         _try("Parameter pairplot",
-             bp.plot_parameter_pairplot, df_scalars, results_dir)
+             bp.plot_parameter_pairplot, df_scalars, bl.ensure(out, 'correlations'))
 
-    logger.info("\n=== BULK ANALYSIS COMPLETE ===")
+    _try("README", bl.write_readme, results_dir, output_root_dir)
+    logger.info(f"\n=== BULK ANALYSIS COMPLETE ===  ->  {results_dir}  (see README.txt)")
 
 
 if __name__ == "__main__":

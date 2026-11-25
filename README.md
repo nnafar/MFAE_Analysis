@@ -158,7 +158,7 @@ user settings is `USER_KEYS` in `config_loader.py`.
 
 - **To see exactly what a run will use:** `python MFA_analysis.py my.yaml --show-config`. Every
   value that doesn't come from `config/defaults.yaml` is marked with where it came from.
-- **Every run saves its complete settings** to `Output/<experiment_id>/effective_config.yaml`. That
+- **Every run saves its complete settings** to `Output/<experiment_id>/Run_Info/effective_config.yaml`. That
   file is a *full config* (it lists every setting and has no `experiment_type`), so you can rerun an
   old analysis with exactly the same settings even after the defaults have changed. Old full-length
   config files work the same way.
@@ -225,13 +225,14 @@ The steps are:
    follows the cell. The preview shows the mask the analysis will use (the analysis additionally takes the median over
    neighbouring frames, so its masks are a little steadier).
 
-Your choices are saved to `Output/<experiment_id>/session_cache.json`, so a re-run skips the setup
+Your choices are saved to `Output/<experiment_id>/Run_Info/session_cache.json`, so a re-run skips the setup
 and goes straight to the analysis (see [The saved setup](#the-saved-setup-session_cachejson)).
 
 ### The saved setup (session_cache.json)
 
 When the interactive setup is finished, everything you chose in it is written to
-`Output/<experiment_id>/session_cache.json`. The next run of the same experiment (same results
+`Output/<experiment_id>/Run_Info/session_cache.json` (results from older versions kept it directly in
+the experiment folder; it is still found there and moved). The next run of the same experiment (same results
 folder) finds the file, skips the setup windows and goes straight to the analysis.
 
 ```json
@@ -338,30 +339,38 @@ other.
 
 ## 4. Output
 
+Each experiment gets one folder. It contains a `README.txt` that lists every file in it, says what
+it shows, and explains the main columns, so you can hand the folder to someone else.
+
 ```
 Output/<experiment_id>/
-├── <experiment_id>_analysis.log        full log of the run, including every trap's analysis
-├── session_cache.json                  saved interactive setup
-├── trap_map.png                        which trap is which
-├── Protrusion Length Detection/
-│   ├── <id>_Detection_Traces.pdf       length + haze, all traps
-│   ├── <id>_Membrane_Kymographs.pdf    membrane kymograph, all traps
-│   ├── Full protrusion detection/      trap_XX_detection_full.csv (every frame)
-│   ├── Kymographs/                     Trap_XX_Membrane_Kymograph.csv
-│   └── Movies/                         Trap_XX_Tracking.avi (masks, tip and length trace per frame)
-├── Cell Morphology/                    aggregate shape metrics
-├── Dye Uptake/                                                    (if enabled)
-│   ├── <id>_*.pdf                      uptake kymographs, diffusion profiles, aggregates
-│   ├── Uptake traces/                  Trap_XX_Uptake_Data.csv
-│   ├── Uptake Kymographs/              Trap_XX_Uptake_Kymograph.csv
-│   └── Uptake Movies/                  Trap_XX_Mask_Debug.avi
-├── Actin Quantification/                                          (if enabled)
-│   ├── <id>_*.pdf                      actin kymographs, zone dynamics
-│   ├── Actin traces/                   Trap_XX_Actin_Data.csv
-│   ├── Actin Kymographs/               Trap_XX_Actin_Kymograph.csv
-│   └── Actin Movies/                   Trap_XX_Actin_Debug_Zones.avi / _Cortex.avi
-└── Fitting results/                    shear analysis and viscoelastic fits   (if enabled)
+├── README.txt                         what every folder and file holds (start here)
+├── 0_Overview/
+│   ├── trap_map.png                   which trap is which
+│   └── trap_summary.csv               one row per trap: analysed cell, first/last frame, why
+│                                      tracking ended, protrusion at the pulse, what was analysed
+├── 1_Protrusion_and_Shape/            membrane channel
+│   ├── Figures/                       All_traps_protrusion_length.pdf, All_traps_membrane_kymographs.pdf,
+│   │                                  All_traps_area_change.pdf, All_traps_body_solidity.pdf
+│   ├── Data/                          Trap_XX_protrusion_and_shape.csv (every frame),
+│   │                                  Trap_XX_membrane_kymograph.csv
+│   └── Movies/                        Trap_XX_tracking.avi (masks, tip and length trace per frame)
+├── 2_Dye_Uptake/                      dye channel                       (if enabled)
+│   ├── Figures/                       All_traps_dye_uptake.pdf, _dye_kymographs.pdf, _dye_profiles_along_cell.pdf
+│   ├── Data/                          Trap_XX_dye_uptake.csv, Trap_XX_dye_kymograph.csv
+│   └── Movies/                        Trap_XX_dye_masks.avi
+├── 3_Actin/                           actin channel                     (if enabled)
+│   ├── Figures/                       All_traps_actin_kymographs.pdf, All_traps_actin_zones.pdf
+│   ├── Data/                          Trap_XX_actin.csv, Trap_XX_actin_kymograph.csv
+│   └── Movies/                        Trap_XX_actin_zones.avi, Trap_XX_actin_cortex.avi
+├── 4_Mechanics/                       Flow_conditions.csv/.pdf (wall shear stress, flow rate),
+│                                      Viscoelastic_fits.csv             (if fitting is on)
+└── Run_Info/                          effective_config.yaml, session_cache.json, analysis.log
 ```
+
+Frame numbers in `trap_summary.csv` and the movies count from 1 (as in Fiji); the `Frame` column
+of the Data CSVs counts from 0. The masks in all three movies are the same LineDetection masks the
+numbers were measured in. All folder and file names are defined in `output_layout.py`.
 
 Each plot type is one multipanel PDF with every trap as a panel. Panels share their axes and,
 for kymographs, one colour scale, so traps can be compared at a glance. To also get one PDF per
@@ -380,8 +389,9 @@ plus PULSE and RUPTURED when they apply. Frame rate and size are set by
 Watching a trap's movie is the quickest way to check its measurement: if the length trace looks
 wrong, the movie shows whether the mask lost the tip, picked up debris, or the cell left the trap.
 
-The bulk analysis reads both this layout and the older flat one (CSVs directly in
-`Full protrusion detection/`, `Dye Uptake/`, `Actin Quantification/`).
+The bulk analysis reads this layout and the older ones (`Protrusion Length Detection/...`,
+`Dye Uptake/Uptake traces/`, ..., and the flat one), with the old file names
+(`trap_XX_detection_full.csv`, `Trap_XX_Uptake_Data.csv`, ...).
 
 **Several cells in one trap.** A trap often holds more than one cell during a recording: a cell
 passes through the channel and the next one arrives. Each trap is therefore split into cells, and
@@ -436,9 +446,33 @@ python Bulk_Analysis/master_bulk_pipeline.py
 python Bulk_Analysis/master_bulk_thesis.py
 ```
 
-Both read every experiment folder in `Output/` and write to
-`Output/Bulk_Analysis_results/<YYMMDD>/`. Use `--output-root PATH` if your per-experiment results
-live elsewhere.
+Both read every experiment folder in `Output/`. Use `--output-root PATH` if your per-experiment
+results live elsewhere. `master_bulk_pipeline.py` writes one folder per run, named by date and time,
+with a `README.txt` describing its contents:
+
+```
+Output/Bulk_Analysis_results/<YYMMDD_HHMM>/
+├── README.txt
+├── 0_Tables/              mechanics_results.csv (one row per trap, after pre-pulse QC),
+│                          mechanics_results_all_traps.csv (before QC), excluded_traps_prepulse_QC.csv
+├── 1_Per_Condition/       one folder per condition (e.g. MDAMB231_WT_1100Pa_100V_5ms): every
+│   └── <condition>/       trap's fit and trace for checking by eye, per-trap distributions
+├── 2_Mechanics/           mechanics across conditions (ASP vs EP), post-pulse behaviour
+├── 3_Dye_Uptake/          uptake time constants across conditions
+├── 4_EP_Spatial/          electroporation: uptake vs trap position
+├── 5_Correlations/        correlations between per-trap parameters
+└── 6_Thesis_Figures/      the thesis figure set
+```
+
+Folders a run has nothing for are left out. `master_bulk_thesis.py` keeps its own
+claim-by-claim layout (`claim1_asp/`, `claim2_ep_vs_asp/`, ...).
+
+**Marking cells by hand.** Add a tag to a trap's `Trap_XX_protrusion_and_shape.csv` file name
+(e.g. `Trap_03_protrusion_and_shape_R.csv`) to tell the bulk analysis what happened to that cell:
+`_R` ruptured after the pulse (still analysed); `_R0` ruptured before the pulse, `_DOA` / `_PI`
+not viable, `_after` / `_POST` arrived after the pulse, `_MASK` / `_SHAPE` / `_IRREGULAR` detection
+failed (these are excluded and only counted in the attrition table). Older
+`trap_XX_detection_full_<TAG>.csv` names work the same way.
 
 ## 7. Troubleshooting
 

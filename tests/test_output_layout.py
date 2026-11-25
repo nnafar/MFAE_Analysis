@@ -108,3 +108,18 @@ def test_readme_describes_the_files_present(tmp_path):
     assert 'Trap_XX_dye_uptake.csv' in text and 'Trap_01_dye_uptake.csv' not in text
     assert 'mean dye intensity in body' in text
     assert '2_Dye_Uptake/' in text and '3_Actin/' not in text      # only folders that exist
+
+
+def test_bulk_layout_and_readme(tmp_path):
+    sys.path.insert(0, str(Path(__file__).parent.parent / 'Bulk_Analysis'))
+    import bulk_layout as bl
+    out = bl.build(tmp_path / 'run')
+    cond = bl.condition_dir(out, 'MDAMB231_WT_1100Pa_100V_5ms')
+    (cond / 'Uptake_MeanSD_MDAMB231_WT_1100Pa_100V_5ms.png').write_text('x')
+    bl.file(out, 'results').write_text('x')
+    bl.ensure(out, 'spatial')                       # created but left empty
+    text = bl.write_readme(out['root']).read_text()
+    assert cond == tmp_path / 'run' / '1_Per_Condition' / 'MDAMB231_WT_1100Pa_100V_5ms'
+    assert '0_Tables/' in text and 'mechanics_results.csv' in text
+    assert 'Uptake_MeanSD_*' in text and 'mean +- SD uptake' in text
+    assert '4_EP_Spatial' not in text and not (tmp_path / 'run' / '4_EP_Spatial').exists()
