@@ -678,3 +678,46 @@ def test_full_scale_unchanged_for_dim_cells():
     img = 100 + rng.normal(0, 10, (60, 120))
     img[25:35, 20:100] += 40                    # ~14 sigma after smoothing
     assert utils.suggest_membrane_full_scale(img, _params()) == 40.0
+
+
+def _dimming_sequence(n_bright, n_dim, L=60, far_level=60.0):
+    """Trap 7: same cell throughout; after n_bright frames the far half of the
+    protrusion dims below the threshold while the near third stays bright."""
+    yy, xx = np.mgrid[0:H, 0:W]
+    rois = []
+    for k in range(n_bright + n_dim):
+        rng = np.random.default_rng(300 + k)
+        sig = np.where(np.hypot(xx - PIP - 24, yy - 36) <= 23, 500.0, 0.0)
+        near = (xx >= PIP - L // 3) & (xx < PIP) & (np.abs(yy - 36) <= 6)
+        far = (xx >= PIP - L) & (xx < PIP - L // 3) & (np.abs(yy - 36) <= 6)
+        sig += np.where(near, 300.0, 0.0)
+        sig += np.where(far, 300.0 if k < n_bright else far_level, 0.0)
+        img = 400 + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2) + rng.normal(0, 20, (H, W))
+        rois.append(np.clip(img, 0, 65535).astype(np.uint16))
+    return rois
+
+
+def _run_rois(rois):
+    from mfae.membrane.detection import LineDetectionMFA
+    params = _params()
+    params['image_processing']['membrane_temporal_window'] = 1
+    params['rupture_detection'] = {'enable_smoothing': False, 'pulse_frame_idx': None}
+    params['dye_uptake_parameters'] = {'has_pulse': False}
+    params['experiment_parameters'] = {'scale_factor': 0.1}
+    det = LineDetectionMFA(rois, [PIP, 0], params)
+    return det.run_detection_with_parameters(PIP, 100, threshold_body=100)
+
+
+def test_dimming_protrusion_end_is_not_a_cell_change():
+    """Trap 7: the mask loses the dim far part of the protrusion; the cell never left."""
+    res = _run_rois(_dimming_sequence(12, 12))
+    L = res['protrusion_lengths_um']
+    assert np.nanmedian(L[14:]) < 0.6 * np.nanmedian(L[3:12])     # the mask did shorten
+    assert len(res['cell_segments']) == 1
+    assert res['exit_reason'] is None and res['exit_frame_index'] == 23
+    assert res['dimmed_frames']
+
+
+def test_real_cell_change_still_detected_when_old_protrusion_is_gone():
+    res = _run_rois(_dimming_sequence(12, 12, far_level=0.0))
+    assert res['cell_segments'][0][2] == 'cell change'

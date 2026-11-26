@@ -1465,6 +1465,68 @@ class LineDetectionMFA:
         frac = (level - v0) / (v1 - v0) if v1 != v0 else 0.5
         return float(min(max(x - 1 + frac, 0.0), float(w)))
 
+    def _old_protrusion_still_present(self, i: int, ref_len_px: float, new_len_px: float,
+                                      pipette_x: int) -> bool:
+        """
+        Is the earlier, longer protrusion still visible in frame i beyond the new mask edge?
+
+        A length drop to under half its recent level is read as a cell change
+        (the cell passed through, a new one arrived). The same drop happens when
+        the far end of the protrusion dims below the threshold (bleaching, or
+        after the pulse) while the cell stays put (Trap 7). The two differ in
+        the channel where the old protrusion was: after a real cell change it
+        is background, after dimming it still carries membrane signal.
+
+        Compares, on the centre-line SNR profile, the stretch between the new
+        and the old tip ("gap") with the channel just ahead of the old tip.
+        Returns True when the gap is at least 3 noise units and 20 % of the
+        protrusion's own contrast above that background. Returns False (accept
+        the cell change) whenever it cannot be judged: no image or masks, or no
+        room ahead of the old tip.
+        """
+        if not (0 <= i < len(self.roi_images)) or self.roi_images[i] is None:
+            return False
+        fm = self.results.get('frame_masks', [])
+        # protrusion rows from the last frame before the drop that has a mask
+        rows = None
+        for j in range(i - 1, max(-1, i - 8), -1):
+            if j < len(fm) and fm[j][0] is not None and fm[j][0].any():
+                ys = np.where(fm[j][0].any(axis=1))[0]
+                rows = (int(ys.min()), int(ys.max()) + 1)
+                break
+        if rows is None:
+            return False
+        t_win = int(self.params.get('image_processing', {}).get('membrane_temporal_window', 3))
+        img = (utils.temporal_median_frame(self.roi_images, i, t_win)
+               if utils.membrane_enhancement_enabled(self.params) and t_win > 1
+               else self.roi_images[i])
+        snr = (utils.membrane_snr_image(img, self.params)
+               if utils.membrane_enhancement_enabled(self.params)
+               else np.asarray(utils.prepare_membrane_for_threshold(img, self.params), np.float32))
+        y0, y1 = rows
+        cy, half = (y0 + y1) / 2.0, max(1.0, 0.15 * (y1 - y0))
+        band = snr[max(0, int(cy - half)):int(np.ceil(cy + half)) + 1, :]
+        if band.size == 0:
+            return False
+        profile = np.median(band, axis=0)
+        old_tip = int(round(pipette_x - ref_len_px))
+        new_tip = int(round(pipette_x - new_len_px))
+        a0, a1 = old_tip - 16, old_tip - 4          # channel ahead of the old tip
+        g0 = old_tip + int(0.2 * (new_tip - old_tip)) + 2
+        g1 = new_tip - int(0.2 * (new_tip - old_tip)) - 1   # inner part of the gap
+        p0, p1 = new_tip + 2, min(int(pipette_x), new_tip + 12)   # remaining protrusion
+        if a0 < 0 or g1 - g0 < 3 or p1 - p0 < 2:
+            return False
+        bg = float(np.median(profile[a0:a1]))
+        gap = float(np.median(profile[g0:g1]))
+        obj = float(np.median(profile[p0:p1]))
+        if utils.membrane_enhancement_enabled(self.params):
+            noise = 1.0
+        else:
+            ahead = profile[a0:a1]
+            noise = max(1.0, 1.4826 * float(np.median(np.abs(np.diff(ahead)))) / np.sqrt(2.0))
+        return (gap - bg) >= max(3.0 * noise, 0.2 * (obj - bg))
+
     def _process_all_frames(self, pipette_start_x: int, threshold: int) -> None:
         """
         Loops through frames to calculate Protrusion Length (Membrane Channel).
@@ -1666,6 +1728,7 @@ class LineDetectionMFA:
         change_ratio = float(r_cfg.get('cell_change_drop_ratio', 0.5))
         n_frames = len(protrusions)
         label = getattr(self, 'trap_label', 'This trap')
+        dimmed_logged: set = set()   # frames where a length drop was dimming, not a new cell
 
         def frame_valid(i: int) -> bool:
             """Entry conditions for one frame (all cell-size independent)."""
@@ -1732,6 +1795,13 @@ class LineDetectionMFA:
                         ref = float(np.median(prev)) if prev else None
                     p = protrusions[i]
                     if ref and ref > 2 * exit_thresh and np.isfinite(p) and p < change_ratio * ref:
+                        if self._old_protrusion_still_present(i, ref / scale_factor,
+                                                              p / scale_factor, pipette_start_x):
+                            # the mask lost the dim end of the same protrusion
+                            # (bleaching / dimming), the cell is still there
+                            dimmed_logged.add(i)
+                            run, cand = 0, None
+                            continue
                         if run == 0:
                             cand = i
                         run += 1
@@ -1781,6 +1851,15 @@ class LineDetectionMFA:
             if why is None or x >= n_frames - 1:
                 break
             start = x + 1
+
+        if dimmed_logged:
+            logger.info(
+                "%s: the protrusion mask shortened by more than half in frame(s) %s, but the "
+                "protrusion is still visible beyond the mask edge, so this is dimming of the same "
+                "cell, not a new cell; tracking continues. If the length looks too short there, "
+                "choose a lower protrusion threshold for this trap.",
+                label, ", ".join(str(i + 1) for i in sorted(dimmed_logged)))
+        self.results['dimmed_frames'] = sorted(dimmed_logged)
 
         cell_at_pulse: Optional[bool] = None
         if segments:
