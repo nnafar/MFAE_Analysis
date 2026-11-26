@@ -84,8 +84,8 @@ workflow_settings:
   # Frame shown during setup, as a fraction of the recording (0.5 = middle)
   selection_frame_fraction: 0.1
   # Starting size of the trap box [µm]; adjust it during setup as needed
-  default_roi_width_um: 115.0
-  default_roi_height_um: 45.0
+  default_roi_width_um: 75.0
+  default_roi_height_um: 31.0
 
   # ---------------------------------------------------------------
   # COMPUTER
