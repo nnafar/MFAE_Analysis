@@ -202,12 +202,19 @@ only new ones are set up and analysed. `--redo` analyses everything again (reusi
 setups; add `--fresh` to redo the setups too). `--batch --check` checks every experiment without
 opening windows.
 
+**Redo single traps:** `--batch --only Experiment4 --traps 7` opens the pipette and threshold
+windows for trap 7 of that experiment only (several: `--traps 7,12`). The other traps keep their
+saved setup, and the experiment is analysed again. The trap box itself is kept; to change a box
+or add a trap, use `--fresh`.
+
 ### Command-line options
 
 | Option | What it does |
 |---|---|
 | `--check` | Validate config and images, then exit |
 | `--fresh` | Ignore the saved trap setup and redo the interactive steps |
+| `--traps N[,N...]` | Redo the pipette/threshold setup of only these traps, keep the rest |
+| `--only TEXT` | With `--batch`: only experiments whose name contains TEXT |
 | `--data-folder PATH` | Use this image folder instead of the one in the config |
 | `--experiment-id NAME` | Name of the results folder (default: the data folder's name) |
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
@@ -344,6 +351,7 @@ Only these interactive choices are stored. Every other setting is read from your
 and re-run without repeating the setup.
 
 - **Redo the setup:** run with `--fresh` (or delete the file). The new setup overwrites it.
+  To redo only some traps, use `--traps 7,12`.
 - **Edit by hand:** the file is plain text. You can change a threshold, the pipette position or
   the smoothing of one trap, or delete a trap's entry to leave it out. Keep the JSON valid
   (commas, brackets).

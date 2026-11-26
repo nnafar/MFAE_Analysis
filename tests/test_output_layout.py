@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mfae.files import output_layout as ol  # noqa: E402
@@ -138,3 +140,37 @@ def test_thesis_routing_follows_the_conditions_present(tmp_path):
     t = {'WT': tmp_path / 'wt', 'LifeAct': tmp_path / 'la'}
     assert tp._resolve_treatment_dir('MDAMB231_LifeAct_1100Pa_ASP', tmp_path, t) == tmp_path / 'la'
     assert tp._resolve_treatment_dir('MDAMB231_WT_1100Pa_ASP', tmp_path, t) == tmp_path / 'wt'
+
+
+def test_retune_replaces_only_the_chosen_traps(monkeypatch):
+    from mfae import pipeline
+    obj = pipeline.MFAAnalysis.__new__(pipeline.MFAAnalysis)
+    obj.retune_traps = [7, 30]                       # 30 is not in the saved setup
+    obj.stopped_by_user = False
+    saved = []
+    asked = []
+
+    def fake_collect(indices=None, start_pip=None):
+        asked.append((indices, start_pip))
+        return 'confirm', [{'trap_index': 6, 'pip': 101, 'thr_prot': 60, 'thr_body': 90,
+                            'smooth': 2.0, 'snr_scale': 300.0}]
+
+    obj._collect_interactive_parameters = fake_collect
+    obj._save_session_cache = lambda cfgs: saved.append([dict(c) for c in cfgs])
+    configs = [{'trap_index': i, 'pip': 100, 'thr_prot': 120, 'thr_body': 150,
+                'smooth': 1.0, 'snr_scale': None} for i in (2, 6, 9)]
+    assert obj._retune_cached_traps(configs)
+    assert asked == [([6], {6: 100})]                # starts at the saved entrance
+    assert configs[1]['thr_prot'] == 60 and configs[1]['snr_scale'] == 300.0
+    assert configs[0]['thr_prot'] == 120 and configs[2]['thr_prot'] == 120
+    assert saved and saved[0][1]['thr_prot'] == 60
+
+
+def test_retune_stop_aborts():
+    from mfae import pipeline
+    obj = pipeline.MFAAnalysis.__new__(pipeline.MFAAnalysis)
+    obj.retune_traps, obj.stopped_by_user = [3], False
+    obj._collect_interactive_parameters = lambda **k: ('stop', [])
+    obj._save_session_cache = lambda cfgs: pytest.fail("must not save")
+    assert not obj._retune_cached_traps([{'trap_index': 2, 'pip': 50}])
+    assert obj.stopped_by_user

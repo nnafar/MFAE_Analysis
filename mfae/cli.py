@@ -74,6 +74,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="With --batch: also analyse experiments that already have results.")
     parser.add_argument("--fresh", action="store_true",
                         help="Ignore a saved session_cache.json and redo the interactive trap setup.")
+    parser.add_argument("--traps", type=_trap_list, metavar="N[,N...]",
+                        help="Redo the pipette/threshold setup of only these traps (numbers as in "
+                             "the movies and plots, e.g. 7 or 7,12); all other traps keep the saved "
+                             "setup. The experiment is then analysed again. With --batch, pick the "
+                             "experiment with --only.")
+    parser.add_argument("--only", metavar="TEXT",
+                        help="With --batch: only experiments whose name contains TEXT "
+                             "(e.g. Experiment4).")
     parser.add_argument("--debug", action="store_true",
                         help="Show detailed (DEBUG) log messages on screen.")
     parser.add_argument("--show-config", action="store_true",
@@ -86,6 +94,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=f"Config copied by --init-config (default: {DEFAULT_CONFIG.name}, "
                              f"or {DEFAULT_CZI_CONFIG.name} when --data-folder is a .czi file).")
     return parser
+
+
+def _trap_list(text: str) -> List[int]:
+    """'7' or '7,12' -> [7, 12] (trap numbers as shown in the movies, from 1)."""
+    try:
+        traps = sorted({int(t) for t in str(text).replace(" ", "").split(",") if t})
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected trap numbers like 7 or 7,12, got '{text}'")
+    if not traps or min(traps) < 1:
+        raise argparse.ArgumentTypeError(f"trap numbers start at 1, got '{text}'")
+    return traps
 
 
 def _set_yaml_value(text: str, key: str, value: str) -> str:
@@ -402,11 +421,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.debug:
         config.workflow_settings.debug_mode = True
 
+    if args.traps and args.fresh:
+        logger.error("Use either --fresh (redo the whole setup) or --traps (redo single traps).")
+        return 1
+
     analysis = None
     try:
         analysis = MFAAnalysis(config.paths.data_folder, str(config.paths.experiment_id), config,
                                output_root=output_root,
-                               use_session_cache=not args.fresh)
+                               use_session_cache=not args.fresh,
+                               **({'retune_traps': args.traps} if args.traps else {}))
         saved = save_effective_config(config, layered, args.config_path, analysis.results_dir)
         logger.info(f"Settings for this run saved to {saved}")
         return 0 if analysis.run_analysis() else 1

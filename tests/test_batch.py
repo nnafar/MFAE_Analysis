@@ -207,3 +207,50 @@ def test_single_experiment_with_a_batch_config_goes_where_the_batch_would(tmp_pa
     # one outside it, in another condition folder of the setup; 0 V -> aspiration only
     assert cli.main([str(cfg), "--data-folder", str(setup / "0ms_0V" / ASP), "--output-dir", str(out)]) == 0
     assert seen == {"root": out / "Asymmetric_Efield", "name": ASP, "pulse": False}
+
+
+def test_traps_option_redoes_one_experiment_only(tmp_path, monkeypatch):
+    setup = _tree(tmp_path)
+    out = tmp_path / "Output"
+    for name in (PULSED, ASP):                                  # both already analysed
+        d = output_layout.build(out / "Asymmetric_Efield" / name)
+        d['overview'].mkdir(parents=True)
+        (d['overview'] / "trap_summary.csv").write_text("Trap\n1\n")
+    calls = []
+
+    class FakeAnalysis:
+        def __init__(self, path, name, config, output_root=None, use_session_cache=True,
+                     log_mode='w', retune_traps=None):
+            self.name, self.results_dir, self.stopped_by_user = name, Path(output_root) / name, False
+            calls.append(("init", name, use_session_cache, retune_traps))
+
+        def run_analysis(self, setup_only=False):
+            calls.append(("setup" if setup_only else "analysis", self.name))
+            return True
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
+    monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
+    args = types.SimpleNamespace(config_path=ROOT / "config" / "config_asymmetric_tiff.yaml",
+                                 batch=[str(setup)], setup=None, output_dir=out, redo=False,
+                                 fresh=False, check=False, show_config=False, debug=False,
+                                 experiment_id=None, traps=[7], only=None)
+    assert batch.run_batch(args) == 1                          # two experiments: ambiguous
+    assert not calls
+    args.only = "experiment3"
+    assert batch.run_batch(args) == 0
+    assert calls[0] == ("init", PULSED, True, [7])             # saved setup kept, trap 7 redone
+    assert [c[0] for c in calls] == ["init", "setup", "init", "analysis"]
+    args.fresh = True
+    assert batch.run_batch(args) == 1                          # --fresh and --traps conflict
+
+
+def test_trap_list_parsing():
+    assert cli._trap_list("7") == [7]
+    assert cli._trap_list("12, 7,7") == [7, 12]
+    with pytest.raises(Exception):
+        cli._trap_list("0")
+    with pytest.raises(Exception):
+        cli._trap_list("seven")

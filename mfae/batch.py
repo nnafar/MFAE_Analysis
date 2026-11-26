@@ -174,6 +174,24 @@ def run_batch(args) -> int:
         logger.warning("--experiment-id is ignored with --batch: each experiment is named after "
                        "its file or folder.")
 
+    only = getattr(args, 'only', None)
+    traps = getattr(args, 'traps', None)
+    if only:
+        selected = [(e, o) for e, o in selected if only.lower() in default_experiment_id(e).lower()]
+        if not selected:
+            logger.error(f"--only {only}: no experiment name contains '{only}'.")
+            return 1
+    if traps:
+        if args.fresh:
+            logger.error("Use either --fresh (redo the whole setup) or --traps (redo single traps).")
+            return 1
+        names = sorted({default_experiment_id(e) for e, _ in selected})
+        if len(names) > 1:
+            logger.error("--traps redoes traps of one experiment, but the batch holds %d: %s. "
+                         "Pick one with --only, e.g. --only %s",
+                         len(names), ", ".join(names), names[0].split("-")[0].rsplit("_", 1)[-1])
+            return 1
+
     status: Dict[str, str] = {}
     configs = {}
     for exp_path, out_root in selected:
@@ -181,7 +199,7 @@ def run_batch(args) -> int:
         if name in configs:
             status[name + " (duplicate)"] = f"skipped: same name as an earlier experiment ({exp_path})"
             continue
-        if not args.redo and not args.check and not args.show_config and is_analysed(out_root / name):
+        if not args.redo and not traps and not args.check and not args.show_config and is_analysed(out_root / name):
             status[name] = "already analysed (skipped; --redo to analyse again)"
             continue
         config, layered = load_config(args.config_path, exp_path, type_from_name=True)
@@ -222,7 +240,8 @@ def run_batch(args) -> int:
         analysis = None
         try:
             analysis = MFAAnalysis(exp_path, name, config, output_root=out_root,
-                                   use_session_cache=not args.fresh)
+                                   use_session_cache=not args.fresh,
+                                   **({'retune_traps': traps} if traps else {}))
             save_effective_config(config, layered, args.config_path, analysis.results_dir)
             if analysis.run_analysis(setup_only=True):
                 ready.append(name)
