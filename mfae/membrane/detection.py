@@ -717,6 +717,10 @@ class LineDetectionMFA:
                 "W/S: +/- 10 | A/D: +/- 1",
             ]
             if enhanced_mode:
+                fs = float(image_params.get('membrane_snr_full_scale', 40.0))
+                cfg_fs = float(getattr(self, '_configured_full_scale', fs))
+                overlay_lines.append(
+                    f"Scale: 255 = {fs:g} sigma" + (" (fitted to bright cell)" if fs > cfg_fs else ""))
                 overlay_lines.append(
                     f"F: faint-cell smoothing ({image_params.get('membrane_denoise_sigma_along', 1.0):g} px)")
             overlay_lines.append("ENTER: Confirm | R: Restart")
@@ -747,6 +751,8 @@ class LineDetectionMFA:
         image_params = self.params['image_processing']
         image_params['membrane_snr_full_scale'] = self._configured_full_scale
         image_params['membrane_snr_full_scale'] = utils.suggest_membrane_full_scale(test_image, self.params)
+        logger.info("Membrane threshold scale: 255 = %g sigma (config %g)",
+                    image_params['membrane_snr_full_scale'], self._configured_full_scale)
 
     # Visualization Helper Methods
 
