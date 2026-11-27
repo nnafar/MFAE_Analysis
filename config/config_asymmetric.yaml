@@ -37,7 +37,7 @@ paths:
   image_format: tiff
   # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
   data_folder:
-    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\5ms_100V'   # 5ms_100V, 100us_100V, ...
+    - 'E:\Data\MFAE\Asymmetric_Efield\5ms_100V'   # 5ms_100V, 100us_100V, ...
     # - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Aspiration'
     # - 'E:\Data\MFAE\Aspiration'   (add more folders like this; '#' switches a line off)
   # Example experiment name (only used when no folder is given); names must follow:
@@ -50,7 +50,7 @@ experiment_parameters:
   scale_factor: 0.315
   # Aspiration pressure [Pa] = (P_inlet - P_waste_outlet) x 0.55
   # (factor from Jessy's COMSOL simulation)
-  constant_pressure: 1100
+  constant_pressure: 1900
   # Seconds between frames; used only if the images have no timing metadata
   # (asymmetric runs 1.75 s, aspiration runs 1.72 s)
   frame_interval: 1.75
