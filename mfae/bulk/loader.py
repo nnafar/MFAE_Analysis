@@ -65,7 +65,7 @@ def _compute_reff(width_um: float, height_um: float) -> float:
 # Filename-tag policy
 # ---------------------------------------------------------------------------
 # Full-protrusion detection CSVs are named
-#     Trap_XX_protrusion_and_shape[_<TAG>].csv   (older results: trap_XX_detection_full[_<TAG>].csv)
+#     Trap_XX_protrusion_trace[_<TAG>].csv   (older results: Trap_XX_protrusion_and_shape / trap_XX_detection_full)
 # where <TAG> is a manual annotation. The loader routes each candidate CSV
 # into one of three outcomes:
 #
@@ -377,26 +377,26 @@ class BulkDataLoader:
                 except Exception as e:
                     logger.warning(f"   Could not read shear CSV: {e}")
 
-        # Current layout (1_Protrusion_and_Shape/Data, 2_Dye_Uptake/Data,
-        # 3_Actin/Data) first, then the older layouts.
+        # Current layout (<section>/Data/Traces) first, then the older layouts
+        # (CSVs directly in Data/, 'Protrusion Length Detection/...', flat).
         dir_uptake = output_layout.first_existing(output_layout.dye_traces_candidates(meta.full_path))
         dir_full   = output_layout.first_existing(output_layout.full_csv_candidates(meta.full_path))
         dir_actin  = output_layout.first_existing(output_layout.actin_traces_candidates(meta.full_path))
 
-        # Trap_XX_protrusion_and_shape[_TAG].csv (current) or
+        # Trap_XX_protrusion_trace[_TAG].csv (current) or Trap_XX_protrusion_and_shape /
         # trap_XX_detection_full[_TAG].csv (older results)
         all_full_candidates = sorted(
-            {f for pat in ("[Tt]rap_*_protrusion_and_shape*.csv", "[Tt]rap_*_detection_full*.csv")
+            {f for pat in ("[Tt]rap_*_protrusion_trace*.csv", "[Tt]rap_*_protrusion_and_shape*.csv", "[Tt]rap_*_detection_full*.csv")
              for f in dir_full.glob(pat)}
         ) if dir_full.exists() else []
 
         for f_file in all_full_candidates:
             stem = f_file.stem
             # Strip the fixed prefix so _parse_fate_tag only sees the trailing
-            # annotation. Expected stem shape: 'Trap_XX_protrusion_and_shape[_TAG]'
+            # annotation. Expected stem shape: 'Trap_XX_protrusion_trace[_TAG]'
             # (or the older 'trap_XX_detection_full[_TAG]').
             prefix_match = re.match(
-                r"^trap_\d+_(?:protrusion_and_shape|detection_full)", stem, re.IGNORECASE
+                r"^trap_\d+_(?:protrusion_trace|protrusion_and_shape|detection_full)", stem, re.IGNORECASE
             )
             if not prefix_match:
                 logger.debug(f"  Unrecognised filename shape, skipping: {f_file.name}")

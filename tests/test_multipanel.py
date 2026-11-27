@@ -142,7 +142,7 @@ def test_worker_outputs(tmp_path, save_singles):
     assert {'trace', 'membrane_kymo', 'actin', 'pipette_x'} <= set(result['plot_data'])
     from mfae.files import output_layout as ol
     d = ol.complete(dirs)
-    assert (d['full_csv'] / 'Trap_01_protrusion_and_shape.csv').exists()
+    assert (d['full_csv'] / 'Trap_01_protrusion_trace.csv').exists()
     assert not list(tmp_path.rglob('*filtered*'))       # filtered CSV no longer written
 
     # Output layout: CSVs, kymograph CSVs and movies in their own sub-folders.

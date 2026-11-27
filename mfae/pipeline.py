@@ -321,7 +321,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 dirs['root'], f"trap_{trap_index+1:02d}",
                 dir_full=dirs['full_csv'],
                 time_points=time_data,
-                full_name=output_layout.trap_file('protrusion_csv', trap_index + 1),
+                full_name=output_layout.protrusion_csv_name(dirs['full_csv'], trap_index + 1),
             )
         except Exception:
             worker_logger.warning(f"Trap {trap_index+1}: CSV export failed.", exc_info=True)
@@ -925,6 +925,10 @@ class MFAAnalysis:
 
             # --- Phase 2: Parallel Processing ---
             logger.info("\n== PHASE 2: PARALLEL PROCESSING ==")
+            removed = output_layout.remove_flat_data_files(self.results_dir)
+            if removed:
+                logger.info(f"Moved {removed} CSV file(s) of the earlier layout into Data/Traces and "
+                            f"Data/Kymographs (hand-added tags such as _R are kept).")
             
             # 1. Cache Membrane (Standard)
             mem_mmap_path, mem_shape, mem_dtype = self._prepare_shared_memory_stack(self.file_reader.tif_files, "Membrane")

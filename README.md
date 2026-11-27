@@ -506,16 +506,19 @@ Output/<experiment_id>/
 ├── 1_Protrusion_and_Shape/            membrane channel
 │   ├── Figures/                       All_traps_protrusion_length.pdf, All_traps_membrane_kymographs.pdf,
 │   │                                  All_traps_area_change.pdf, All_traps_body_solidity.pdf
-│   ├── Data/                          Trap_XX_protrusion_and_shape.csv (every frame),
-│   │                                  Trap_XX_membrane_kymograph.csv
+│   ├── Data/
+│   │   ├── Traces/                    Trap_XX_protrusion_trace.csv (length, areas, solidity; every frame)
+│   │   └── Kymographs/                Trap_XX_membrane_kymograph.csv
 │   └── Movies/                        Trap_XX_tracking.avi (masks, tip and length trace per frame)
 ├── 2_Dye_Uptake/                      dye channel                       (if enabled)
 │   ├── Figures/                       All_traps_dye_uptake.pdf, _dye_kymographs.pdf, _dye_profiles_along_cell.pdf
-│   ├── Data/                          Trap_XX_dye_uptake.csv, Trap_XX_dye_kymograph.csv
+│   ├── Data/Traces/                   Trap_XX_dye_uptake.csv
+│   ├── Data/Kymographs/               Trap_XX_dye_kymograph.csv
 │   └── Movies/                        Trap_XX_dye_masks.avi
 ├── 3_Actin/                           actin channel                     (if enabled)
 │   ├── Figures/                       All_traps_actin_kymographs.pdf, All_traps_actin_zones.pdf
-│   ├── Data/                          Trap_XX_actin.csv, Trap_XX_actin_kymograph.csv
+│   ├── Data/Traces/                   Trap_XX_actin.csv
+│   ├── Data/Kymographs/               Trap_XX_actin_kymograph.csv
 │   └── Movies/                        Trap_XX_actin_zones.avi, Trap_XX_actin_cortex.avi
 ├── 4_Mechanics/                       Flow_conditions.csv/.pdf (wall shear stress, flow rate),
 │                                      Viscoelastic_fits.csv             (if fitting is on)
@@ -637,12 +640,14 @@ nothing to are removed. Figures can be redrawn from `0_Tables/Figure_Data/` with
 
 In Spyder: `runfile('C:/GitHub/MFAE_Analysis/run_bulk_analysis.py', wdir='C:/GitHub/MFAE_Analysis')`.
 
-**Marking cells by hand.** Add a tag to a trap's `Trap_XX_protrusion_and_shape.csv` file name
-(e.g. `Trap_03_protrusion_and_shape_R.csv`) to tell the bulk analysis what happened to that cell:
+**Marking cells by hand.** Add a tag to a trap's `Data/Traces/Trap_XX_protrusion_trace.csv` file name
+(e.g. `Trap_03_protrusion_trace_R.csv`) to tell the bulk analysis what happened to that cell:
 `_R` ruptured after the pulse (still analysed); `_R0` ruptured before the pulse, `_DOA` / `_PI`
 not viable, `_after` / `_POST` arrived after the pulse, `_MASK` / `_SHAPE` / `_IRREGULAR` detection
-failed (these are excluded and only counted in the attrition table). Older
-`trap_XX_detection_full_<TAG>.csv` names work the same way.
+failed (these are excluded and only counted in the attrition table). A re-analysis keeps the tag
+(it writes into the tagged file). Older names (`Trap_XX_protrusion_and_shape_<TAG>.csv`,
+`trap_XX_detection_full_<TAG>.csv`) work the same way; a re-analysis moves them into `Data/Traces/`
+with the new name and the tag kept.
 
 ## 7. Troubleshooting
 

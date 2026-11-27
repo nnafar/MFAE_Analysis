@@ -13,14 +13,16 @@ from mfae.files import output_layout as ol  # noqa: E402
 def test_build_layout(tmp_path):
     d = ol.build(tmp_path)
     assert d['protrusion'] == tmp_path / '1_Protrusion_and_Shape' / 'Figures'
-    assert d['full_csv'] == tmp_path / '1_Protrusion_and_Shape' / 'Data'
-    assert d['membrane_kymo'] == tmp_path / '1_Protrusion_and_Shape' / 'Data'
+    assert d['full_csv'] == tmp_path / '1_Protrusion_and_Shape' / 'Data' / 'Traces'
+    assert d['membrane_kymo'] == tmp_path / '1_Protrusion_and_Shape' / 'Data' / 'Kymographs'
     assert d['movies'] == tmp_path / '1_Protrusion_and_Shape' / 'Movies'
     assert d['morphology'] == tmp_path / '1_Protrusion_and_Shape' / 'Figures'
     assert d['dye'] == tmp_path / '2_Dye_Uptake' / 'Figures'
-    assert d['dye_traces'] == tmp_path / '2_Dye_Uptake' / 'Data'
+    assert d['dye_traces'] == tmp_path / '2_Dye_Uptake' / 'Data' / 'Traces'
+    assert d['dye_kymo'] == tmp_path / '2_Dye_Uptake' / 'Data' / 'Kymographs'
     assert d['dye_movies'] == tmp_path / '2_Dye_Uptake' / 'Movies'
-    assert d['actin_traces'] == tmp_path / '3_Actin' / 'Data'
+    assert d['actin_traces'] == tmp_path / '3_Actin' / 'Data' / 'Traces'
+    assert d['actin_kymo'] == tmp_path / '3_Actin' / 'Data' / 'Kymographs'
     assert d['actin_movies'] == tmp_path / '3_Actin' / 'Movies'
     assert d['fitting'] == tmp_path / '4_Mechanics'
     assert d['overview'] == tmp_path / '0_Overview'
@@ -39,7 +41,8 @@ def test_complete_fills_missing_keys_from_parents(tmp_path):
 
 def test_file_names():
     assert ol.trap_file('dye_csv', 3) == 'Trap_03_dye_uptake.csv'
-    assert ol.trap_file('protrusion_csv', 12) == 'Trap_12_protrusion_and_shape.csv'
+    assert ol.trap_file('protrusion_csv', 12) == 'Trap_12_protrusion_trace.csv'
+    assert 'Trap_12_protrusion_and_shape.csv' in ol.trap_file_candidates('protrusion_csv', 12)
     assert ol.trap_file_candidates('dye_csv', 3)[1:] == ['Trap_03_Uptake_Data.csv', 'Trap_3_Uptake_Data.csv']
 
 
@@ -50,8 +53,11 @@ def test_readers_fall_back_to_old_layouts(tmp_path):
     older = tmp_path / 'Protrusion Length Detection' / 'Full protrusion detection'
     older.mkdir(parents=True)
     assert ol.first_existing(ol.full_csv_candidates(tmp_path)) == older
-    new = tmp_path / '1_Protrusion_and_Shape' / 'Data'
-    new.mkdir(parents=True)
+    flat_data = tmp_path / '1_Protrusion_and_Shape' / 'Data'           # previous layout
+    flat_data.mkdir(parents=True)
+    assert ol.first_existing(ol.full_csv_candidates(tmp_path)) == flat_data
+    new = flat_data / 'Traces'
+    new.mkdir()
     assert ol.first_existing(ol.full_csv_candidates(tmp_path)) == new
     assert ol.first_existing(ol.session_cache_candidates(tmp_path)) == tmp_path / 'Run_Info' / 'session_cache.json'
 
@@ -195,3 +201,32 @@ def test_thresholds_only_redoes_every_saved_trap_and_keeps_entrances():
     assert asked == [([2, 6, 9], {2: 102, 6: 106, 9: 109}, True)]
     assert [c['thr_prot'] for c in configs] == [50, 50, 50]
     assert [c['pip'] for c in configs] == [102, 106, 109]          # entrances kept
+
+
+def test_flat_data_files_of_the_previous_layout_are_tidied(tmp_path):
+    data = tmp_path / '1_Protrusion_and_Shape' / 'Data'
+    (data / 'Traces').mkdir(parents=True)
+    for name in ('Trap_01_protrusion_and_shape.csv', 'Trap_01_membrane_kymograph.csv', 'notes.csv',
+                 'Trap_03_protrusion_and_shape_R.csv'):
+        (data / name).write_text(name)
+    dye = tmp_path / '2_Dye_Uptake' / 'Data'
+    dye.mkdir(parents=True)
+    (dye / 'Trap_03_dye_uptake.csv').write_text('x')
+    assert ol.remove_flat_data_files(tmp_path) == 4
+    assert sorted(p.name for p in data.iterdir()) == ['Traces', 'notes.csv']      # own files kept
+    tagged = data / 'Traces' / 'Trap_03_protrusion_trace_R.csv'                  # tag kept, moved
+    assert tagged.read_text() == 'Trap_03_protrusion_and_shape_R.csv'
+    # the analysis then writes trap 3 into the tagged file, trap 1 under the plain name
+    assert ol.protrusion_csv_name(data / 'Traces', 3) == 'Trap_03_protrusion_trace_R.csv'
+    assert ol.protrusion_csv_name(data / 'Traces', 1) == 'Trap_01_protrusion_trace.csv'
+
+
+def test_readme_lists_the_data_subfolders(tmp_path):
+    d = ol.build(tmp_path)
+    for key, name in (('full_csv', 'Trap_01_protrusion_trace.csv'),
+                      ('membrane_kymo', 'Trap_01_membrane_kymograph.csv')):
+        d[key].mkdir(parents=True, exist_ok=True)
+        (d[key] / name).write_text('x')
+    text = ol.write_readme(tmp_path, 'X').read_text()
+    assert 'Data/Traces/' in text and 'Data/Kymographs/' in text
+    assert 'Trap_XX_protrusion_trace.csv' in text and 'protrusion length' in text
