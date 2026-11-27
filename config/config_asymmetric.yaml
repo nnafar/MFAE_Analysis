@@ -37,8 +37,8 @@ paths:
   image_format: tiff
   # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
   data_folder:
-    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield'   # 5ms_100V, 100us_100V, ...
-    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Aspiration'
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\5ms_100V'   # 5ms_100V, 100us_100V, ...
+    # - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Aspiration'
     # - 'E:\Data\MFAE\Aspiration'   (add more folders like this; '#' switches a line off)
   # Example experiment name (only used when no folder is given); names must follow:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
