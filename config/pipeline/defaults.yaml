@@ -251,7 +251,7 @@ image_processing:
   tip_level_fraction: 0.25           # Tip = where the centre-line profile drops to bg + this x (protrusion - bg); lower follows dimmer tips
   tip_tracking: mask                 # mask: each frame's tip from its own mask (+ spike filter). kymograph: tip followed
                                      # through time on the centre-line profile; experimental, still being tuned on real data
-  tip_jump_cost: 1.0                 # kymograph: penalty per px of tip movement (up to 10 px), in noise units (higher = steadier)
+  tip_jump_cost: 3.0                 # kymograph: penalty per px of tip movement (up to 10 px), in noise units (higher = steadier)
   membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
   membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI
   membrane_relative_level: 0.3       # Mask pixels must also reach this fraction of the local cell signal; drops the halo around bright cells (0 = off)

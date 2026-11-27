@@ -495,7 +495,7 @@ class ImageProcessingConstants(_StrictModel):
         )
     )
     tip_jump_cost: float = Field(
-        default=1.0, ge=0.0, le=20.0,
+        default=3.0, ge=0.0, le=20.0,
         description="Kymograph tracking: penalty per pixel of tip movement between frames (up to 10 px), in noise units of edge strength. Higher = steadier, slower to follow faint fast changes; bright edges are followed regardless."
     )
     tip_level_fraction: float = Field(
