@@ -492,6 +492,17 @@ The settings are in `config/pipeline/defaults.yaml` under `image_processing` (`m
 to the older CLAHE-based segmentation; thresholds picked in one mode are not comparable with the
 other.
 
+**Length spikes (faint cells).** With a faint cell the tip can jump for a frame or two onto faint
+signal ahead of it, or lose the faint far end of the protrusion. Each frame's length is compared
+with the median of the 7 frames around it; a frame that is at least 2 µm and 3 robust standard
+deviations away is replaced by that median. Runs of up to 3 frames count as spikes; anything that
+lasts longer (slip, a new cell, real growth) is kept, at its exact frame. This runs before entry
+and exit detection, so a spike can no longer end tracking. The trace CSV keeps the measured value
+(`Protrusion_Length_raw_um`) and marks the replaced frames (`Spike_Removed`). Settings:
+`spike_filter_window` (0 = off), `spike_filter_min_jump_um`, `spike_filter_n_mad` under
+`rupture_detection` in `config/pipeline/defaults.yaml`. If a faint cell still flickers in longer
+runs, raise `membrane_temporal_window` (masks from the median of more frames) to 5.
+
 ## 4. Output
 
 Each experiment gets one folder. It contains a `README.txt` that lists every file in it, says what

@@ -98,6 +98,17 @@ rupture_detection:
   exit_sustained_frames: 3           # Consecutive frames the drop must last
   cell_change_drop_ratio: 0.5         # Length drops below half its recent level and stays = the cell left / a new one came (0 = off)
   exit_at_roi_edge_frames: 3         # Stop tracking once the tip stays at the left ROI edge this many frames (0 = off)
+
+  # --- Length spikes (faint cells) ---
+  # A frame whose length is far from the median of the frames around it (the
+  # tip briefly jumping onto faint signal ahead, or losing the faint far end)
+  # is replaced by that median. Runs of up to window//2 frames count as spikes;
+  # anything lasting longer (slip, a new cell, real growth) is kept. Runs before
+  # entry/exit detection, so spikes can't end tracking. The raw length stays in
+  # the trace CSV (Protrusion_Length_raw_um, Spike_Removed).
+  spike_filter_window: 7             # frames (0 = off)
+  spike_filter_min_jump_um: 2.0      # only jumps at least this big [um] ...
+  spike_filter_n_mad: 3.0            # ... and this many robust SDs of the window
   roi_edge_margin_px: 3              # Tip within this many px of the edge counts as at the edge
   pulse_exit_blanking_frames: 5      # Frames after the pulse ignored for exit detection
 

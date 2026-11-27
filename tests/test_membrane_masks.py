@@ -761,3 +761,41 @@ def test_back_steps_through_the_windows_of_a_trap(monkeypatch):
     monkeypatch.setattr(det2, "_interactive_threshold_selection",
                         lambda img, pip, clip_walls, initial=None: ('back', None))
     assert det2.run_detection(skip_pipette=True)['signal'] == 'back'
+
+
+def test_spike_filter_removes_short_jumps_and_keeps_real_changes():
+    from mfae.membrane.detection import LineDetectionMFA
+    f = LineDetectionMFA._remove_length_spikes
+    rng = np.random.default_rng(0)
+    base = list(60 + rng.normal(0, 1.0, 40))                  # steady tip, 1 px jitter
+    trace = list(base)
+    trace[10] = 20                                             # lost the faint far end
+    trace[20] = trace[21] = 110                                # jumped onto signal ahead (2 frames)
+    trace[30:33] = [15, 15, 15]                                # 3-frame run (= window // 2)
+    out, flags = f(trace, window=7, min_jump_px=6)
+    assert [i for i, s in enumerate(flags) if s] == [10, 20, 21, 30, 31, 32]
+    assert all(abs(out[i] - 60) < 3 for i in (10, 20, 21, 30, 31, 32))
+    assert all(out[i] == trace[i] for i in range(40) if not flags[i])   # jitter untouched
+
+    step = [60.0] * 15 + [20.0] * 15                           # real, lasting change (slip)
+    out, flags = f(step, window=7, min_jump_px=6)
+    assert out == step and not any(flags)                      # kept, at its exact frame
+
+    ramp = [30 + 2.0 * i for i in range(30)]                   # steady growth
+    assert f(ramp, window=7, min_jump_px=6)[0] == ramp
+    assert f(trace, window=0)[0] == trace                      # 0 = off
+
+
+def test_single_frame_spikes_do_not_end_tracking():
+    """Faint cells: one frame at the box edge or one frame of a short mask used to
+    count towards 'left ROI' / 'cell change'; now they are spikes."""
+    L = 60
+    lengths = [0] * 3 + [L] * 30
+    lengths[12] = PIP                     # one frame: mask leaks to the box edge
+    lengths[13] = PIP
+    lengths[20] = 20                      # one frame: far end lost
+    res = _run_cells(lengths)
+    assert len(res['cell_segments']) == 1 and res['exit_reason'] is None
+    um = np.asarray(res['protrusion_lengths_um'])
+    assert np.nanmax(um[4:]) < (L + 6) * 0.1 and np.nanmin(um[4:]) > (L - 6) * 0.1
+    assert res['spike_removed'][12] and res['spike_removed'][13] and res['spike_removed'][20]

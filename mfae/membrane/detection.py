@@ -1702,7 +1702,21 @@ class LineDetectionMFA:
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
             self.results['frame_masks'].append((mask_prot, mask_body_standard))
 
-        # Post-Processing: Smoothing
+        # Post-Processing: spikes, then (optional) smoothing
+        r_cfg_spk = self.params.get('rupture_detection', {})
+        self.results['protrusion_lengths_raw_px'] = list(protrusion_px_list)
+        protrusion_px_list, spikes = self._remove_length_spikes(
+            protrusion_px_list,
+            window=int(r_cfg_spk.get('spike_filter_window', 7)),
+            min_jump_px=float(r_cfg_spk.get('spike_filter_min_jump_um', 2.0)) / max(scale_factor, 1e-9),
+            n_mad=float(r_cfg_spk.get('spike_filter_n_mad', 3.0)))
+        self.results['spike_removed'] = spikes
+        for i, s in enumerate(spikes):
+            if s and i < len(tip_at_edge):
+                tip_at_edge[i] = False      # a one-off leak to the box edge, not the tip leaving
+        if any(spikes):
+            logger.debug("%s: %d length spike(s) replaced by the local median.",
+                         getattr(self, 'trap_label', 'trap'), int(sum(spikes)))
         if self.params.get('rupture_detection', {}).get('enable_smoothing', True):
             self.results['protrusion_lengths_px'] = self._simple_smoothing_filter(protrusion_px_list)
         else:
@@ -1986,6 +2000,50 @@ class LineDetectionMFA:
                     self.results[key][i] = np.nan
         
         self.results['downstream_intensities'] = downstream_int_list
+
+    @staticmethod
+    def _remove_length_spikes(values: List[float], window: int = 7, min_jump_px: float = 6.0,
+                              n_mad: float = 3.0) -> Tuple[List[float], List[bool]]:
+        """
+        Hampel filter on the length trace: a frame is a spike when it differs
+        from the median of the `window` frames centred on it by more than
+        max(n_mad x robust SD of that window, min_jump_px); it is replaced by
+        that median. Runs of up to window//2 frames are caught; longer changes
+        (slip, a new cell, real growth or retraction) move the median with them
+        and are kept, and a step keeps its exact position. Frames without a
+        length (NaN) are left alone. Returns (filtered values, spike flags).
+        """
+        v = np.asarray(values, dtype=np.float64)
+        n = len(v)
+        out, flags = v.copy(), [False] * n
+        if window < 3 or n < 3:
+            return list(out), flags
+        h = window // 2
+        for i in range(n):
+            if not np.isfinite(v[i]):
+                continue
+            w = v[max(0, i - h):min(n, i + h + 1)]
+            w = w[np.isfinite(w)]
+            if len(w) < 3:
+                continue
+            med = float(np.median(w))
+            spread = 1.4826 * float(np.median(np.abs(w - med)))
+            if abs(v[i] - med) > max(n_mad * spread, min_jump_px):
+                out[i], flags[i] = med, True
+        return list(out), flags
+
+    def _raw_length_um_column(self, num_frames: int) -> List[float]:
+        """Length before spike filter and smoothing [um]; NaN where the tracked length is NaN."""
+        sf = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
+        raw = list(self.results.get('protrusion_lengths_raw_px') or [])
+        tracked = list(self.results.get('protrusion_lengths_um') or [])
+        out = []
+        for i in range(num_frames):
+            r = raw[i] * sf if i < len(raw) and raw[i] is not None else np.nan
+            if i < len(tracked) and not np.isfinite(tracked[i]):
+                r = np.nan
+            out.append(r)
+        return out
 
     def _simple_smoothing_filter(self, values: List[float], window_size: int = 3) -> List[float]:
         """Applies a small Rolling Median filter to smooth out jitter in frame-by-frame data."""
@@ -2659,6 +2717,9 @@ class LineDetectionMFA:
             'Time_s': time_col,
             'Protrusion_Length_px': self.results['protrusion_lengths_px'],
             'Protrusion_Length_um': self.results['protrusion_lengths_um'],
+            # before the spike filter / smoothing, and which frames it replaced
+            'Protrusion_Length_raw_um': self._raw_length_um_column(num_frames),
+            'Spike_Removed': (list(self.results.get('spike_removed') or []) + [False] * num_frames)[:num_frames],
             'Protrusion_Area_um2': self.results['protrusion_area_um2'],
             'Body_Area_um2': self.results['body_area_um2'],
             'Total_Area_um2': self.results['total_area_um2'],
