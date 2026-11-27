@@ -502,7 +502,9 @@ judged in noise units so a faint far end counts and an internal step next to it 
 the tip path through all frames is the one with the best total score, with a penalty for jumping
 between frames. A wrong edge in single frames or short runs can't pull the path away; bright edges
 are followed however fast they move. Where a faint far end drops below the threshold the mask gets
-shorter, but the tracked length does not. Areas and shape still come from the masks; the trace CSV
+shorter, but the tracked length does not. When a cell is there (entry, exit, a new cell arriving) is still
+decided from the masks, exactly as with the mask-based tip; the tracker only moves the tip inside
+the analysed cell, tracked over that cell's frames alone. Areas and shape still come from the masks; the trace CSV
 also has the mask-based length (`Protrusion_Length_mask_um`) for comparison. Set
 `tip_tracking: mask` under `image_processing` in `config/pipeline/defaults.yaml` to go back to the
 mask-based tip; `tip_jump_cost` sets how strongly jumps are resisted.

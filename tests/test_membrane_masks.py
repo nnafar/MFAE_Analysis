@@ -911,3 +911,25 @@ def test_kymograph_ignores_the_channel_end_line():
 
     full = np.full((n, Wd), 70.0) + rng.normal(0, 2.0, (n, Wd))    # protrusion up to the box edge
     assert np.allclose(mask_channel_end(full), full)                # left alone
+
+
+@pytest.mark.parametrize('lengths, pulse', [
+    ([0] * 3 + list(range(30, 110, 10)) + [PIP] + [20, 25, 30, 35, 40, 45, 50, 55, 60, 62, 64], 'end'),
+    ([0] * 3 + list(range(30, 110, 10)) + [PIP] * 4 + [0] * 3 + [20, 30, 40, 45, 50, 52, 54, 56], 'end'),
+    ([0] * 3 + list(range(30, 110, 10)) + [PIP] + [20, 25, 30, 35], None),
+    ([0] * 3 + list(range(30, 110, 10)) + [PIP] * 4 + [0] * 8, 'end'),
+    ([0] * 3 + list(range(30, 100, 5)) + [100, 100] + [8] * 12 + [20, 30, 40, 45, 50, 52, 54], 'drop'),
+])
+def test_kymograph_mode_finds_the_same_cells_as_mask_mode(lengths, pulse):
+    """Entry, exit and new cells are decided from the masks in both modes; the
+    kymograph only moves the tip inside the analysed cell."""
+    p = {'end': len(lengths) - 3, 'drop': lengths.index(8) if 8 in lengths else None, None: None}[pulse]
+    a = _run_cells(lengths, pulse_idx=p, tip_tracking='mask')
+    b = _run_cells(lengths, pulse_idx=p, tip_tracking='kymograph')
+    assert a['cell_segments'] == b['cell_segments']
+    assert (a['entry_frame_index'], a['exit_frame_index'], a['selected_cell']) == \
+           (b['entry_frame_index'], b['exit_frame_index'], b['selected_cell'])
+    La, Lb = np.asarray(a['protrusion_lengths_px'], float), np.asarray(b['protrusion_lengths_px'], float)
+    assert np.array_equal(np.isnan(La), np.isnan(Lb))                  # same frames tracked
+    both = ~np.isnan(La)
+    assert np.median(np.abs(La[both] - Lb[both])) < 3                  # same tip on clean cells
