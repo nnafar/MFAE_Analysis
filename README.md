@@ -47,28 +47,30 @@ on Linux install it with your package manager (e.g. `sudo apt install python3-tk
 
 ## 2. Quick start (one experiment)
 
-All config files live in the `config/` folder. Two templates are the starting point for every
-experiment:
+All config files live in the `config/` folder. There is **one config per image format**:
 
-| Template | For |
+| Config | For |
 |---|---|
-| `config/config_tiff_template.yaml` | A folder of exported `.tif` files |
-| `config/config_czi_template.yaml` | A Zeiss `.czi` file |
+| `config/config_tiff.yaml` | All exported `.tif` data (asymmetric E-field and aspiration controls) |
+| `config/config_czi.yaml` | All Zeiss `.czi` data (symmetric E-field) |
 
-Don't edit the templates themselves; make a copy per experiment (or per series of experiments
-recorded with the same settings). `config/defaults.yaml` holds the pipeline settings and is the
-same for everyone.
+These two cover the lab's data as they are: list your data folders in them and run them with
+`--batch` (see [Many experiments at once](#many-experiments-at-once-batch)). Pulsed or
+aspiration-only, and the pulse frame, are read from each experiment's name, so the same config
+serves every condition. Only make a new config for data recorded with different settings (another
+objective, pressure or channel order). `config/defaults.yaml` holds the pipeline settings and is
+the same for everyone. Older per-folder configs are kept in `config/archive/` for reference.
 
-**Step 1 – create a config file** from the template, with your data folder filled in:
+**Step 1 – a config file.** For the lab's data, use `config/config_tiff.yaml` or `config/config_czi.yaml` with `--data-folder` and skip to step 2. For data recorded with other settings, create your own copy with the data folder filled in:
 
 ```bash
 python run_experiment.py --init-config config/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10"
 ```
 
-This copies `config/config_tiff_template.yaml`, or `config/config_czi_template.yaml` when
+This copies `config/config_tiff.yaml`, or `config/config_czi.yaml` when
 `--data-folder` is a `.czi` file. The experiment name defaults to the folder's (or file's) name,
 and `experiment_type` is set from its voltage. To start from one of your own configs instead,
-add `--from config/<your config>.yaml`. You can also just copy a template by hand and fill in
+add `--from config/<your config>.yaml`. You can also just copy one of the two by hand and fill in
 `data_folder` and `experiment_id`.
 
 A user config holds everything about one experiment, and nothing else:
@@ -81,7 +83,7 @@ A user config holds everything about one experiment, and nothing else:
 | Interactive setup | which frame is shown during setup, starting trap-box size |
 | Computer | number of CPU cores |
 
-Every one of these must be present (copy from the matching template if one is missing). Open the
+Every one of these must be present (copy from `config_tiff.yaml` / `config_czi.yaml` if one is missing). Open the
 file and check the values, in particular `scale_factor` (µm per pixel for your objective and
 binning) and the channel settings.
 
@@ -138,32 +140,28 @@ Typing `python run_experiment.py ...` in the console gives `SyntaxError: invalid
 
 Put the folders you want to analyse in a config, under `data_folder`, and run it with `--batch`.
 Every experiment in those folders is found (at any depth): each `.czi` file for a CZI config, each
-folder of `.tif` images for a TIFF config. Experiments that need other settings go in another
-config with their own folders; run that one the same way.
+folder of `.tif` images for a TIFF config. Each listed folder gets its own results folder.
 
-The configs for your data are ready:
-
-| Config | Folders | Settings |
+| Config | Folders | Results |
 |---|---|---|
-| `config/config_symmetric_czi.yaml` | `MFAE\Symmetric_Efield` | symmetric microscope (.czi) |
-| `config/config_asymmetric_tiff.yaml` | `MFAE\Asymmetric_Efield\5ms_100V` | asymmetric (.tif) |
-| `config/config_asymmetric_100us_tiff.yaml` | `MFAE\Asymmetric_Efield\100us_100V` | asymmetric, 100 µs settings |
-| `config/config_aspiration_tiff.yaml` | `MFAE\Aspiration` | aspiration only (.tif) |
+| `config/config_tiff.yaml` | `MFAE\Asymmetric_Efield` (all conditions), `MFAE\Aspiration` | `Output/Asymmetric_Efield/`, `Output/Aspiration/` |
+| `config/config_czi.yaml` | `MFAE\Symmetric_Efield` | `Output/Symmetric_Efield/` |
 
-In Spyder, one line per config:
+In Spyder, one line per format:
 
 ```python
-runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_symmetric_czi.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
-runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmetric_tiff.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
-runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmetric_100us_tiff.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
-runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_aspiration_tiff.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
+runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_tiff.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
+runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_czi.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
 ```
+
+A folder that is not in the list can be given after `--batch`, e.g.
+`config/config_tiff.yaml --batch "E:/Data/MFAE/Aspiration"`.
 
 **One experiment** with the same config: give it with `--data-folder` instead of `--batch`. Its
 results go to the same place the batch would put them (and the batch later skips it):
 
 ```python
-runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmetric_tiff.yaml --data-folder "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10"', wdir='C:/GitHub/MFAE_Analysis')
+runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_tiff.yaml --data-folder "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10"', wdir='C:/GitHub/MFAE_Analysis')
 ```
 
 For a .czi experiment, `--data-folder` is the .czi file itself.
@@ -172,8 +170,9 @@ To add a folder, add a line under `data_folder` in the config:
 
 ```yaml
   data_folder:
-    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\5ms_100V'
-    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\10ms_100V'
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield'
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Aspiration'
+    - 'E:\Data\MFAE\Aspiration'
 ```
 
 (or give folders on the command line: `--batch "M:/.../5ms_100V" "M:/.../10ms_100V"`).
@@ -220,7 +219,7 @@ or add a trap, use `--fresh`.
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
 | `--show-config` | Print every setting the run would use, and which file set it |
 | `--debug` | Show detailed log messages |
-| `--init-config FILE` | Create a new config from the TIFF or CZI template (or `--from OTHER.yaml`) |
+| `--init-config FILE` | Create a new config from `config_tiff.yaml` or `config_czi.yaml` (or `--from OTHER.yaml`) |
 
 Because `--data-folder` overrides the config, one config can be reused for a whole series of
 experiments recorded with the same settings:
@@ -236,7 +235,7 @@ affecting the other:
 
 | File | Contains | Who edits it |
 |---|---|---|
-| Your user configs (copies of `config/config_tiff_template.yaml` or `config/config_czi_template.yaml`) | Exactly the user settings listed above. | You, per experiment |
+| Your user configs (`config/config_tiff.yaml`, `config/config_czi.yaml`, or copies of them) | Exactly the user settings listed above. | You, per experiment |
 | `config/defaults.yaml` | Pipeline settings: image processing, detection thresholds, fitting, figures. | Developers only |
 
 The pipeline refuses to start if a user config is missing a user setting or contains a pipeline
@@ -252,13 +251,13 @@ user settings is `USER_KEYS` in `mfae/config/loader.py`.
 
 ### Using .czi files directly
 
-The pipeline can read a Zeiss `.czi` file instead of exported TIFFs. Start from the CZI template:
+The pipeline can read a Zeiss `.czi` file instead of exported TIFFs. Start from `config/config_czi.yaml`:
 
 ```bash
 python run_experiment.py --init-config config/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10.czi"
 ```
 
-When `--data-folder` is a `.czi` file, `config/config_czi_template.yaml` is copied automatically, and the
+When `--data-folder` is a `.czi` file, `config/config_czi.yaml` is copied automatically, and the
 experiment name defaults to the file name without `.czi`, so name the file by the naming rule.
 A CZI config differs from a TIFF one in two places:
 
@@ -642,5 +641,4 @@ tests put the project folder on the path. To change where results are written, e
 When you add a config setting, define it in `mfae/config/schema.py` (unknown keys are rejected, so typos
 can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value and an
 explanation, in `config/defaults.yaml`; a user setting goes in `USER_KEYS` in `mfae/config/loader.py`
-and in every user config, starting with the two templates (`config/config_tiff_template.yaml`,
-`config/config_czi_template.yaml`).
+and in every user config, starting with `config/config_tiff.yaml` and `config/config_czi.yaml`.

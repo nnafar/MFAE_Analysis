@@ -2,8 +2,8 @@
 """
 Batch runs: analyse every experiment in the folders you choose, with one config.
 
-    python run_experiment.py config/config_asymmetric_tiff.yaml --batch
-    python run_experiment.py config/config_asymmetric_tiff.yaml --batch "M:/.../Asymmetric_Efield/5ms_100V"
+    python run_experiment.py config/config_tiff.yaml --batch
+    python run_experiment.py config/config_tiff.yaml --batch "M:/.../Asymmetric_Efield/5ms_100V"
 
 * Folders: the ones given after --batch, else the config's data_folder (one
   folder or a list). Experiments with other settings go in another config

@@ -71,8 +71,8 @@ from mfae.paths import DEFAULT_OUTPUT_ROOT  # noqa: E402
 
 
 # The lab's standard experiment configs; templates for --init-config.
-DEFAULT_CONFIG = config_loader.CONFIG_DIR / "config_tiff_template.yaml"    # TIFF folders
-DEFAULT_CZI_CONFIG = config_loader.CONFIG_DIR / "config_czi_template.yaml"  # .czi files
+DEFAULT_CONFIG = config_loader.CONFIG_DIR / "config_tiff.yaml"    # TIFF folders
+DEFAULT_CZI_CONFIG = config_loader.CONFIG_DIR / "config_czi.yaml"  # .czi files
 
 
 def default_experiment_id(data_folder: Path) -> str:

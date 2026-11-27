@@ -108,20 +108,25 @@ def _trap_list(text: str) -> List[int]:
 
 
 def _set_yaml_value(text: str, key: str, value: str) -> str:
-    """Replace the value of the first `key: ...` line, keeping comments and layout."""
+    """
+    Replace the value of the first `key: ...` line, keeping comments and layout.
+    A list value ('- ...' lines below the key, e.g. several data folders,
+    including switched-off '# - ...' lines) is replaced as a whole.
+    """
     import re
     quoted = value if key == "experiment_type" else "'" + str(value).replace("'", "''") + "'"
-    pattern = re.compile(rf"^(\s*{key}:)[^\n]*", re.MULTILINE)
+    pattern = re.compile(rf"^(?P<ind>[ \t]*){key}:[^\n]*(?P<items>(?:\n(?P=ind)[ \t]+#?[ \t]*-[^\n]*)*)",
+                         re.MULTILINE)
     if not pattern.search(text):
         raise ValueError(f"no '{key}:' entry to fill in")
-    return pattern.sub(lambda m: f"{m.group(1)} {quoted}", text, count=1)
+    return pattern.sub(lambda m: f"{m.group('ind')}{key}: {quoted}", text, count=1)
 
 
 def init_config(dest: Path, source: Optional[Path], data_folder: Optional[Path],
                 experiment_id: Optional[str]) -> bool:
     """
-    Copy an existing config (by default config/config_tiff_template.yaml, or
-    config/config_czi_template.yaml for a .czi file) to `dest`, replacing its
+    Copy an existing config (by default config/config_tiff.yaml, or
+    config/config_czi.yaml for a .czi file) to `dest`, replacing its
     data folder and experiment name, and setting experiment_type from the
     voltage in the new name (0 V = asp). All other settings are kept, so
     copying the config of a similar experiment is the quickest way to start.

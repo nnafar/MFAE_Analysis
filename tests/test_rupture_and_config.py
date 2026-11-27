@@ -37,7 +37,7 @@ def _load_config(name: str) -> dict:
 LEGACY = ROOT / 'tests' / 'data' / 'legacy_full_config.yaml'
 
 
-TIFF_TEMPLATE = 'config/config_tiff_template.yaml'
+TIFF_TEMPLATE = 'config/config_tiff.yaml'
 
 
 def _variant(tmp_path, name, replacements):
@@ -51,18 +51,18 @@ def _variant(tmp_path, name, replacements):
     return str(path)
 
 
-@pytest.mark.parametrize('name', [TIFF_TEMPLATE])
+@pytest.mark.parametrize('name', [TIFF_TEMPLATE, 'config/config_czi.yaml'])
 def test_shipped_configs_validate(name):
     MFAConfig(**_load_config(name))
 
 
-@pytest.mark.parametrize('name', [TIFF_TEMPLATE])
+@pytest.mark.parametrize('name', [TIFF_TEMPLATE, 'config/config_czi.yaml'])
 def test_rupture_detection_off_by_default(name):
     assert MFAConfig(**_load_config(name)).rupture_detection.enable is False
 
 
 def test_settings_from_each_layer_reach_the_pipeline(tmp_path):
-    exp_id = "experiment_id: '260128_MDAMB231_WT_Device1_Experiment3-1100Pa-100V-5ms-frame10'"
+    exp_id = "experiment_id: '260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10'"
     asp = MFAConfig(**_load_config(_variant(tmp_path, 'asp.yaml', [
         ('experiment_type: ep', 'experiment_type: asp'),
         (exp_id, "experiment_id: '260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0'"),
@@ -71,7 +71,7 @@ def test_settings_from_each_layer_reach_the_pipeline(tmp_path):
     assert asp.rupture_detection.enable_smoothing is True        # the config file itself
     us = MFAConfig(**_load_config(_variant(tmp_path, 'us.yaml', [
         (exp_id, "experiment_id: '260402_MDAMB231_WT_Chip2_Experiment3-1100Pa-100V-100us-frame111'"),
-        ('  default_roi_width_um: 115.0', '  default_roi_width_um: 70.0')])))
+        ('  default_roi_width_um: 75.0', '  default_roi_width_um: 70.0')])))
     assert us.dye_uptake_parameters.pulse_frame == 111           # ...-frame111 in the name
     assert us.workflow_settings.default_roi_width_um == 70.0     # the config file itself
 

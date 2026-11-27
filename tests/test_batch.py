@@ -44,7 +44,7 @@ def test_finds_experiments_at_any_depth(tmp_path):
 
 def test_type_follows_the_name_in_a_batch(tmp_path):
     setup = _tree(tmp_path)
-    cfg = ROOT / "config" / "config_asymmetric_tiff.yaml"       # says experiment_type: ep
+    cfg = ROOT / "config" / "config_tiff.yaml"       # says experiment_type: ep
     asp_dir = setup / "0ms_0V" / ASP
     config, _ = cli.load_config(cfg, asp_dir, type_from_name=True)
     assert config is not None and config.dye_uptake_parameters.has_pulse is False
@@ -76,7 +76,7 @@ def test_batch_does_all_setups_then_all_analyses_and_skips_finished(tmp_path, mo
 
     monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
     monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
-    args = types.SimpleNamespace(config_path=ROOT / "config" / "config_asymmetric_tiff.yaml",
+    args = types.SimpleNamespace(config_path=ROOT / "config" / "config_tiff.yaml",
                                  batch=[str(setup)], setup=None, output_dir=out, redo=False,
                                  fresh=False, check=False, show_config=False, debug=False,
                                  experiment_id=None)
@@ -106,7 +106,7 @@ def test_cli_dispatches_batch(monkeypatch):
     seen = {}
     import mfae.batch as mb
     monkeypatch.setattr(mb, "run_batch", lambda args: seen.setdefault("folder", args.batch) and 0)
-    cli.main([str(ROOT / "config" / "config_asymmetric_tiff.yaml"), "--batch", "D:/data/X", "D:/data/Y"])
+    cli.main([str(ROOT / "config" / "config_tiff.yaml"), "--batch", "D:/data/X", "D:/data/Y"])
     assert seen["folder"] == ["D:/data/X", "D:/data/Y"]
 
 
@@ -154,8 +154,8 @@ def test_two_configs_on_parts_of_one_setup_fill_the_same_setup_folder(tmp_path, 
 
     monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
     monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
-    for cfg, cond in (("config_asymmetric_tiff.yaml", "5ms_100V"),
-                      ("config_asymmetric_100us_tiff.yaml", "100us_100V")):
+    for cfg, cond in (("archive/config_asymmetric_tiff.yaml", "5ms_100V"),
+                      ("archive/config_asymmetric_100us_tiff.yaml", "100us_100V")):
         args = types.SimpleNamespace(config_path=ROOT / "config" / cfg, batch=[str(setup / cond)],
                                      setup=None, output_dir=out, redo=False, fresh=False,
                                      check=False, show_config=False, debug=False, experiment_id=None)
@@ -175,16 +175,16 @@ def test_folders_can_be_listed_in_the_config(tmp_path):
 
 
 def test_a_plain_run_of_a_folder_list_config_asks_for_batch(capsys):
-    assert cli.main([str(ROOT / "config" / "config_asymmetric_tiff.yaml")]) == 1
+    assert cli.main([str(ROOT / "config" / "config_tiff.yaml")]) == 1
     assert "add --batch" in capsys.readouterr().out
 
 
 def test_single_experiment_with_a_batch_config_goes_where_the_batch_would(tmp_path, monkeypatch):
     setup = _tree(tmp_path)
     cfg = tmp_path / "asym.yaml"
-    src = (ROOT / "config" / "config_asymmetric_tiff.yaml").read_text()
-    cfg.write_text(src.replace(r"M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield\5ms_100V",
-                               str(setup / "5ms_100V")))
+    src = (ROOT / "config" / "config_tiff.yaml").read_text()
+    cfg.write_text(src.replace(r"M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield'",
+                               str(setup) + "'"))
     out = tmp_path / "Output"
     seen = {}
 
@@ -233,7 +233,7 @@ def test_traps_option_redoes_one_experiment_only(tmp_path, monkeypatch):
 
     monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
     monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
-    args = types.SimpleNamespace(config_path=ROOT / "config" / "config_asymmetric_tiff.yaml",
+    args = types.SimpleNamespace(config_path=ROOT / "config" / "config_tiff.yaml",
                                  batch=[str(setup)], setup=None, output_dir=out, redo=False,
                                  fresh=False, check=False, show_config=False, debug=False,
                                  experiment_id=None, traps=[7], only=None)

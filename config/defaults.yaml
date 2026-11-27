@@ -4,7 +4,7 @@
 # Algorithm settings that stay the same between experiments, with the lab's
 # tuned values. Users don't need to read or edit this file.
 #
-# This file and the user configs (e.g. config/config_tiff_template.yaml) never share a setting, so
+# This file and the user configs (e.g. config/config_tiff.yaml) never share a setting, so
 # either can be rewritten without affecting the other:
 #   - user settings live ONLY in the user configs (each must set all of them),
 #   - the settings here can NOT be changed from a user config.

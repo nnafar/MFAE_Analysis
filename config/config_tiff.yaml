@@ -1,0 +1,103 @@
+# ===================================================================
+# MFA CONFIG: all .tif data (asymmetric E-field + aspiration controls)
+# ===================================================================
+# The one config for exported .tif folders (20x, C1 = membrane, C2 = dye).
+# For Zeiss .czi files use config/config_czi.yaml.
+#
+# Analyse every experiment in the folders listed under data_folder below
+# (searched at any depth for folders of .tif images):
+#   python run_experiment.py config/config_tiff.yaml --batch
+# Each listed folder gets its own results folder: Output/Asymmetric_Efield/,
+# Output/Aspiration/. Already analysed experiments are skipped when you run it
+# again (--redo analyses them again). Pulsed or aspiration-only (ep / asp) and
+# the pulse frame are read from each experiment's name (0V = aspiration only).
+#
+# Only some experiments / traps:
+#   ... --batch --only Experiment4               experiments whose name contains the text
+#   ... --batch --only Experiment4 --traps 7     redo the setup of trap 7 only
+#   ... --batch "E:/other/folder"                another folder instead of the list below
+# One experiment (results go to the same place as in the batch):
+#   python run_experiment.py config/config_tiff.yaml --data-folder "<one experiment folder>"
+#
+# Check a config:      python run_experiment.py <this file> --batch --check
+# See all settings:    python run_experiment.py <this file> --data-folder "<one experiment folder>" --show-config
+
+# Only used when the experiment name can't be read (batch runs and folder
+# lists take it from the name): ep = electroporation, asp = aspiration only
+experiment_type: ep
+
+# -------------------------------------------------------------------
+# EXPERIMENT
+# -------------------------------------------------------------------
+paths:
+  # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
+  # (to analyse .czi files, use config/config_czi.yaml)
+  image_format: tiff
+  # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
+  data_folder:
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield'   # 5ms_100V, 100us_100V, ...
+    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Aspiration'
+    # - 'E:\Data\MFAE\Aspiration'   (add more folders like this; '#' switches a line off)
+  # Example experiment name (only used when no folder is given); names must follow:
+  #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
+  #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
+  experiment_id: '260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10'
+
+experiment_parameters:
+  # Microns per pixel: 10x = 0.629, 20x = 0.315, 40x = 0.158
+  scale_factor: 0.315
+  # Aspiration pressure [Pa] = (P_inlet - P_waste_outlet) x 0.55
+  # (factor from Jessy's COMSOL simulation)
+  constant_pressure: 1100
+  # Seconds between frames; used only if the images have no timing metadata
+  # (asymmetric runs 1.75 s, aspiration runs 1.72 s)
+  frame_interval: 1.75
+  # Maximum number of traps to set up
+  max_traps: 18
+
+# -------------------------------------------------------------------
+# ANALYSES (True / False) AND CHANNELS
+# -------------------------------------------------------------------
+# The membrane channel is always analysed (protrusion length and shape).
+dye_uptake_parameters:
+  enable: True
+  # Text in the file names that identifies each channel (C1, C2 as exported)
+  membrane_channel_pattern: 'C1'
+  dye_channel_pattern: 'C2'
+
+actin_parameters:
+  enable: True
+  channel_pattern: 'C1'
+
+rupture_detection:
+  # Rupture / dead-on-arrival detection (a heuristic; results are hints)
+  enable: False
+  # 3-frame rolling median on the protrusion length trace
+  enable_smoothing: False
+  # Remove outlier length points before viscoelastic fitting
+  enable_outlier_rejection: False
+
+model_parameters:
+  # Viscoelastic fitting (skipped automatically for pulsed experiments)
+  perform_fitting: False
+
+workflow_settings:
+  # Membrane kymographs (CSV + multipanel figure)
+  create_kymographs: True
+
+  # ---------------------------------------------------------------
+  # INTERACTIVE SETUP
+  # ---------------------------------------------------------------
+  # Frame shown during setup, as a fraction of the recording (0.5 = middle)
+  # A later frame (0.4) shows the protrusion after some bleaching, so the
+  # threshold picked there still holds at the end of the recording.
+  selection_frame_fraction: 0.4
+  # Starting size of the trap box [µm]; adjust it during setup as needed
+  default_roi_width_um: 75.0
+  default_roi_height_um: 31.0
+
+  # ---------------------------------------------------------------
+  # COMPUTER
+  # ---------------------------------------------------------------
+  # CPU cores to use; lower it if the computer becomes slow
+  n_workers: 3
