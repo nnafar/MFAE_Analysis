@@ -84,6 +84,7 @@ folders. `--traps` needs exactly one experiment, so always pair it with `--only`
 | Show every setting a run uses, and where it comes from | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --show-config" --wdir` |
 | New config for data recorded with other settings (copies a template into `config/`; a `.czi` file picks the CZI template) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10" --wdir` |
 | See how a `.czi` file is organised (channels, frames) | `%runfile C:/GitHub/MFAE_Analysis/tools/czi_info.py --args "D:/MFAE/261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi" --wdir` |
+| Analyse with the kymograph tip tracker (this run only) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch --redo --tip-tracking kymograph" --wdir` |
 | List all options | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--help" --wdir` |
 
 Options go **inside** the quotes; anything after `--wdir` is read by Spyder, not by the script.
@@ -279,6 +280,7 @@ or add a trap, use `--fresh`.
 | `--fresh` | Ignore the saved trap setup and redo the interactive steps |
 | `--traps N[,N...]` | Redo the pipette/threshold setup of only these traps, keep the rest |
 | `--thresholds` | Redo only the threshold windows (all saved traps, or `--traps`); boxes and entrances kept |
+| `--tip-tracking mask\|kymograph` | How the protrusion tip is found, for this run only (the log line `Protrusion tip: ...` shows which was used) |
 | `--only TEXT` | With `--batch`: only experiments whose name contains TEXT |
 | `--data-folder PATH` | Use this image folder instead of the one in the config |
 | `--experiment-id NAME` | Name of the results folder (default: the data folder's name) |

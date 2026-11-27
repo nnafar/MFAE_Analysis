@@ -87,6 +87,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--only", metavar="TEXT",
                         help="With --batch: only experiments whose name contains TEXT "
                              "(e.g. Experiment4).")
+    parser.add_argument("--tip-tracking", choices=("mask", "kymograph"), default=None,
+                        help="How the protrusion tip is found, for this run only (default: "
+                             "image_processing.tip_tracking in config/pipeline/defaults.yaml). "
+                             "mask = each frame's own mask; kymograph = followed through time "
+                             "on the centre-line profile.")
     parser.add_argument("--debug", action="store_true",
                         help="Show detailed (DEBUG) log messages on screen.")
     parser.add_argument("--show-config", action="store_true",
@@ -430,6 +435,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.debug:
         config.workflow_settings.debug_mode = True
+    if getattr(args, 'tip_tracking', None):
+        config.image_processing.tip_tracking = args.tip_tracking
 
     if (args.traps or args.thresholds) and args.fresh:
         logger.error("Use either --fresh (redo the whole setup) or --traps / --thresholds "

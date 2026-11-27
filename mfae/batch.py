@@ -213,6 +213,8 @@ def run_batch(args) -> int:
             continue
         if args.debug:
             config.workflow_settings.debug_mode = True
+        if getattr(args, 'tip_tracking', None):
+            config.image_processing.tip_tracking = args.tip_tracking
         configs[name] = (config, layered, exp_path, out_root)
 
     if args.show_config:

@@ -925,6 +925,10 @@ class MFAAnalysis:
 
             # --- Phase 2: Parallel Processing ---
             logger.info("\n== PHASE 2: PARALLEL PROCESSING ==")
+            _ip = self.params.get('image_processing', {})
+            logger.info("Protrusion tip: %s | masks from the median of %s frame(s) | spike filter window %s",
+                        _ip.get('tip_tracking', 'mask'), _ip.get('membrane_temporal_window', 3),
+                        self.params.get('rupture_detection', {}).get('spike_filter_window', 7))
             removed = output_layout.remove_flat_data_files(self.results_dir)
             if removed:
                 logger.info(f"Moved {removed} CSV file(s) of the earlier layout into Data/Traces and "
