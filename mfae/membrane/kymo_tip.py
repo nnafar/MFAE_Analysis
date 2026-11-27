@@ -131,10 +131,15 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
     Kn = (Ks - bg[:, None]) / np.where(contrast > 0, contrast, np.nan)[:, None]
     Kn = np.nan_to_num(Kn, nan=0.0)
     f = level_fraction
-    inside = _box_mean(Kn, 0, 3)            # columns x .. x+2  (protrusion side)
-    outside = _box_mean(Kn, -3, 0)          # columns x-3 .. x-1 (channel side)
-    ahead = _box_mean(Kn, -9, -2)           # further out in the channel
-    inner = _box_mean(Kn, 1, 7)
+    # Beyond the box edge nothing is known: repeat the edge column there
+    # instead of treating it as background (otherwise faint haze filling the
+    # channel looks like a protrusion edge at the box edge).
+    pad = 10
+    Kp = np.pad(Kn, ((0, 0), (pad, 0)), mode='edge')
+    inside = _box_mean(Kp, 0, 3)[:, pad:]            # columns x .. x+2  (protrusion side)
+    outside = _box_mean(Kp, -3, 0)[:, pad:]          # columns x-3 .. x-1 (channel side)
+    ahead = _box_mean(Kp, -9, -2)[:, pad:]           # further out in the channel
+    inner = _box_mean(Kp, 1, 7)[:, pad:]
     snr_scale = (contrast / noise)[:, None]            # Kn -> noise units above bg (1 px)
     # Outer edge: a step from protrusion to channel, with no signal left ahead
     # of it (signal further out means an internal step, e.g. a bright base

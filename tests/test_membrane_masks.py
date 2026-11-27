@@ -304,10 +304,11 @@ def _cell_sequence(lengths):
     return rois
 
 
-def _run_cells(lengths, pulse_idx=None):
+def _run_cells(lengths, pulse_idx=None, tip_tracking='mask'):
     from mfae.membrane.detection import LineDetectionMFA
     params = _params()
     params['image_processing']['membrane_temporal_window'] = 1
+    params['image_processing']['tip_tracking'] = tip_tracking
     params['rupture_detection'] = {'enable_smoothing': False, 'pulse_frame_idx': pulse_idx}
     params['dye_uptake_parameters'] = {'has_pulse': pulse_idx is not None}
     params['experiment_parameters'] = {'scale_factor': 0.1}
@@ -849,9 +850,42 @@ def test_kymograph_tip_does_not_flicker_on_a_faint_far_end():
     assert jumps['mask'] > 0.2 and jumps['kymograph'] < 0.03
 
 
-def test_kymograph_tip_follows_fast_growth():
+def test_kymograph_tip_follows_fast_growth(monkeypatch):
     """Fast entry (10 px per frame) must be followed, not smoothed away."""
     lengths = [0] * 3 + list(range(20, 110, 10)) + [100] * 6
-    res = _run_cells(lengths)
+    res = _run_cells(lengths, tip_tracking='kymograph')
     L = np.array(res['protrusion_lengths_raw_px'], float)
     assert np.all(np.abs(L[3:12] - np.array(lengths[3:12])) <= 3)
+
+
+
+def test_kymograph_tip_does_not_jump_to_the_box_edge_in_a_hazy_channel():
+    """Exp 2 trap 15: faint haze filling the channel must not look like an edge at the box edge."""
+    from mfae.membrane.kymo_tip import track_tip
+    rng = np.random.default_rng(3)
+    n, Wd, tip = 40, 120, 70
+    x = np.arange(Wd)
+    # faint protrusion; the channel ahead is dark near the tip and hazier
+    # towards the far end of the box
+    prof = np.where(x >= tip, 14.0, np.where(x < 25, 9.0, 0.0))
+    K = np.array([prof + rng.normal(0, 1.0, Wd) for _ in range(n)])
+    tips, _ = track_tip(K, Wd, np.ones(n, bool))
+    assert np.all(np.abs(tips - tip) <= 2)
+
+
+
+def test_kymograph_tip_at_the_box_edge_alone_does_not_end_tracking(monkeypatch):
+    """Exp 2 trap 5: the tracker put the tip at the box edge on haze; 'left ROI'
+    ended tracking at frame 0. The mask must reach the edge too."""
+    from mfae.membrane import kymo_tip
+    real = kymo_tip.track_tip
+
+    def edge_for_a_while(K, pipette_x, active, **kw):
+        tips, clear = real(K, pipette_x, active, **kw)
+        tips[12:18] = 0.0                     # false edge at the box edge, 6 frames, mid-cell
+        return tips, clear
+
+    monkeypatch.setattr(kymo_tip, 'track_tip', edge_for_a_while)
+    res = _run_cells([0] * 3 + [60] * 25, tip_tracking='kymograph')
+    assert len(res['cell_segments']) == 1, res['cell_segments']     # not split at the false edge
+    assert res['cell_segments'][0][2] is None and res['exit_frame_index'] == 27
