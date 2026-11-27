@@ -583,9 +583,9 @@ class LineDetectionMFA:
             utils.add_text_overlay(combined_display, [
                 f"Canny sigma: {sigma:.2f}",
                 "Mouse: Drag bar to adjust",
-                "W/S: +/- 0.05 | A/D: +/- 0.01",
-                "ENTER: Confirm | B: Back | R: Restart (trap 1) | ESC: Stop"
-            ])
+                "W/S +/-0.05 | A/D +/-0.01",
+                "ENTER ok | B back | R restart | ESC stop"
+            ], max_width=display_img.shape[1], max_scale=0.65)
             cv2.imshow(window_name, combined_display)
 
             key = cv2.waitKey(30) & 0xFF
@@ -748,23 +748,22 @@ class LineDetectionMFA:
             # 5. Combine and Display
             combined_display = np.hstack((display_img, hist_img))
             
-            thr_label = f"Threshold: {current_threshold}"
+            # Short lines, drawn in the image panel only (below the image), so
+            # the histogram stays clear.
+            thr_label = f"Threshold {current_threshold}"
             if enhanced_mode:
-                thr_label += f" (~{utils.threshold_to_snr(current_threshold, self.params):.1f} sigma above bg)"
-            overlay_lines = [
-                thr_label,
-                "Mouse: Drag yellow line to adjust",
-                "W/S: +/- 10 | A/D: +/- 1",
-            ]
+                thr_label += f"  (~{utils.threshold_to_snr(current_threshold, self.params):.0f} sigma above bg)"
+            overlay_lines = [thr_label]
             if enhanced_mode:
                 fs = float(image_params.get('membrane_snr_full_scale', 40.0))
                 cfg_fs = float(getattr(self, '_configured_full_scale', fs))
-                overlay_lines.append(
-                    f"Scale: 255 = {fs:g} sigma" + (" (fitted to bright cell)" if fs > cfg_fs else ""))
+                overlay_lines.append(f"Scale: 255 = {fs:g} sigma" + (" (fitted)" if fs > cfg_fs else ""))
+            overlay_lines.append("Drag the line | W/S +/-10 | A/D +/-1")
+            if enhanced_mode:
                 overlay_lines.append(
                     f"F: faint-cell smoothing ({image_params.get('membrane_denoise_sigma_along', 1.0):g} px)")
-            overlay_lines.append("ENTER: Confirm | B: Back | R: Restart (trap 1) | ESC: Stop")
-            utils.add_text_overlay(combined_display, overlay_lines)
+            overlay_lines.append("ENTER ok | B back | R restart | ESC stop")
+            utils.add_text_overlay(combined_display, overlay_lines, max_width=img_panel_w, max_scale=0.65)
             cv2.imshow(window_name, combined_display)
             
             key = cv2.waitKey(30) & 0xFF
@@ -860,7 +859,11 @@ class LineDetectionMFA:
         x_thresh = int(threshold_line * width / 255)
         cv2.line(hist_img, (x_thresh, 0), (x_thresh, height - 40), guide_color, 2)
         
-        utils.draw_ui_text(hist_img, f"T={threshold_line}", (x_thresh + 5, 30), scale=0.6, color=guide_color)
+        # label below the "Frequency" title, on the side of the line with room
+        label = f"T={threshold_line}"
+        lw_px = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0][0]
+        lx = x_thresh + 6 if x_thresh + 6 + lw_px < width else x_thresh - 6 - lw_px
+        utils.draw_ui_text(hist_img, label, (lx, 50), scale=0.6, color=guide_color)
         
         # Axis labels
         cv2.putText(hist_img, "Intensity (0-255)", (width//3, height-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180,180,180), 1)
