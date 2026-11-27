@@ -333,6 +333,8 @@ COLUMN_NOTES = {
     'protrusion_trace.csv': [
         ("Frame", "frame index counted from 0"),
         ("Protrusion_Length_um", "tip position to channel entrance; NaN outside the analysed cell"),
+        ("Protrusion_Length_raw_um", "the same before the spike filter (and smoothing)"),
+        ("Spike_Removed", "True where a short spike was replaced by the local median"),
         ("Protrusion/Body/Total_Area_um2", "mask areas; Volume_*_um3 assume a cylinder / sphere"),
         ("Body_Solidity", "body area / convex hull area (1 = convex)"),
         ("Tracked", "True for frames of the analysed cell"),
