@@ -35,7 +35,7 @@ paths:
   image_format: czi
   # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
   data_folder:
-    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Symmetric_Efield'
+    - 'E:\Data\MFAE\Symmetric_Efield'
     # - 'E:\Data\MFAE_Symmetric'   (add more folders like this; '#' switches a line off)
   # Example experiment name (only used when no file is given); names must follow:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
