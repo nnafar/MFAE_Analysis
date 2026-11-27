@@ -154,9 +154,13 @@ def test_two_configs_on_parts_of_one_setup_fill_the_same_setup_folder(tmp_path, 
 
     monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
     monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
-    for cfg, cond in (("archive/config_asymmetric_tiff.yaml", "5ms_100V"),
-                      ("archive/config_asymmetric_100us_tiff.yaml", "100us_100V")):
-        args = types.SimpleNamespace(config_path=ROOT / "config" / cfg, batch=[str(setup / cond)],
+    base = ROOT / "config" / "config_tiff.yaml"
+    other = tmp_path / "config_100us.yaml"                     # e.g. another box size
+    other.write_text(base.read_text(encoding="utf-8")
+                     .replace("default_roi_width_um: 75.0", "default_roi_width_um: 70.0"),
+                     encoding="utf-8")
+    for cfg, cond in ((base, "5ms_100V"), (other, "100us_100V")):
+        args = types.SimpleNamespace(config_path=cfg, batch=[str(setup / cond)],
                                      setup=None, output_dir=out, redo=False, fresh=False,
                                      check=False, show_config=False, debug=False, experiment_id=None)
         assert batch.run_batch(args) == 0

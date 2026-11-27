@@ -19,7 +19,6 @@ run_experiment.py        analyse one experiment
 run_bulk_analysis.py     pool many experiments
 config/                  your configs: config_tiff.yaml, config_czi.yaml
   pipeline/              defaults.yaml (pipeline settings; developers only)
-  archive/               old configs, for reference
 mfae/                    the analysis code (see "For developers")
 tools/                   small helpers (czi_info.py, plot_cell_status_overview.py)
 docs/                    experiment naming rule
@@ -61,7 +60,7 @@ These two cover the lab's data as they are: list your data folders in them and r
 aspiration-only, and the pulse frame, are read from each experiment's name, so the same config
 serves every condition. Only make a new config for data recorded with different settings (another
 objective, pressure or channel order). `config/pipeline/defaults.yaml` holds the pipeline settings and is
-the same for everyone. Older per-folder configs are kept in `config/archive/` for reference.
+the same for everyone.
 
 **Step 1 – a config file.** For the lab's data, use `config/config_tiff.yaml` or `config/config_czi.yaml` with `--data-folder` and skip to step 2. For data recorded with other settings, create your own copy with the data folder filled in:
 

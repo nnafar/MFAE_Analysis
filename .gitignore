@@ -188,3 +188,5 @@ config/config_czi_1ms_sym_NN.yaml
 config/config_tiff_5ms_asym_NN.yaml
 config/config_tiff_100us_asym_NN.yaml
 config/config_tiff_asp_asym_NN.yaml
+# Old experiment configs kept locally for reference (not shared)
+config/archive/
