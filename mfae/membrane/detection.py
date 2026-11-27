@@ -1610,6 +1610,16 @@ class LineDetectionMFA:
         t_win = int(self.params.get('image_processing', {}).get('membrane_temporal_window', 3))
         use_temporal = utils.membrane_enhancement_enabled(self.params) and t_win > 1
 
+        # Kymograph tip tracking (see mfae/membrane/kymo_tip.py): per frame the
+        # channel lumen rows of the signal image left of the entrance, and where
+        # the protrusion mask sits in them; the tip is tracked after the loop.
+        ip_cfg = self.params.get('image_processing', {})
+        use_kymo_tip = (ip_cfg.get('tip_tracking', 'kymograph') == 'kymograph'
+                        and not self.params.get('guv_settings', {}).get('enable', False))
+        kymo_bands: List[Optional[np.ndarray]] = []
+        kymo_rows: List[Tuple[float, float]] = []      # (centre row, height) of the mask
+        kymo_m = 0
+
         for i, image in enumerate(self.roi_images):
             if image is None:
                 protrusion_px_list.append(0); downstream_int_list.append(0)
@@ -1627,6 +1637,8 @@ class LineDetectionMFA:
                 self.results['detection_confidence'].append(0.0)
                 self.results['frame_masks'].append((None, None))
                 tip_at_edge.append(False)
+                if use_kymo_tip:
+                    kymo_bands.append(None)
                 continue
 
             image_8bit = utils.normalize_to_8bit(image)
@@ -1658,9 +1670,19 @@ class LineDetectionMFA:
 
             # Filter out debris by strictly keeping the blob nearest the entrance
             mask_prot = self._keep_closest_blob(mask_prot, pipette_start_x, is_protrusion=True)
+            snr_img = None
             if not is_guv and utils.membrane_enhancement_enabled(self.params):
-                mask_prot = self._cut_protrusion_leak(
-                    mask_prot, utils.membrane_snr_image(image, self.params), pipette_start_x)
+                snr_img = utils.membrane_snr_image(image, self.params)
+                mask_prot = self._cut_protrusion_leak(mask_prot, snr_img, pipette_start_x)
+            if use_kymo_tip:
+                sig_img = snr_img if snr_img is not None else np.asarray(mask_gray, dtype=np.float32)
+                hh = sig_img.shape[0]
+                kymo_m = int(hh * self.wall_clip_margin)
+                pip_c = max(1, min(sig_img.shape[1], int(pipette_start_x)))
+                kymo_bands.append(np.asarray(sig_img[kymo_m:hh - kymo_m, :pip_c], dtype=np.float32))
+                ys = np.where(mask_prot[kymo_m:hh - kymo_m, :pip_c].any(axis=1))[0]
+                if ys.size:
+                    kymo_rows.append(((ys.min() + ys.max()) / 2.0, float(ys.max() - ys.min() + 1)))
             mask_body_standard = self._keep_closest_blob(mask_body_standard, pipette_start_x, is_protrusion=False)
 
             mask_total = cv2.bitwise_or(mask_prot, mask_body_standard)
@@ -1701,6 +1723,15 @@ class LineDetectionMFA:
             self.results['debug_images'].append(debug_image)
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
             self.results['frame_masks'].append((mask_prot, mask_body_standard))
+
+        # Tip on the kymograph (replaces the mask-based length where tracked)
+        self.results['protrusion_lengths_mask_px'] = list(protrusion_px_list)
+        kymo_clear: Optional[List[bool]] = None
+        if use_kymo_tip and kymo_bands:
+            protrusion_px_list, tip_at_edge, kymo_clear = self._track_tip_on_kymograph(
+                kymo_bands, kymo_rows, protrusion_px_list, tip_at_edge,
+                pipette_start_x, edge_margin_px)
+        self.results['kymo_tip_clear'] = kymo_clear
 
         # Post-Processing: spikes, then (optional) smoothing
         r_cfg_spk = self.params.get('rupture_detection', {})
@@ -1795,6 +1826,8 @@ class LineDetectionMFA:
                 return False   # too short, or clamped (debris / channel-filling object)
             if i < len(tip_at_edge) and tip_at_edge[i]:
                 return False   # tip at the box edge: true length unknown
+            if kymo_clear is not None and i < len(kymo_clear) and not kymo_clear[i]:
+                return False   # no clear tip edge on the kymograph (haze, not a cell)
             body_a = body_areas[i] if i < len(body_areas) else 0.0
             if isinstance(body_a, float) and np.isnan(body_a):
                 body_a = 0.0
@@ -2001,6 +2034,53 @@ class LineDetectionMFA:
         
         self.results['downstream_intensities'] = downstream_int_list
 
+    def _track_tip_on_kymograph(self, bands: List[Optional[np.ndarray]],
+                                rows: List[Tuple[float, float]], lengths_px: List[float],
+                                tip_at_edge: List[bool], pipette_x: int, edge_margin_px: int
+                                ) -> Tuple[List[float], List[bool], List[bool]]:
+        """
+        Track the tip on the kymograph built from `bands` (one lumen-row block
+        per frame) and return (lengths_px, tip_at_edge, clear_edge) with the
+        tracked frames replaced. Frames are tracked where the mask found a
+        protrusion, including gaps of up to 3 frames inside such a run (a faint
+        protrusion whose mask briefly vanished). See mfae/membrane/kymo_tip.py.
+        """
+        from mfae.membrane import kymo_tip
+        n = len(lengths_px)
+        valid = [b for b in bands if b is not None]
+        if not valid:
+            return lengths_px, tip_at_edge, [True] * n
+        lumen_h = valid[0].shape[0]
+        width = min(b.shape[1] for b in valid)
+        centre = float(np.median([r[0] for r in rows])) if rows else (lumen_h - 1) / 2.0
+        half = max(1.0, 0.15 * float(np.median([r[1] for r in rows]))) if rows else 2.0
+        K = np.full((n, width), np.nan)
+        for i, b in enumerate(bands[:n]):
+            if b is not None:
+                K[i] = kymo_tip.centre_band_profile(b[:, :width], centre, half)
+        present = np.array([float(v or 0) > 0 for v in lengths_px])
+        active = present.copy()
+        idx = np.where(present)[0]
+        for a, b in zip(idx[:-1], idx[1:]):
+            if 1 < b - a <= 4:                # fill gaps of up to 3 frames
+                active[a:b] = True
+        ip = self.params.get('image_processing', {})
+        tip_x, clear = kymo_tip.track_tip(
+            K, width, active,
+            level_fraction=float(ip.get('tip_level_fraction', 0.25)),
+            jump_cost=float(ip.get('tip_jump_cost', 1.0)))
+        out, edge, clear_out = list(lengths_px), list(tip_at_edge), [True] * n
+        for i in range(n):
+            if np.isfinite(tip_x[i]):
+                # band column x is ROI column x; the entrance is at pipette_x
+                out[i] = float(pipette_x) - float(tip_x[i])
+                if i < len(edge):
+                    edge[i] = bool(tip_x[i] <= edge_margin_px)
+                clear_out[i] = bool(clear[i])
+            elif active[i] and present[i]:
+                clear_out[i] = False          # protrusion mask but no usable kymograph edge
+        return out, edge, clear_out
+
     @staticmethod
     def _remove_length_spikes(values: List[float], window: int = 7, min_jump_px: float = 6.0,
                               n_mad: float = 3.0) -> Tuple[List[float], List[bool]]:
@@ -2032,10 +2112,10 @@ class LineDetectionMFA:
                 out[i], flags[i] = med, True
         return list(out), flags
 
-    def _raw_length_um_column(self, num_frames: int) -> List[float]:
-        """Length before spike filter and smoothing [um]; NaN where the tracked length is NaN."""
+    def _raw_length_um_column(self, num_frames: int, key: str = 'protrusion_lengths_raw_px') -> List[float]:
+        """A per-frame length [um] (default: before spike filter and smoothing); NaN where the tracked length is NaN."""
         sf = self.params.get('experiment_parameters', {}).get('scale_factor', 0.629)
-        raw = list(self.results.get('protrusion_lengths_raw_px') or [])
+        raw = list(self.results.get(key) or [])
         tracked = list(self.results.get('protrusion_lengths_um') or [])
         out = []
         for i in range(num_frames):
@@ -2719,6 +2799,7 @@ class LineDetectionMFA:
             'Protrusion_Length_um': self.results['protrusion_lengths_um'],
             # before the spike filter / smoothing, and which frames it replaced
             'Protrusion_Length_raw_um': self._raw_length_um_column(num_frames),
+            'Protrusion_Length_mask_um': self._raw_length_um_column(num_frames, 'protrusion_lengths_mask_px'),
             'Spike_Removed': (list(self.results.get('spike_removed') or []) + [False] * num_frames)[:num_frames],
             'Protrusion_Area_um2': self.results['protrusion_area_um2'],
             'Body_Area_um2': self.results['body_area_um2'],

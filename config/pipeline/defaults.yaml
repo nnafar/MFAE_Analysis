@@ -249,6 +249,9 @@ image_processing:
   protrusion_leak_fraction: 0.4      # Mask running to the box edge: cut where signal is < 40 % of the protrusion's (0 = off)
   max_tip_refinement_px: 15.0        # Tip refinement farther than this beyond the mask edge is ignored [px]
   tip_level_fraction: 0.25           # Tip = where the centre-line profile drops to bg + this x (protrusion - bg); lower follows dimmer tips
+  tip_tracking: kymograph            # kymograph: tip followed through time on the centre-line profile (robust for faint,
+                                     # flickering cells); mask: each frame's tip from its own mask (earlier method)
+  tip_jump_cost: 1.0                 # kymograph: penalty per px of tip movement (up to 10 px), in noise units (higher = steadier)
   membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
   membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI
   membrane_relative_level: 0.3       # Mask pixels must also reach this fraction of the local cell signal; drops the halo around bright cells (0 = off)

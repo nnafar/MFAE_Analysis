@@ -697,10 +697,11 @@ def _dimming_sequence(n_bright, n_dim, L=60, far_level=60.0):
     return rois
 
 
-def _run_rois(rois):
+def _run_rois(rois, tip_tracking='kymograph'):
     from mfae.membrane.detection import LineDetectionMFA
     params = _params()
     params['image_processing']['membrane_temporal_window'] = 1
+    params['image_processing']['tip_tracking'] = tip_tracking
     params['rupture_detection'] = {'enable_smoothing': False, 'pulse_frame_idx': None}
     params['dye_uptake_parameters'] = {'has_pulse': False}
     params['experiment_parameters'] = {'scale_factor': 0.1}
@@ -710,7 +711,8 @@ def _run_rois(rois):
 
 def test_dimming_protrusion_end_is_not_a_cell_change():
     """Trap 7: the mask loses the dim far part of the protrusion; the cell never left."""
-    res = _run_rois(_dimming_sequence(12, 12))
+    # mask-based tip: the length halves, but the dimming check keeps tracking
+    res = _run_rois(_dimming_sequence(12, 12), tip_tracking='mask')
     L = res['protrusion_lengths_um']
     assert np.nanmedian(L[14:]) < 0.6 * np.nanmedian(L[3:12])     # the mask did shorten
     assert len(res['cell_segments']) == 1
@@ -718,9 +720,20 @@ def test_dimming_protrusion_end_is_not_a_cell_change():
     assert res['dimmed_frames']
 
 
+def test_kymograph_tip_keeps_the_dim_far_end():
+    """Same cell, kymograph tracking: the dim far end still counts, the length stays."""
+    res = _run_rois(_dimming_sequence(12, 12))
+    L = np.asarray(res['protrusion_lengths_um'])
+    mask = np.asarray(res['protrusion_lengths_mask_px']) * 0.1
+    assert np.nanmedian(mask[14:]) < 0.6 * np.nanmedian(mask[3:12])   # the mask lost it ...
+    assert abs(np.nanmedian(L[14:]) - np.nanmedian(L[3:12])) < 0.5   # ... the tracked tip did not
+    assert len(res['cell_segments']) == 1 and res['exit_reason'] is None
+
+
 def test_real_cell_change_still_detected_when_old_protrusion_is_gone():
-    res = _run_rois(_dimming_sequence(12, 12, far_level=0.0))
-    assert res['cell_segments'][0][2] == 'cell change'
+    for method in ('kymograph', 'mask'):
+        res = _run_rois(_dimming_sequence(12, 12, far_level=0.0), tip_tracking=method)
+        assert res['cell_segments'][0][2] == 'cell change', method
 
 
 def test_skip_pipette_opens_only_the_threshold_windows(monkeypatch):
@@ -799,3 +812,46 @@ def test_single_frame_spikes_do_not_end_tracking():
     um = np.asarray(res['protrusion_lengths_um'])
     assert np.nanmax(um[4:]) < (L + 6) * 0.1 and np.nanmin(um[4:]) > (L - 6) * 0.1
     assert res['spike_removed'][12] and res['spike_removed'][13] and res['spike_removed'][20]
+
+
+def _flicker_sequence(far=90.0, n=60, seed=0):
+    """Slowly growing protrusion whose far half sits at the threshold: the mask flickers."""
+    yy, xx = np.mgrid[0:H, 0:W]
+    rng = np.random.default_rng(seed)
+    rois, truth = [], []
+    for k in range(n):
+        L = int(round(50 + 20 * k / n))
+        truth.append(L)
+        sig = np.where(np.hypot(xx - PIP - 24, yy - 36) <= 23, 500.0, 0.0)
+        sig += np.where((xx >= PIP - L // 2) & (xx < PIP) & (np.abs(yy - 36) <= 6), 400.0, 0.0)
+        sig += np.where((xx >= PIP - L) & (xx < PIP - L // 2) & (np.abs(yy - 36) <= 5), far, 0.0)
+        img = 400 + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2) + rng.normal(0, 20, (H, W))
+        rois.append(np.clip(img, 0, 65535).astype(np.uint16))
+    return rois, np.array(truth, float)
+
+
+def test_kymograph_tip_does_not_flicker_on_a_faint_far_end():
+    from mfae.membrane.detection import LineDetectionMFA
+    rois, truth = _flicker_sequence()
+    jumps = {}
+    for method in ('mask', 'kymograph'):
+        p = _params()
+        p['image_processing'].update(membrane_temporal_window=1, tip_tracking=method)
+        p['rupture_detection'] = {'enable_smoothing': False, 'pulse_frame_idx': None,
+                                  'spike_filter_window': 0}       # the tracker alone
+        p['dye_uptake_parameters'] = {'has_pulse': False}
+        p['experiment_parameters'] = {'scale_factor': 0.1}
+        r = LineDetectionMFA(rois, [PIP, 0], p).run_detection_with_parameters(PIP, 100, threshold_body=100)
+        L = np.array(r['protrusion_lengths_raw_px'], float)
+        jumps[method] = np.mean(np.abs(np.diff(L)) > 5)
+        if method == 'kymograph':
+            assert np.median(np.abs(L - truth)) < 2 and np.mean(np.abs(L - truth) > 5) < 0.05
+    assert jumps['mask'] > 0.2 and jumps['kymograph'] < 0.03
+
+
+def test_kymograph_tip_follows_fast_growth():
+    """Fast entry (10 px per frame) must be followed, not smoothed away."""
+    lengths = [0] * 3 + list(range(20, 110, 10)) + [100] * 6
+    res = _run_cells(lengths)
+    L = np.array(res['protrusion_lengths_raw_px'], float)
+    assert np.all(np.abs(L[3:12] - np.array(lengths[3:12])) <= 3)
