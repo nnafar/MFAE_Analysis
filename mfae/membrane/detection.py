@@ -2068,7 +2068,7 @@ class LineDetectionMFA:
         tip_x, clear = kymo_tip.track_tip(
             K, width, active,
             level_fraction=float(ip.get('tip_level_fraction', 0.25)),
-            jump_cost=float(ip.get('tip_jump_cost', 1.0)))
+            jump_cost=float(ip.get('tip_jump_cost', 3.0)))
         out, edge, clear_out = list(lengths_px), list(tip_at_edge), [True] * n
         for i in range(n):
             if np.isfinite(tip_x[i]):

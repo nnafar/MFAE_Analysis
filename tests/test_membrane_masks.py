@@ -889,3 +889,25 @@ def test_kymograph_tip_at_the_box_edge_alone_does_not_end_tracking(monkeypatch):
     res = _run_cells([0] * 3 + [60] * 25, tip_tracking='kymograph')
     assert len(res['cell_segments']) == 1, res['cell_segments']     # not split at the false edge
     assert res['cell_segments'][0][2] is None and res['exit_frame_index'] == 27
+
+
+def test_kymograph_ignores_the_channel_end_line():
+    """Real Exp 2 kymographs: a narrow, steady bright line at the far end of the
+    channel (next to the box edge) pulled the tip there (traps 3, 5)."""
+    from mfae.membrane.kymo_tip import track_tip, mask_channel_end
+    rng = np.random.default_rng(4)
+    n, Wd = 120, 80
+    x = np.arange(Wd)
+    tips_true = np.linspace(55, 40, n)                  # faint protrusion, slowly growing
+    K = np.empty((n, Wd))
+    for k in range(n):
+        prof = np.full(Wd, 60.0)
+        prof[x >= tips_true[k]] = 68.0                   # ~4 noise units, like Exp 2 trap 5
+        prof[x >= Wd - 12] = 80.0                        # base at the entrance
+        prof[1:4] = 72.0                                 # channel-end line, 3 px, steady, a bit brighter
+        K[k] = prof + rng.normal(0, 2.0, Wd)
+    tips, _ = track_tip(K, Wd, np.ones(n, bool))
+    assert np.median(np.abs(tips - tips_true)) < 2 and np.all(tips > 10)
+
+    full = np.full((n, Wd), 70.0) + rng.normal(0, 2.0, (n, Wd))    # protrusion up to the box edge
+    assert np.allclose(mask_channel_end(full), full)                # left alone

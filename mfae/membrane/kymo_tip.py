@@ -76,9 +76,40 @@ def _box_mean(a: np.ndarray, lo_off: int, hi_off: int) -> np.ndarray:
     return (c[..., hi] - c[..., lo]) / cnt
 
 
+def mask_channel_end(K: np.ndarray, max_cols: int = 12) -> np.ndarray:
+    """
+    Blank out the bright line at the far end of the channel (box edge side).
+
+    The channel end shows up as a narrow line a few pixels wide next to the
+    box edge, steady over the whole recording (real data: about 2 um at
+    -39..-40 um in every trap). It looks like a protrusion edge to the
+    tracker. Detected on the time-median profile: columns within max_cols of
+    the box edge that are clearly brighter than the channel just inside them
+    (3 noise units). Those columns get the value of the first column inside
+    them. A protrusion that really fills the channel up to the box edge is not
+    affected (the channel just inside it is as bright).
+    """
+    K = np.array(K, dtype=np.float64, copy=True)
+    if K.ndim != 2 or K.shape[1] < 3 * max_cols:
+        return K
+    M = np.nanmedian(K, axis=0)
+    if not np.all(np.isfinite(M[:2 * max_cols + 10])):
+        return K
+    noise = 1.4826 * np.median(np.abs(np.diff(K, axis=1)[:, max_cols:2 * max_cols]))
+    noise = max(noise / np.sqrt(max(K.shape[0], 1)) * 4.0, 1e-6)   # median over frames: much less noisy
+    ref = float(np.median(M[max_cols:max_cols + 10]))
+    bright = M[:max_cols] > ref + 3.0 * noise
+    if not bright.any():
+        return K
+    e = int(np.max(np.where(bright)[0])) + 2       # one column of margin
+    e = min(e, max_cols)
+    K[:, :e] = K[:, e:e + 1]
+    return K
+
+
 def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
               level_fraction: float = 0.25, min_contrast: float = 3.0,
-              time_sigma: float = 0.0, jump_cost: float = 1.0,
+              time_sigma: float = 0.0, jump_cost: float = 3.0,
               base_px: int = 12, ahead_weight: float = 10,
               jump_cap_px: int = 10) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -92,8 +123,9 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
     frame has no usable edge; also the noise units a far end must reach to
     count as protrusion and a clear edge must step.
     jump_cost: penalty per pixel of tip movement between frames, in noise
-    units of edge strength (1.0 -> a jump of jump_cap_px = 10 px or more costs
-    as much as a 10-noise-unit edge; a bright edge is worth far more).
+    units of edge strength (3.0 -> a jump of jump_cap_px = 10 px or more costs
+    as much as a 30-noise-unit edge; a bright edge is worth far more). Tuned
+    on real LifeAct kymographs (Exp 2 traps 3, 5, 11, 15).
     time_sigma: optional Gaussian smoothing over frames (0 = off; smoothing
     leaks a moving tip into neighbouring frames, so it is off by default).
 
@@ -108,7 +140,7 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
     significant = np.zeros(n, dtype=bool)
     if n == 0 or W < 2 * base_px:
         return tip, significant
-    K = K[:, :W]
+    K = mask_channel_end(K[:, :W])
     Ks = _smooth_time(K, time_sigma)
 
     # per-frame background (channel ahead) and protrusion base level
