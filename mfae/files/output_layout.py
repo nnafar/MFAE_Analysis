@@ -7,21 +7,29 @@ Folder layout and file names of one experiment's results (single source of truth
     0_Overview/                   trap_map.png, trap_summary.csv (one row per trap)
     1_Protrusion_and_Shape/
         Figures/                  All_traps_*.pdf (protrusion length, kymographs, area, solidity)
-        Data/                     Trap_XX_protrusion_and_shape.csv, Trap_XX_membrane_kymograph.csv
+        Data/
+            Traces/               Trap_XX_protrusion_trace.csv (length, areas, solidity per frame)
+            Kymographs/           Trap_XX_membrane_kymograph.csv
         Movies/                   Trap_XX_tracking.avi
     2_Dye_Uptake/
-        Figures/  Data/  Movies/  (Trap_XX_dye_uptake.csv, ..._dye_kymograph.csv, ..._dye_masks.avi)
+        Figures/  Movies/         (..._dye_masks.avi)
+        Data/Traces/              Trap_XX_dye_uptake.csv
+        Data/Kymographs/          Trap_XX_dye_kymograph.csv
     3_Actin/
-        Figures/  Data/  Movies/  (Trap_XX_actin.csv, ..._actin_kymograph.csv, ..._actin_zones.avi, ...)
+        Figures/  Movies/         (..._actin_zones.avi, ...)
+        Data/Traces/              Trap_XX_actin.csv
+        Data/Kymographs/          Trap_XX_actin_kymograph.csv
     4_Mechanics/                  Flow_conditions.csv/.pdf, Viscoelastic_fits.csv, per-trap fit plots
     Run_Info/                     effective_config.yaml, session_cache.json, analysis.log
 
 Everything that writes a result takes its folder from build()/complete() and
 its file name from the helpers below, so the layout is defined only here.
 Readers (bulk analysis) use the *_candidates helpers, which also find results
-written with the older layouts ("Protrusion Length Detection/...", flat).
+written with the older layouts (CSVs directly in Data/, "Protrusion Length
+Detection/...", flat).
 """
 
+import re
 from pathlib import Path
 from typing import Dict, List, Union
 
@@ -35,6 +43,7 @@ ACTIN_TOP = "3_Actin"
 MECHANICS = "4_Mechanics"
 RUN_INFO = "Run_Info"
 FIGURES, DATA, MOVIES = "Figures", "Data", "Movies"
+TRACES, KYMOGRAPHS = "Traces", "Kymographs"     # sub-folders of each Data folder
 
 # Older layout (kept for readers of earlier results)
 OLD_PROTRUSION, OLD_FULL_CSV = "Protrusion Length Detection", "Full protrusion detection"
@@ -50,16 +59,16 @@ _PATHS = {
     'run_info':      (RUN_INFO,),
     'protrusion':    (PROTRUSION_TOP, FIGURES),
     'morphology':    (PROTRUSION_TOP, FIGURES),
-    'full_csv':      (PROTRUSION_TOP, DATA),
-    'membrane_kymo': (PROTRUSION_TOP, DATA),
+    'full_csv':      (PROTRUSION_TOP, DATA, TRACES),
+    'membrane_kymo': (PROTRUSION_TOP, DATA, KYMOGRAPHS),
     'movies':        (PROTRUSION_TOP, MOVIES),
     'dye':           (DYE_TOP, FIGURES),
-    'dye_traces':    (DYE_TOP, DATA),
-    'dye_kymo':      (DYE_TOP, DATA),
+    'dye_traces':    (DYE_TOP, DATA, TRACES),
+    'dye_kymo':      (DYE_TOP, DATA, KYMOGRAPHS),
     'dye_movies':    (DYE_TOP, MOVIES),
     'actin':         (ACTIN_TOP, FIGURES),
-    'actin_traces':  (ACTIN_TOP, DATA),
-    'actin_kymo':    (ACTIN_TOP, DATA),
+    'actin_traces':  (ACTIN_TOP, DATA, TRACES),
+    'actin_kymo':    (ACTIN_TOP, DATA, KYMOGRAPHS),
     'actin_movies':  (ACTIN_TOP, MOVIES),
     'fitting':       (MECHANICS,),
 }
@@ -69,9 +78,10 @@ _PARENT = {
     'dye_traces': 'dye', 'dye_kymo': 'dye', 'dye_movies': 'dye',
     'actin_traces': 'actin', 'actin_kymo': 'actin', 'actin_movies': 'actin',
 }
-_SIBLING_NAME = {'full_csv': DATA, 'membrane_kymo': DATA, 'movies': MOVIES,
-                 'dye_traces': DATA, 'dye_kymo': DATA, 'dye_movies': MOVIES,
-                 'actin_traces': DATA, 'actin_kymo': DATA, 'actin_movies': MOVIES}
+_SIBLING_NAME = {'full_csv': (DATA, TRACES), 'membrane_kymo': (DATA, KYMOGRAPHS), 'movies': (MOVIES,),
+                 'dye_traces': (DATA, TRACES), 'dye_kymo': (DATA, KYMOGRAPHS), 'dye_movies': (MOVIES,),
+                 'actin_traces': (DATA, TRACES), 'actin_kymo': (DATA, KYMOGRAPHS),
+                 'actin_movies': (MOVIES,)}
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +89,7 @@ _SIBLING_NAME = {'full_csv': DATA, 'membrane_kymo': DATA, 'movies': MOVIES,
 # ---------------------------------------------------------------------------
 _TRAP_FILES = {
     # kind:              (template,                          description for README.txt)
-    'protrusion_csv':    ("Trap_{n:02d}_protrusion_and_shape.csv",
+    'protrusion_csv':    ("Trap_{n:02d}_protrusion_trace.csv",
                           "per frame: protrusion length, areas, volumes, body solidity, which cell"),
     'membrane_kymo_csv': ("Trap_{n:02d}_membrane_kymograph.csv",
                           "membrane intensity along the channel centre line over time"),
@@ -194,7 +204,7 @@ def complete(dirs: Dict[str, Path]) -> Dict[str, Path]:
         parent = _PARENT.get(key)
         if parent and parent in out and (std is None or out[parent] != std[parent]):
             p = out[parent]
-            out[key] = (p.parent if p.name == FIGURES else p) / _SIBLING_NAME[key]
+            out[key] = (p.parent if p.name == FIGURES else p).joinpath(*_SIBLING_NAME[key])
         elif std is not None:
             out[key] = std[key]
         else:
@@ -221,18 +231,67 @@ def session_cache_candidates(exp_dir: Union[str, Path]) -> List[Path]:
 # ---------------------------------------------------------------------------
 def full_csv_candidates(exp_dir: Union[str, Path]) -> List[Path]:
     exp_dir = Path(exp_dir)
-    return [exp_dir / PROTRUSION_TOP / DATA, exp_dir / OLD_PROTRUSION / OLD_FULL_CSV,
-            exp_dir / OLD_FULL_CSV]
+    return [exp_dir / PROTRUSION_TOP / DATA / TRACES, exp_dir / PROTRUSION_TOP / DATA,
+            exp_dir / OLD_PROTRUSION / OLD_FULL_CSV, exp_dir / OLD_FULL_CSV]
 
 
 def dye_traces_candidates(exp_dir: Union[str, Path]) -> List[Path]:
     exp_dir = Path(exp_dir)
-    return [exp_dir / DYE_TOP / DATA, exp_dir / OLD_DYE / OLD_DYE_TRACES, exp_dir / OLD_DYE]
+    return [exp_dir / DYE_TOP / DATA / TRACES, exp_dir / DYE_TOP / DATA,
+            exp_dir / OLD_DYE / OLD_DYE_TRACES, exp_dir / OLD_DYE]
 
 
 def actin_traces_candidates(exp_dir: Union[str, Path]) -> List[Path]:
     exp_dir = Path(exp_dir)
-    return [exp_dir / ACTIN_TOP / DATA, exp_dir / OLD_ACTIN / OLD_ACTIN_TRACES, exp_dir / OLD_ACTIN]
+    return [exp_dir / ACTIN_TOP / DATA / TRACES, exp_dir / ACTIN_TOP / DATA,
+            exp_dir / OLD_ACTIN / OLD_ACTIN_TRACES, exp_dir / OLD_ACTIN]
+
+
+# Per-trap CSVs that earlier versions wrote directly into the Data folders
+# (exact, untagged names only; they are rewritten by the analysis).
+_FLAT_DATA_NAMES = ("protrusion_and_shape", "membrane_kymograph", "dye_uptake", "dye_kymograph",
+                    "actin", "actin_kymograph")
+_OLD_PROTRUSION_TAGGED = re.compile(r"^(Trap_\d{2})_protrusion_and_shape_(.+)\.csv$")
+_TAGGED_TRACE = "Trap_{n:02d}_protrusion_trace_*.csv"
+
+
+def protrusion_csv_name(folder: Union[str, Path], trap_number: int) -> str:
+    """
+    File name to write a trap's protrusion trace under: the hand-tagged name
+    (e.g. Trap_03_protrusion_trace_R.csv) when one exists in `folder`, so a
+    re-analysis keeps the tag and leaves one file per trap; else the plain name.
+    """
+    tagged = sorted(Path(folder).glob(_TAGGED_TRACE.format(n=int(trap_number)))) if Path(folder).is_dir() else []
+    return tagged[0].name if tagged else trap_file('protrusion_csv', trap_number)
+
+
+def remove_flat_data_files(results_dir: Union[str, Path]) -> int:
+    """
+    Tidy the Data folders written by an earlier version before re-analysing:
+    hand-tagged protrusion files (Trap_03_protrusion_and_shape_R.csv) move to
+    Data/Traces as Trap_03_protrusion_trace_R.csv (the tag is kept, and the
+    analysis then writes into that file); the plain per-trap CSVs, which the
+    analysis rewrites into Data/Traces and Data/Kymographs, are deleted.
+    Any other file is left alone. Returns how many files were moved or deleted.
+    """
+    root, n = Path(results_dir), 0
+    for top in (PROTRUSION_TOP, DYE_TOP, ACTIN_TOP):
+        data = root / top / DATA
+        if not data.is_dir():
+            continue
+        for f in sorted(data.iterdir()):
+            if not f.is_file():
+                continue
+            m = _OLD_PROTRUSION_TAGGED.match(f.name)
+            if top == PROTRUSION_TOP and m:
+                dest = data / TRACES / f"{m.group(1)}_protrusion_trace_{m.group(2)}.csv"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                f.replace(dest)
+                n += 1
+            elif re.fullmatch(r"Trap_\d{2}_(%s)\.csv" % "|".join(_FLAT_DATA_NAMES), f.name):
+                f.unlink()
+                n += 1
+    return n
 
 
 def mechanics_candidates(exp_dir: Union[str, Path]) -> List[Path]:
@@ -244,7 +303,7 @@ def trap_file_candidates(kind: str, trap_number: int) -> List[str]:
     """Current file name first, then the names older versions wrote."""
     n = int(trap_number)
     old = {
-        'protrusion_csv': [f"trap_{n:02d}_detection_full.csv"],
+        'protrusion_csv': [f"Trap_{n:02d}_protrusion_and_shape.csv", f"trap_{n:02d}_detection_full.csv"],
         'dye_csv':        [f"Trap_{n:02d}_Uptake_Data.csv", f"Trap_{n}_Uptake_Data.csv"],
         'actin_csv':      [f"Trap_{n:02d}_Actin_Data.csv", f"Trap_{n}_Actin_Data.csv"],
     }.get(kind, [])
@@ -271,7 +330,7 @@ COLUMN_NOTES = {
         ("Why_tracking_ended", "cell change / left ROI (tip reached the box edge) / end of recording"),
         ("Protrusion_at_pulse_um", "protrusion length at the pulse frame"),
     ],
-    'protrusion_and_shape.csv': [
+    'protrusion_trace.csv': [
         ("Frame", "frame index counted from 0"),
         ("Protrusion_Length_um", "tip position to channel entrance; NaN outside the analysed cell"),
         ("Protrusion/Body/Total_Area_um2", "mask areas; Volume_*_um3 assume a cylinder / sphere"),
@@ -323,15 +382,14 @@ def write_readme(results_dir: Union[str, Path], experiment_id: str) -> Path:
         if not top.is_dir():
             continue
         lines += [f"{folder}/", f"    {FOLDER_DESCRIPTIONS[folder]}"]
-        subs = [top] + sorted(p for p in top.iterdir() if p.is_dir())
+        subs = [top] + sorted(p for p in top.rglob("*") if p.is_dir())
         for sub in subs:
             files = sorted(p.name for p in sub.iterdir() if p.is_file())
             if not files:
                 continue
-            indent = "    "
+            indent = "    " if sub == top else "        "
             if sub != top:
-                lines.append(f"    {sub.name}/")
-                indent = "        "
+                lines.append(f"    {sub.relative_to(top).as_posix()}/")
             seen = set()
             for name in files:
                 shown = name

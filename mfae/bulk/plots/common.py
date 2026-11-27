@@ -599,6 +599,7 @@ def render_visco_parameter_superplot(
         for lbl in ax.get_xticklabels():
           lbl.set_ha("center")
 
+      drawn: List[Tuple[float, float, float]] = []   # (x_lo, x_hi, top) of brackets drawn
       for idx_a, idx_b in bracket_pairs:
         if idx_a >= len(categories) or idx_b >= len(categories):
           continue
@@ -610,31 +611,41 @@ def render_visco_parameter_superplot(
           continue
         stars, label, lw, delta = _build_stat_label(a, b)
 
-      rep_a = (
-          panel_df[panel_df["Category"] == cat_a]
-          .groupby(["Date", "Chip_ID"])[col]
-          .mean()
-          .values
-      )
-      rep_b = (
-          panel_df[panel_df["Category"] == cat_b]
-          .groupby(["Date", "Chip_ID"])[col]
-          .mean()
-          .values
-      )
-      p_exp, n_exp_a, n_exp_b = _sp_experiment_level_mw(rep_a, rep_b)
+        # Experiment-level check and the bracket, for EVERY pair (this block
+        # used to sit after the loop, so only the last pair got a bracket and a
+        # panel without a testable pair crashed).
+        rep_a = (
+            panel_df[panel_df["Category"] == cat_a]
+            .groupby(["Date", "Chip_ID"])[col]
+            .mean()
+            .values
+        )
+        rep_b = (
+            panel_df[panel_df["Category"] == cat_b]
+            .groupby(["Date", "Chip_ID"])[col]
+            .mean()
+            .values
+        )
+        p_exp, n_exp_a, n_exp_b = _sp_experiment_level_mw(rep_a, rep_b)
 
-      logger.info(
-          f"  [{title.splitlines()[0]:<30}] {cat_a} vs {cat_b}: "
-          f"cells n=({len(a)},{len(b)})  stars={stars}  delta={delta:+.3f}  "
-          f"exp n=({n_exp_a},{n_exp_b})  p_exp={p_exp:.4g}"
-      )
+        logger.info(
+            f"  [{title.splitlines()[0]:<30}] {cat_a} vs {cat_b}: "
+            f"cells n=({len(a)},{len(b)})  stars={stars}  delta={delta:+.3f}  "
+            f"exp n=({n_exp_a},{n_exp_b})  p_exp={p_exp:.4g}"
+        )
 
-      if label is not None:
-          y_top = float(np.nanmax(np.concatenate([a, b])))
-          _add_bracket(
-              ax, idx_a, idx_b, y_top, label, lw=lw, fontsize=bracket_fontsize
-          )
+        if label is not None:
+            y_top = float(np.nanmax(np.concatenate([a, b])))
+            x_lo, x_hi = sorted((idx_a, idx_b))
+            # stack above any earlier bracket that overlaps this one sideways
+            for d_lo, d_hi, d_top in drawn:
+                if x_lo < d_hi and d_lo < x_hi:
+                    y_top = max(y_top, d_top)
+            top = _add_bracket(
+                ax, idx_a, idx_b, y_top, label, lw=lw, fontsize=bracket_fontsize
+            )
+            if top is not None:
+                drawn.append((x_lo, x_hi, top))
 
     # Legend in the last unused slot
     if n_panels < len(axes):
@@ -810,10 +821,13 @@ def _delta_linewidth(delta: float) -> float:
 
 def _add_bracket(ax, x1: float, x2: float, y_top: float, label: Optional[str],
                  lw: float = 0.9, color: str = 'black',
-                 fontsize: Optional[float] = None, inset: float = 0.13) -> None:
-    """Draw a complete statistical significance bracket with vertical ticks and label."""
+                 fontsize: Optional[float] = None, inset: float = 0.13) -> Optional[float]:
+    """
+    Draw a complete statistical significance bracket with vertical ticks and label.
+    Returns the height just above the label (to stack the next bracket), or None.
+    """
     if label is None:
-        return
+        return None
     if fontsize is None:
         fontsize = globals().get('FONT_BRACKET', 10)
 
@@ -845,6 +859,7 @@ def _add_bracket(ax, x1: float, x2: float, y_top: float, label: Optional[str],
 
     if needed_top > y_hi:
         ax.set_ylim(y_lo, needed_top)
+    return float(needed_top)
 
 def _build_stat_label(vals_a: np.ndarray, vals_b: np.ndarray, show_p_val: bool = False
                       ) -> Tuple[str, Optional[str], float, float]:
@@ -1078,8 +1093,7 @@ def plot_uptake_dynamics(grouped_data, output_dir: Path):
 
         y_limit = global_max_y * 1.1 if global_max_y > 0 else 1.0
         fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-        if n == 1: axes = [axes]
-        else: axes = axes.flatten()
+        axes = np.asarray(axes).flatten()   # one panel or many
         
         _add_global_legend(fig, mode='uptake')
         
@@ -1251,8 +1265,7 @@ def plot_uptake_fits_multipanel(grouped_data, output_dir: Path):
         if n == 0: continue
         
         fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-        if n == 1: axes = [axes]
-        else: axes = axes.flatten()
+        axes = np.asarray(axes).flatten()   # one panel or many
         
         _add_global_legend(fig, mode='uptake')
         fig.text(0.5, 0.01, 'Time from Pulse (s)', ha='center', fontsize=14)
@@ -1317,8 +1330,7 @@ def plot_recoil_fits_multipanel(grouped_data, output_dir: Path):
         if n == 0: continue
         
         fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-        if n == 1: axes = [axes]
-        else: axes = axes.flatten()
+        axes = np.asarray(axes).flatten()   # one panel or many
         
         _add_global_legend(fig, mode='recoil')
         fig.text(0.5, 0.01, 'Time from Pulse (s)', ha='center', fontsize=14)
@@ -1395,8 +1407,7 @@ def plot_uptake_traces_multipanel(grouped_data, output_dir: Path):
         y_limit = global_max_y * 1.1 if global_max_y > 0 else 1.0
 
         fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-        if n == 1: axes = [axes]
-        else: axes = axes.flatten()
+        axes = np.asarray(axes).flatten()   # one panel or many
         
         _add_global_legend(fig, mode='uptake')
         fig.text(0.5, 0.01, 'Time from Pulse (s)', ha='center', fontsize=16)
@@ -1510,8 +1521,7 @@ def plot_asp_best_fit_multipanel(
         cols = 5
         rows = math.ceil(n / cols)
         fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-        if n == 1: axes = [axes]
-        else: axes = axes.flatten()
+        axes = np.asarray(axes).flatten()   # one panel or many
 
         handles = [
             mlines.Line2D([], [], color='black', marker='o', lw=0, label='Data', alpha=0.4, ms=4),
@@ -1945,8 +1955,7 @@ def plot_model_independent_fits_multipanel(
         cols = 5
         rows = math.ceil(n / cols)
         fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-        if n == 1: axes = [axes]
-        else: axes = axes.flatten()
+        axes = np.asarray(axes).flatten()   # one panel or many
 
         handles = [
             mlines.Line2D([], [], color='black', marker='o', lw=0, label='Data', alpha=0.4, ms=4),

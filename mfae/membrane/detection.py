@@ -221,13 +221,21 @@ class LineDetectionMFA:
         
         return self.run_detection_with_parameters(pipette_x, threshold_prot, threshold_body=threshold_body)
 
-    def run_detection(self, skip_pipette: bool = False) -> Dict[str, Any]:
+    def run_detection(self, skip_pipette: bool = False,
+                      initial_thresholds: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
         """
         Executes the full pipeline with USER INTERACTION.
         Used during the setup phase to let the user tune parameters.
 
         skip_pipette: keep the entrance in self.pipette_coords (e.g. the saved
         one) and open only the threshold windows (--thresholds).
+        initial_thresholds: (protrusion, body) to start the threshold windows
+        at (values chosen before, when the user comes back to this trap);
+        otherwise they start at Otsu.
+
+        Keys in every window: ENTER confirms, B goes back one window (from the
+        first window of a trap: results['signal'] = 'back', the previous trap),
+        R restarts from the first trap ('restart'), ESC stops ('stop').
         """
         if not self.roi_images or all(frame is None for frame in self.roi_images):
             logger.warning("No valid frames found for analysis.")
@@ -247,53 +255,70 @@ class LineDetectionMFA:
             self.results['signal'] = 'stop'
             return self.results
         
-        # --- Step 1: User sets Pipette Entrance ---
-        # This defines the "Zero" point for length calculations
-        if skip_pipette and self.pipette_coords:
-            pipette_start_x = int(self.pipette_coords[0])
-        else:
-            signal, pipette_start_x = self._interactive_pipette_positioning(test_image)
-            if signal in ('restart', 'stop'):
-                self.results['signal'] = signal
-                return self.results
-        self.results['pipette_start_x_used'] = pipette_start_x
-
-        # --- Steps 2 & 3: Threshold / Canny Sigma Selection ---
-        # GUV mode uses edge-gradient segmentation — a threshold slider is
-        # meaningless. Instead, show a live Canny preview so the user can
-        # verify sigma and confirm before batch processing begins.
         guv_settings_cfg = self.params.get('guv_settings', {})
         is_guv = guv_settings_cfg.get('enable', False)
 
-        if is_guv:
-            logger.info("Step 2: GUV Canny Preview (edge sensitivity)")
-            signal, confirmed_sigma = self._interactive_canny_preview(test_image, pipette_start_x)
+        # Windows of this trap, in order. B steps back through them; B in the
+        # first one hands 'back' to the caller (the previous trap). Values
+        # already confirmed are where a window opens again.
+        steps = [] if (skip_pipette and self.pipette_coords) else ['pipette']
+        steps += ['canny'] if is_guv else ['prot', 'body']
+        chosen: Dict[str, Any] = {}
+        if initial_thresholds is not None:
+            chosen['prot'], chosen['body'] = (int(v) for v in initial_thresholds)
+        pipette_start_x = int(self.pipette_coords[0]) if self.pipette_coords else 0
+
+        k = 0
+        while k < len(steps):
+            step = steps[k]
+            if step == 'pipette':
+                # --- Step 1: User sets Pipette Entrance ---
+                # This defines the "Zero" point for length calculations
+                signal, value = self._interactive_pipette_positioning(test_image)
+            elif step == 'canny':
+                # GUV mode uses edge-gradient segmentation — a threshold slider is
+                # meaningless. Instead, show a live Canny preview so the user can
+                # verify sigma and confirm before batch processing begins.
+                logger.info("Step 2: GUV Canny Preview (edge sensitivity)")
+                signal, value = self._interactive_canny_preview(test_image, pipette_start_x)
+            elif step == 'prot':
+                logger.info("Step 2: Protrusion Threshold (Wall Clipping Active)")
+                signal, value = self._interactive_threshold_selection(
+                    test_image, pipette_start_x, clip_walls=True, initial=chosen.get('prot'))
+            else:
+                logger.info("Step 3: Cell Body Threshold (Full ROI Height)")
+                signal, value = self._interactive_threshold_selection(
+                    test_image, pipette_start_x, clip_walls=False, initial=chosen.get('body'))
+
+            if signal == 'back':
+                if k == 0:
+                    self.results['signal'] = 'back'
+                    return self.results
+                k -= 1
+                continue
             if signal in ('restart', 'stop'):
                 self.results['signal'] = signal
                 return self.results
+            chosen[step] = value
+            if step == 'pipette':
+                pipette_start_x = int(value)
+                self.pipette_coords = [pipette_start_x, 0]   # B comes back to it here
+            k += 1
+
+        self.results['pipette_start_x_used'] = pipette_start_x
+        if is_guv:
             # Write the confirmed sigma back into params so _segment_guv_*
             # methods pick it up for every frame during batch processing.
-            self.params.setdefault('guv_settings', {})['canny_sigma'] = confirmed_sigma
+            self.params.setdefault('guv_settings', {})['canny_sigma'] = chosen['canny']
             # Threshold values are not used in GUV mode; set neutral placeholders
             # so downstream code that reads these keys does not crash.
             self.results['threshold_prot'] = 0
             self.results['threshold_body'] = 0
             thr_prot = 0
         else:
-            # Standard cell mode: two separate threshold steps
-            logger.info("Step 2: Protrusion Threshold (Wall Clipping Active)")
-            signal, thr_prot = self._interactive_threshold_selection(test_image, pipette_start_x, clip_walls=True)
-            if signal in ('restart', 'stop'):
-                self.results['signal'] = signal
-                return self.results
+            thr_prot = chosen['prot']
             self.results['threshold_prot'] = thr_prot
-
-            logger.info("Step 3: Cell Body Threshold (Full ROI Height)")
-            signal, thr_body = self._interactive_threshold_selection(test_image, pipette_start_x, clip_walls=False)
-            if signal in ('restart', 'stop'):
-                self.results['signal'] = signal
-                return self.results
-            self.results['threshold_body'] = thr_body
+            self.results['threshold_body'] = chosen['body']
 
         if utils.membrane_enhancement_enabled(self.params):
             self.results['denoise_sigma_along'] = float(
@@ -389,7 +414,7 @@ class LineDetectionMFA:
                 "Pipette Entrance: {} px".format(current_pipette_start_x), 
                 "A/D : +/- 1 px",
                 "W/S : +/- 10 px",
-                "ENTER=Confirm"
+                "ENTER: Confirm | B: Back | R: Restart (trap 1) | ESC: Stop"
             ])
             cv2.imshow(window_name, display_image)
 
@@ -400,6 +425,8 @@ class LineDetectionMFA:
                 cv2.destroyAllWindows(); return 'stop', None
             if key in (ord('r'), ord('R')): 
                 cv2.destroyAllWindows(); return 'restart', None
+            if key in (ord('b'), ord('B'), 8):   # B or Backspace: previous trap
+                cv2.destroyAllWindows(); return 'back', None
             
             # Fine Adjustment (1 px)
             elif key in (ord('a'), ord('A')): current_pipette_start_x = max(1, current_pipette_start_x - 1)
@@ -557,7 +584,7 @@ class LineDetectionMFA:
                 f"Canny sigma: {sigma:.2f}",
                 "Mouse: Drag bar to adjust",
                 "W/S: +/- 0.05 | A/D: +/- 0.01",
-                "ENTER: Confirm | R: Restart | ESC: Stop"
+                "ENTER: Confirm | B: Back | R: Restart (trap 1) | ESC: Stop"
             ])
             cv2.imshow(window_name, combined_display)
 
@@ -571,6 +598,9 @@ class LineDetectionMFA:
             if key in (ord('r'), ord('R')):
                 cv2.destroyAllWindows()
                 return 'restart', sigma
+            if key in (ord('b'), ord('B'), 8):
+                cv2.destroyAllWindows()
+                return 'back', sigma
             if key in (ord('w'), ord('W')):
                 state['sigma'] = round(min(SIGMA_MAX, sigma + 0.05), 2)
             elif key in (ord('s'), ord('S')):
@@ -580,7 +610,8 @@ class LineDetectionMFA:
             elif key in (ord('a'), ord('A')):
                 state['sigma'] = round(max(SIGMA_MIN, sigma - 0.01), 2)
 
-    def _interactive_threshold_selection(self, test_image: np.ndarray, pipette_start_x: int, clip_walls: bool) -> Tuple[str, Optional[int]]:
+    def _interactive_threshold_selection(self, test_image: np.ndarray, pipette_start_x: int, clip_walls: bool,
+                                         initial: Optional[int] = None) -> Tuple[str, Optional[int]]:
         """
         Opens a GUI window. User adjusts a threshold to separate Cell from Background.
         Can operate in Protrusion Mode (clip_walls=True) or Body Mode (clip_walls=False).
@@ -626,8 +657,11 @@ class LineDetectionMFA:
         test_image_8bit, roi_for_stats = _prepare()
         h, w = test_image_8bit.shape[:2]
 
-        # 2. Initial Threshold Guess (Otsu)
-        if roi_for_stats.size > 0:
+        # 2. Initial Threshold: the value chosen before (coming back with B /
+        #    R), else a guess (Otsu)
+        if initial is not None:
+            initial_threshold = int(initial)
+        elif roi_for_stats.size > 0:
             otsu_val, _ = cv2.threshold(roi_for_stats, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             initial_threshold = int(otsu_val)
         else:
@@ -729,7 +763,7 @@ class LineDetectionMFA:
                     f"Scale: 255 = {fs:g} sigma" + (" (fitted to bright cell)" if fs > cfg_fs else ""))
                 overlay_lines.append(
                     f"F: faint-cell smoothing ({image_params.get('membrane_denoise_sigma_along', 1.0):g} px)")
-            overlay_lines.append("ENTER: Confirm | R: Restart")
+            overlay_lines.append("ENTER: Confirm | B: Back | R: Restart (trap 1) | ESC: Stop")
             utils.add_text_overlay(combined_display, overlay_lines)
             cv2.imshow(window_name, combined_display)
             
@@ -737,6 +771,7 @@ class LineDetectionMFA:
             if key == 13: cv2.destroyAllWindows(); return 'confirm', current_threshold
             if key == 27: cv2.destroyAllWindows(); return 'stop', None
             if key in (ord('r'), ord('R')): cv2.destroyAllWindows(); return 'restart', None
+            if key in (ord('b'), ord('B'), 8): cv2.destroyAllWindows(); return 'back', None
             
             # Keyboard controls update the shared state
             if key in (ord('w'), ord('W')): state['threshold'] = min(255, current_threshold + 10)

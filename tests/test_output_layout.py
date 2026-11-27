@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Output folder layout and the readers' fallback to the old flat layout."""
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -13,14 +14,16 @@ from mfae.files import output_layout as ol  # noqa: E402
 def test_build_layout(tmp_path):
     d = ol.build(tmp_path)
     assert d['protrusion'] == tmp_path / '1_Protrusion_and_Shape' / 'Figures'
-    assert d['full_csv'] == tmp_path / '1_Protrusion_and_Shape' / 'Data'
-    assert d['membrane_kymo'] == tmp_path / '1_Protrusion_and_Shape' / 'Data'
+    assert d['full_csv'] == tmp_path / '1_Protrusion_and_Shape' / 'Data' / 'Traces'
+    assert d['membrane_kymo'] == tmp_path / '1_Protrusion_and_Shape' / 'Data' / 'Kymographs'
     assert d['movies'] == tmp_path / '1_Protrusion_and_Shape' / 'Movies'
     assert d['morphology'] == tmp_path / '1_Protrusion_and_Shape' / 'Figures'
     assert d['dye'] == tmp_path / '2_Dye_Uptake' / 'Figures'
-    assert d['dye_traces'] == tmp_path / '2_Dye_Uptake' / 'Data'
+    assert d['dye_traces'] == tmp_path / '2_Dye_Uptake' / 'Data' / 'Traces'
+    assert d['dye_kymo'] == tmp_path / '2_Dye_Uptake' / 'Data' / 'Kymographs'
     assert d['dye_movies'] == tmp_path / '2_Dye_Uptake' / 'Movies'
-    assert d['actin_traces'] == tmp_path / '3_Actin' / 'Data'
+    assert d['actin_traces'] == tmp_path / '3_Actin' / 'Data' / 'Traces'
+    assert d['actin_kymo'] == tmp_path / '3_Actin' / 'Data' / 'Kymographs'
     assert d['actin_movies'] == tmp_path / '3_Actin' / 'Movies'
     assert d['fitting'] == tmp_path / '4_Mechanics'
     assert d['overview'] == tmp_path / '0_Overview'
@@ -39,7 +42,8 @@ def test_complete_fills_missing_keys_from_parents(tmp_path):
 
 def test_file_names():
     assert ol.trap_file('dye_csv', 3) == 'Trap_03_dye_uptake.csv'
-    assert ol.trap_file('protrusion_csv', 12) == 'Trap_12_protrusion_and_shape.csv'
+    assert ol.trap_file('protrusion_csv', 12) == 'Trap_12_protrusion_trace.csv'
+    assert 'Trap_12_protrusion_and_shape.csv' in ol.trap_file_candidates('protrusion_csv', 12)
     assert ol.trap_file_candidates('dye_csv', 3)[1:] == ['Trap_03_Uptake_Data.csv', 'Trap_3_Uptake_Data.csv']
 
 
@@ -50,8 +54,11 @@ def test_readers_fall_back_to_old_layouts(tmp_path):
     older = tmp_path / 'Protrusion Length Detection' / 'Full protrusion detection'
     older.mkdir(parents=True)
     assert ol.first_existing(ol.full_csv_candidates(tmp_path)) == older
-    new = tmp_path / '1_Protrusion_and_Shape' / 'Data'
-    new.mkdir(parents=True)
+    flat_data = tmp_path / '1_Protrusion_and_Shape' / 'Data'           # previous layout
+    flat_data.mkdir(parents=True)
+    assert ol.first_existing(ol.full_csv_candidates(tmp_path)) == flat_data
+    new = flat_data / 'Traces'
+    new.mkdir()
     assert ol.first_existing(ol.full_csv_candidates(tmp_path)) == new
     assert ol.first_existing(ol.session_cache_candidates(tmp_path)) == tmp_path / 'Run_Info' / 'session_cache.json'
 
@@ -195,3 +202,83 @@ def test_thresholds_only_redoes_every_saved_trap_and_keeps_entrances():
     assert asked == [([2, 6, 9], {2: 102, 6: 106, 9: 109}, True)]
     assert [c['thr_prot'] for c in configs] == [50, 50, 50]
     assert [c['pip'] for c in configs] == [102, 106, 109]          # entrances kept
+
+
+def test_flat_data_files_of_the_previous_layout_are_tidied(tmp_path):
+    data = tmp_path / '1_Protrusion_and_Shape' / 'Data'
+    (data / 'Traces').mkdir(parents=True)
+    for name in ('Trap_01_protrusion_and_shape.csv', 'Trap_01_membrane_kymograph.csv', 'notes.csv',
+                 'Trap_03_protrusion_and_shape_R.csv'):
+        (data / name).write_text(name)
+    dye = tmp_path / '2_Dye_Uptake' / 'Data'
+    dye.mkdir(parents=True)
+    (dye / 'Trap_03_dye_uptake.csv').write_text('x')
+    assert ol.remove_flat_data_files(tmp_path) == 4
+    assert sorted(p.name for p in data.iterdir()) == ['Traces', 'notes.csv']      # own files kept
+    tagged = data / 'Traces' / 'Trap_03_protrusion_trace_R.csv'                  # tag kept, moved
+    assert tagged.read_text() == 'Trap_03_protrusion_and_shape_R.csv'
+    # the analysis then writes trap 3 into the tagged file, trap 1 under the plain name
+    assert ol.protrusion_csv_name(data / 'Traces', 3) == 'Trap_03_protrusion_trace_R.csv'
+    assert ol.protrusion_csv_name(data / 'Traces', 1) == 'Trap_01_protrusion_trace.csv'
+
+
+def test_readme_lists_the_data_subfolders(tmp_path):
+    d = ol.build(tmp_path)
+    for key, name in (('full_csv', 'Trap_01_protrusion_trace.csv'),
+                      ('membrane_kymo', 'Trap_01_membrane_kymograph.csv')):
+        d[key].mkdir(parents=True, exist_ok=True)
+        (d[key] / name).write_text('x')
+    text = ol.write_readme(tmp_path, 'X').read_text()
+    assert 'Data/Traces/' in text and 'Data/Kymographs/' in text
+    assert 'Trap_XX_protrusion_trace.csv' in text and 'protrusion length' in text
+
+
+
+def _setup_with_script(monkeypatch, script):
+    """MFAAnalysis whose per-trap windows answer from `script` (trap -> list of signals)."""
+    from mfae import pipeline, utils
+    obj = pipeline.MFAAnalysis.__new__(pipeline.MFAAnalysis)
+    obj.params, obj.skipped = {'workflow_settings': {}}, []
+    obj.file_reader = types.SimpleNamespace(tif_files=[0] * 10)
+    obj.loader = types.SimpleNamespace(get_frame=lambda i: 'frame', clear_cache=lambda: None)
+    obj.cropper = types.SimpleNamespace(selected_traps=[0, 3, 5], pipette_coords=[50, 0],
+                                        process_frame=lambda img, t: f'roi{t}')
+    calls = []
+
+    class FakeDet:
+        def __init__(self, rois, pip, params):
+            self.trap = int(rois[0][3:]); self.pip = pip
+
+        def run_detection(self, skip_pipette=False, initial_thresholds=None):
+            calls.append((self.trap, initial_thresholds))
+            sig, thr = script[self.trap].pop(0)
+            if sig != 'confirm':
+                return {'signal': sig}
+            return {'signal': 'confirm', 'pipette_start_x_used': self.pip[0],
+                    'threshold_prot': thr, 'threshold_body': thr + 10}
+
+    monkeypatch.setattr(pipeline, 'LineDetectionMFA', FakeDet)
+    return obj, calls
+
+
+def test_setup_back_returns_to_the_previous_trap_at_its_values(monkeypatch):
+    obj, calls = _setup_with_script(monkeypatch, {
+        0: [('confirm', 70), ('confirm', 75)],
+        3: [('back', None), ('confirm', 90)],
+        5: [('confirm', 100)]})
+    signal, configs = obj._collect_interactive_parameters()
+    assert signal == 'confirm'
+    assert calls == [(0, None), (3, None), (0, (70, 80)), (3, None), (5, None)]
+    assert [(c['trap_index'], c['thr_prot']) for c in configs] == [(0, 75), (3, 90), (5, 100)]
+
+
+def test_setup_restart_goes_to_the_first_trap_and_keeps_the_boxes(monkeypatch):
+    obj, calls = _setup_with_script(monkeypatch, {
+        0: [('confirm', 70), ('confirm', 71)],
+        3: [('confirm', 90), ('confirm', 91)],
+        5: [('restart', None), ('confirm', 100)]})
+    signal, configs = obj._collect_interactive_parameters()
+    assert signal == 'confirm'                      # not 'restart': the trap boxes stay
+    assert [c[0] for c in calls] == [0, 3, 5, 0, 3, 5]
+    assert calls[3] == (0, (70, 80))               # earlier choices pre-filled
+    assert [(c['trap_index'], c['thr_prot']) for c in configs] == [(0, 71), (3, 91), (5, 100)]

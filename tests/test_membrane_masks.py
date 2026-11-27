@@ -731,8 +731,33 @@ def test_skip_pipette_opens_only_the_threshold_windows(monkeypatch):
                         lambda img: pytest.fail("entrance window must not open"))
     windows = []
     monkeypatch.setattr(det, "_interactive_threshold_selection",
-                        lambda img, pip, clip_walls: windows.append((pip, clip_walls)) or ('confirm', 90))
+                        lambda img, pip, clip_walls, initial=None: windows.append((pip, clip_walls)) or ('confirm', 90))
     res = det.run_detection(skip_pipette=True)
     assert res['pipette_start_x_used'] == PIP - 3
     assert windows == [(PIP - 3, True), (PIP - 3, False)]
     assert res['threshold_prot'] == 90 and res['threshold_body'] == 90
+
+
+
+def test_back_steps_through_the_windows_of_a_trap(monkeypatch):
+    """B in the body window reopens the protrusion window at the value chosen there;
+    B in a trap's first window hands 'back' to the caller (previous trap)."""
+    from mfae.membrane.detection import LineDetectionMFA
+    det = LineDetectionMFA(_cell_sequence([40]), [PIP, 0], _params())
+    script = iter([('confirm', PIP - 2),            # entrance
+                   ('confirm', 80),                  # protrusion
+                   ('back', None),                   # body -> back to protrusion
+                   ('confirm', 85),                  # protrusion again
+                   ('confirm', 120)])                # body
+    seen = []
+    monkeypatch.setattr(det, "_interactive_pipette_positioning", lambda img: next(script))
+    monkeypatch.setattr(det, "_interactive_threshold_selection",
+                        lambda img, pip, clip_walls, initial=None: seen.append((clip_walls, initial)) or next(script))
+    res = det.run_detection()
+    assert seen == [(True, None), (False, None), (True, 80), (False, None)]
+    assert (res['pipette_start_x_used'], res['threshold_prot'], res['threshold_body']) == (PIP - 2, 85, 120)
+
+    det2 = LineDetectionMFA(_cell_sequence([40]), [PIP, 0], _params())
+    monkeypatch.setattr(det2, "_interactive_threshold_selection",
+                        lambda img, pip, clip_walls, initial=None: ('back', None))
+    assert det2.run_detection(skip_pipette=True)['signal'] == 'back'

@@ -321,7 +321,7 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 dirs['root'], f"trap_{trap_index+1:02d}",
                 dir_full=dirs['full_csv'],
                 time_points=time_data,
-                full_name=output_layout.trap_file('protrusion_csv', trap_index + 1),
+                full_name=output_layout.protrusion_csv_name(dirs['full_csv'], trap_index + 1),
             )
         except Exception:
             worker_logger.warning(f"Trap {trap_index+1}: CSV export failed.", exc_info=True)
@@ -925,6 +925,10 @@ class MFAAnalysis:
 
             # --- Phase 2: Parallel Processing ---
             logger.info("\n== PHASE 2: PARALLEL PROCESSING ==")
+            removed = output_layout.remove_flat_data_files(self.results_dir)
+            if removed:
+                logger.info(f"Moved {removed} CSV file(s) of the earlier layout into Data/Traces and "
+                            f"Data/Kymographs (hand-added tags such as _R are kept).")
             
             # 1. Cache Membrane (Standard)
             mem_mmap_path, mem_shape, mem_dtype = self._prepare_shared_memory_stack(self.file_reader.tif_files, "Membrane")
@@ -1150,47 +1154,86 @@ class MFAAnalysis:
         img = self.loader.get_frame(test_idx)
         
         setup_progress = utils.ProgressTracker(len(selected_indices))
-        
-        for i, trap_index in enumerate(selected_indices):
+
+        # Walk through the traps. In any window, B goes back one window and,
+        # from a trap's first window, to the previous trap; R starts again at
+        # the first trap (the trap boxes are kept). Values chosen before are
+        # where the windows open again, so ENTER keeps them.
+        done: Dict[int, Dict[str, Any]] = {}      # position -> config
+        chosen: Dict[int, Dict[str, Any]] = {}    # trap -> last confirmed config
+        history: List[int] = []                   # positions confirmed, in order
+        skipped_here: set = set()
+        i = 0
+        while i < len(selected_indices):
+            trap_index = selected_indices[i]
             setup_progress.start_trap(i)
             try:
                 roi_img = self.cropper.process_frame(img, trap_index)
                 if roi_img is None:
-                    self.skipped.append(trap_index)
+                    skipped_here.add(trap_index)
                     setup_progress.finish_trap(i, True)
+                    i += 1
                     continue
-        
-                pip0 = ([int(start_pip[trap_index]), 0] if start_pip and trap_index in start_pip
-                        else self.cropper.pipette_coords)
+
+                prev = chosen.get(trap_index)
+                if prev is not None:
+                    pip0 = [int(prev['pip']), 0]
+                elif start_pip and trap_index in start_pip:
+                    pip0 = [int(start_pip[trap_index]), 0]
+                else:
+                    pip0 = self.cropper.pipette_coords
                 det_interactive = LineDetectionMFA([roi_img], pip0, self.params)
-                
-                interactive_res = det_interactive.run_detection(skip_pipette=thresholds_only) 
+
+                interactive_res = det_interactive.run_detection(
+                    skip_pipette=thresholds_only,
+                    initial_thresholds=((prev['thr_prot'], prev['thr_body']) if prev else None))
                 signal = interactive_res.get('signal')
-                
-                if signal in ('restart', 'stop'):
+
+                if signal == 'stop':
                     self.loader.clear_cache()
-                    return signal, []
-                
-                if not interactive_res or 'pipette_start_x_used' not in interactive_res:
-                    self.skipped.append(trap_index)
-                    setup_progress.finish_trap(i, True)
+                    return 'stop', []
+                if signal == 'restart':
+                    logger.info("Restarting at the first trap (trap boxes kept).")
+                    done.clear(); history.clear(); skipped_here.clear()
+                    i = 0
                     continue
-                
-                configs.append({
+                if signal == 'back':
+                    if history:
+                        i = history.pop()
+                        done.pop(i, None)
+                        logger.info(f"Back to trap {selected_indices[i] + 1}.")
+                    else:
+                        logger.info("Already at the first trap.")
+                    continue
+
+                if not interactive_res or 'pipette_start_x_used' not in interactive_res:
+                    skipped_here.add(trap_index)
+                    setup_progress.finish_trap(i, True)
+                    i += 1
+                    continue
+
+                cfg = {
                     'trap_index': trap_index, 
                     'pip': interactive_res['pipette_start_x_used'], 
                     'thr_prot': interactive_res['threshold_prot'],
                     'thr_body': interactive_res.get('threshold_body', interactive_res['threshold_prot']),
                     'smooth': interactive_res.get('denoise_sigma_along'),
                     'snr_scale': interactive_res.get('snr_full_scale'),
-                })
+                }
+                done[i] = chosen[trap_index] = cfg
+                history.append(i)
+                skipped_here.discard(trap_index)
                 setup_progress.finish_trap(i, False)
-                
+                i += 1
+
             except Exception as e:
                 logger.error(f"Error in setup trap #{trap_index+1}: {e}", exc_info=True)
-                self.skipped.append(trap_index)
+                skipped_here.add(trap_index)
                 setup_progress.finish_trap(i, True)
+                i += 1
 
+        configs = [done[k] for k in sorted(done)]
+        self.skipped.extend(sorted(skipped_here))
         self.loader.clear_cache()
         setup_progress.print_final_summary()
         return 'confirm', configs
