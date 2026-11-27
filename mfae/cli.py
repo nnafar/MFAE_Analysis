@@ -79,6 +79,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "the movies and plots, e.g. 7 or 7,12); all other traps keep the saved "
                              "setup. The experiment is then analysed again. With --batch, pick the "
                              "experiment with --only.")
+    parser.add_argument("--thresholds", action="store_true",
+                        help="Redo only the threshold windows (protrusion and body) of every saved "
+                             "trap, keeping the trap boxes and entrances, then analyse again. Works "
+                             "on all experiments of a batch; combine with --only / --traps to "
+                             "narrow it down.")
     parser.add_argument("--only", metavar="TEXT",
                         help="With --batch: only experiments whose name contains TEXT "
                              "(e.g. Experiment4).")
@@ -426,8 +431,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.debug:
         config.workflow_settings.debug_mode = True
 
-    if args.traps and args.fresh:
-        logger.error("Use either --fresh (redo the whole setup) or --traps (redo single traps).")
+    if (args.traps or args.thresholds) and args.fresh:
+        logger.error("Use either --fresh (redo the whole setup) or --traps / --thresholds "
+                     "(redo part of the saved setup).")
         return 1
 
     analysis = None
@@ -435,7 +441,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         analysis = MFAAnalysis(config.paths.data_folder, str(config.paths.experiment_id), config,
                                output_root=output_root,
                                use_session_cache=not args.fresh,
-                               **({'retune_traps': args.traps} if args.traps else {}))
+                               **({'retune_traps': args.traps} if args.traps else {}),
+                               **({'thresholds_only': True} if args.thresholds else {}))
         saved = save_effective_config(config, layered, args.config_path, analysis.results_dir)
         logger.info(f"Settings for this run saved to {saved}")
         return 0 if analysis.run_analysis() else 1

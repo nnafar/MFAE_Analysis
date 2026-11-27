@@ -174,3 +174,24 @@ def test_retune_stop_aborts():
     obj._save_session_cache = lambda cfgs: pytest.fail("must not save")
     assert not obj._retune_cached_traps([{'trap_index': 2, 'pip': 50}])
     assert obj.stopped_by_user
+
+
+def test_thresholds_only_redoes_every_saved_trap_and_keeps_entrances():
+    from mfae import pipeline
+    obj = pipeline.MFAAnalysis.__new__(pipeline.MFAAnalysis)
+    obj.retune_traps, obj.thresholds_only, obj.stopped_by_user = [], True, False
+    asked = []
+
+    def fake_collect(indices=None, start_pip=None, thresholds_only=False):
+        asked.append((indices, start_pip, thresholds_only))
+        return 'confirm', [{'trap_index': i, 'pip': start_pip[i], 'thr_prot': 50, 'thr_body': 80,
+                            'smooth': 1.0, 'snr_scale': None} for i in indices]
+
+    obj._collect_interactive_parameters = fake_collect
+    obj._save_session_cache = lambda cfgs: None
+    configs = [{'trap_index': i, 'pip': 100 + i, 'thr_prot': 120, 'thr_body': 150,
+                'smooth': 1.0, 'snr_scale': None} for i in (2, 6, 9)]
+    assert obj._retune_cached_traps(configs)
+    assert asked == [([2, 6, 9], {2: 102, 6: 106, 9: 109}, True)]
+    assert [c['thr_prot'] for c in configs] == [50, 50, 50]
+    assert [c['pip'] for c in configs] == [102, 106, 109]          # entrances kept

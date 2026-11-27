@@ -258,3 +258,38 @@ def test_trap_list_parsing():
         cli._trap_list("0")
     with pytest.raises(Exception):
         cli._trap_list("seven")
+
+
+def test_thresholds_option_reopens_every_experiment(tmp_path, monkeypatch):
+    setup = _tree(tmp_path)
+    out = tmp_path / "Output"
+    for name in (PULSED, ASP):                                  # both already analysed
+        d = output_layout.build(out / "Asymmetric_Efield" / name)
+        d['overview'].mkdir(parents=True)
+        (d['overview'] / "trap_summary.csv").write_text("Trap\n1\n")
+    calls = []
+
+    class FakeAnalysis:
+        def __init__(self, path, name, config, output_root=None, use_session_cache=True,
+                     log_mode='w', retune_traps=None, thresholds_only=False):
+            self.name, self.results_dir, self.stopped_by_user = name, Path(output_root) / name, False
+            calls.append(("init", name, use_session_cache, thresholds_only))
+
+        def run_analysis(self, setup_only=False):
+            return True
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
+    monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
+    args = types.SimpleNamespace(config_path=ROOT / "config" / "config_asymmetric.yaml",
+                                 batch=[str(setup)], setup=None, output_dir=out, redo=False,
+                                 fresh=False, check=False, show_config=False, debug=False,
+                                 experiment_id=None, traps=None, only=None, thresholds=True)
+    assert batch.run_batch(args) == 0
+    setups = {c[1] for c in calls if c[3]}                       # setup pass: thresholds only
+    assert setups == {PULSED, ASP}                              # both, though already analysed
+    assert all(c[2] for c in calls)                             # saved setups kept
+    args.fresh = True
+    assert batch.run_batch(args) == 1

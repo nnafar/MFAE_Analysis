@@ -176,6 +176,11 @@ def run_batch(args) -> int:
 
     only = getattr(args, 'only', None)
     traps = getattr(args, 'traps', None)
+    thresholds = bool(getattr(args, 'thresholds', False))
+    if thresholds and args.fresh:
+        logger.error("Use either --fresh (redo the whole setup) or --thresholds (redo only the "
+                     "thresholds of the saved setup).")
+        return 1
     if only:
         selected = [(e, o) for e, o in selected if only.lower() in default_experiment_id(e).lower()]
         if not selected:
@@ -199,7 +204,7 @@ def run_batch(args) -> int:
         if name in configs:
             status[name + " (duplicate)"] = f"skipped: same name as an earlier experiment ({exp_path})"
             continue
-        if not args.redo and not traps and not args.check and not args.show_config and is_analysed(out_root / name):
+        if not args.redo and not traps and not thresholds and not args.check and not args.show_config and is_analysed(out_root / name):
             status[name] = "already analysed (skipped; --redo to analyse again)"
             continue
         config, layered = load_config(args.config_path, exp_path, type_from_name=True)
@@ -241,7 +246,8 @@ def run_batch(args) -> int:
         try:
             analysis = MFAAnalysis(exp_path, name, config, output_root=out_root,
                                    use_session_cache=not args.fresh,
-                                   **({'retune_traps': traps} if traps else {}))
+                                   **({'retune_traps': traps} if traps else {}),
+                                   **({'thresholds_only': True} if thresholds else {}))
             save_effective_config(config, layered, args.config_path, analysis.results_dir)
             if analysis.run_analysis(setup_only=True):
                 ready.append(name)

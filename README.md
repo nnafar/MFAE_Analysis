@@ -60,10 +60,14 @@ new experiment, then analyses them all without further questions.
 | Analyse again, keeping the saved trap setup | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo" --wdir` |
 | Redo the whole setup (boxes, entrances, thresholds) and analyse again | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo --fresh" --wdir` |
 | Redo the setup of single traps only, then analyse again | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7,12" --wdir` |
+| Redo only the thresholds of every trap, all experiments (boxes and entrances kept) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --thresholds" --wdir` |
+| Redo only the thresholds of one experiment | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --thresholds" --wdir` |
+| Redo only the thresholds of single traps | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7 --thresholds" --wdir` |
 | Re-analyse everything | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --redo" --wdir` |
 
-Without `--only`, `--redo` and `--fresh` apply to every experiment in the config's folders.
-`--traps` needs exactly one experiment, so always pair it with `--only`.
+Without `--only`, `--redo`, `--fresh` and `--thresholds` apply to every experiment in the config's
+folders. `--traps` needs exactly one experiment, so always pair it with `--only`. `--traps` and
+`--thresholds` re-analyse by themselves; no `--redo` needed.
 
 **Pool experiments (bulk analysis)**
 
@@ -274,6 +278,7 @@ or add a trap, use `--fresh`.
 | `--check` | Validate config and images, then exit |
 | `--fresh` | Ignore the saved trap setup and redo the interactive steps |
 | `--traps N[,N...]` | Redo the pipette/threshold setup of only these traps, keep the rest |
+| `--thresholds` | Redo only the threshold windows (all saved traps, or `--traps`); boxes and entrances kept |
 | `--only TEXT` | With `--batch`: only experiments whose name contains TEXT |
 | `--data-folder PATH` | Use this image folder instead of the one in the config |
 | `--experiment-id NAME` | Name of the results folder (default: the data folder's name) |
@@ -411,7 +416,8 @@ Only these interactive choices are stored. Every other setting is read from your
 and re-run without repeating the setup.
 
 - **Redo the setup:** run with `--fresh` (or delete the file). The new setup overwrites it.
-  To redo only some traps, use `--traps 7,12`.
+  To redo only some traps, use `--traps 7,12`. To redo only the thresholds (keeping every box and
+  entrance), use `--thresholds`, for all experiments at once or with `--only` / `--traps`.
 - **Edit by hand:** the file is plain text. You can change a threshold, the pipette position or
   the smoothing of one trap, or delete a trap's entry to leave it out. Keep the JSON valid
   (commas, brackets).

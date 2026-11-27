@@ -574,7 +574,8 @@ class MFAAnalysis:
                  output_root: Optional[Path] = None,
                  use_session_cache: bool = True,
                  log_mode: str = 'w',
-                 retune_traps: Optional[List[int]] = None) -> None:
+                 retune_traps: Optional[List[int]] = None,
+                 thresholds_only: bool = False) -> None:
         """
         Args:
             path: Folder containing the raw .tif image sequence.
@@ -590,6 +591,9 @@ class MFAAnalysis:
             retune_traps: Trap numbers (1-based, as in the movies and plots)
                 whose pipette and thresholds are set again interactively; all
                 other traps keep the saved setup. Needs a session_cache.json.
+            thresholds_only: Open only the threshold windows (the saved trap
+                boxes and entrances are kept); for every saved trap, or for
+                retune_traps when given.
         """
         if not path.exists():
             raise FileNotFoundError(f"The specified data path does not exist: {path}")
@@ -598,6 +602,7 @@ class MFAAnalysis:
         self.output_root = Path(output_root) if output_root is not None else None
         self.use_session_cache = use_session_cache
         self.retune_traps = sorted({int(t) for t in retune_traps}) if retune_traps else []
+        self.thresholds_only = bool(thresholds_only)
         self.log_mode = log_mode
         self.stopped_by_user = False       # Esc during the interactive setup
         
@@ -812,17 +817,19 @@ class MFAAnalysis:
             # Delete session_cache.json to force a fresh interactive setup.
             logger.info("\n== PHASE 1: INTERACTIVE TRAP SETUP ==")
             existing_cache = self._load_session_cache() if self.use_session_cache else None
-            if existing_cache is not None and not self.retune_traps:
+            retuning = bool(self.retune_traps) or self.thresholds_only
+            if existing_cache is not None and not retuning:
                 logger.info(
                     "Re-using the trap setup saved in session_cache.json "
                     "(run with --fresh to redo the interactive setup, or "
                     "--traps N to redo single traps)."
                 )
-            elif self.retune_traps and existing_cache is None:
+            elif retuning and existing_cache is None:
                 logger.warning(
-                    "--traps %s: there is no usable saved setup for this experiment, so "
+                    "%s: there is no usable saved setup for this experiment, so "
                     "the full interactive setup runs instead.",
-                    ",".join(map(str, self.retune_traps)))
+                    "--traps " + ",".join(map(str, self.retune_traps)) if self.retune_traps
+                    else "--thresholds")
 
             if existing_cache is not None:
                 # ── Restore cropper state from cache ──────────────────────────
@@ -868,7 +875,7 @@ class MFAAnalysis:
                     f"Session cache loaded: {len(trap_configs)} trap(s), "
                     f"rotation = {existing_cache['rotation_angle']:.2f}°"
                 )
-                if self.retune_traps:
+                if retuning:
                     ok = self._retune_cached_traps(trap_configs)
                     if not ok:
                         return False
@@ -1070,27 +1077,33 @@ class MFAAnalysis:
     
     def _retune_cached_traps(self, trap_configs: List[Dict[str, Any]]) -> bool:
         """
-        Redo the pipette and threshold windows for the traps in self.retune_traps
-        (1-based numbers) and replace their entries in trap_configs and in
-        session_cache.json. The trap boxes and all other traps are kept.
+        Redo the pipette and threshold windows (only the threshold windows with
+        thresholds_only) for the traps in self.retune_traps (1-based numbers;
+        every saved trap when empty) and replace their entries in trap_configs
+        and in session_cache.json. The trap boxes and all other traps are kept.
         Returns False when the user stopped (Esc).
         """
         by_index = {c['trap_index']: c for c in trap_configs}
-        unknown = [t for t in self.retune_traps if (t - 1) not in by_index]
+        wanted = getattr(self, 'retune_traps', None) or [i + 1 for i in sorted(by_index)]
+        unknown = [t for t in wanted if (t - 1) not in by_index]
         if unknown:
             logger.warning(
                 "--traps: trap(s) %s are not in the saved setup (saved: %s) and are skipped. "
                 "To add a trap, run with --fresh.",
                 ",".join(map(str, unknown)),
                 ",".join(str(i + 1) for i in sorted(by_index)))
-        todo = [t - 1 for t in self.retune_traps if (t - 1) in by_index]
+        todo = [t - 1 for t in wanted if (t - 1) in by_index]
         if not todo:
             return True
-        logger.info("Redoing the setup of trap(s) %s; the other traps keep the saved setup.",
-                    ",".join(str(i + 1) for i in todo))
+        thresholds_only = getattr(self, 'thresholds_only', False)
+        what = "thresholds" if thresholds_only else "setup"
+        logger.info("Redoing the %s of trap(s) %s; boxes%s and other traps keep the saved setup.",
+                    what, ",".join(str(i + 1) for i in todo),
+                    ", entrances" if thresholds_only else "")
         while True:
             signal, new = self._collect_interactive_parameters(
-                indices=todo, start_pip={i: by_index[i]['pip'] for i in todo})
+                indices=todo, start_pip={i: by_index[i]['pip'] for i in todo},
+                **({'thresholds_only': True} if thresholds_only else {}))
             if signal == 'stop':
                 self.stopped_by_user = True
                 return False
@@ -1102,7 +1115,8 @@ class MFAAnalysis:
         return True
 
     def _collect_interactive_parameters(self, indices: Optional[List[int]] = None,
-                                        start_pip: Optional[Dict[int, int]] = None
+                                        start_pip: Optional[Dict[int, int]] = None,
+                                        thresholds_only: bool = False
                                         ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Loops through EACH selected trap to let user tune Pipette & Thresholds.
@@ -1150,7 +1164,7 @@ class MFAAnalysis:
                         else self.cropper.pipette_coords)
                 det_interactive = LineDetectionMFA([roi_img], pip0, self.params)
                 
-                interactive_res = det_interactive.run_detection() 
+                interactive_res = det_interactive.run_detection(skip_pipette=thresholds_only) 
                 signal = interactive_res.get('signal')
                 
                 if signal in ('restart', 'stop'):

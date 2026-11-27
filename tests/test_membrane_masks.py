@@ -721,3 +721,18 @@ def test_dimming_protrusion_end_is_not_a_cell_change():
 def test_real_cell_change_still_detected_when_old_protrusion_is_gone():
     res = _run_rois(_dimming_sequence(12, 12, far_level=0.0))
     assert res['cell_segments'][0][2] == 'cell change'
+
+
+def test_skip_pipette_opens_only_the_threshold_windows(monkeypatch):
+    """--thresholds: the saved entrance is used, the entrance window never opens."""
+    from mfae.membrane.detection import LineDetectionMFA
+    det = LineDetectionMFA(_cell_sequence([40]), [PIP - 3, 0], _params())
+    monkeypatch.setattr(det, "_interactive_pipette_positioning",
+                        lambda img: pytest.fail("entrance window must not open"))
+    windows = []
+    monkeypatch.setattr(det, "_interactive_threshold_selection",
+                        lambda img, pip, clip_walls: windows.append((pip, clip_walls)) or ('confirm', 90))
+    res = det.run_detection(skip_pipette=True)
+    assert res['pipette_start_x_used'] == PIP - 3
+    assert windows == [(PIP - 3, True), (PIP - 3, False)]
+    assert res['threshold_prot'] == 90 and res['threshold_body'] == 90

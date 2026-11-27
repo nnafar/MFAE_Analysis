@@ -221,10 +221,13 @@ class LineDetectionMFA:
         
         return self.run_detection_with_parameters(pipette_x, threshold_prot, threshold_body=threshold_body)
 
-    def run_detection(self) -> Dict[str, Any]:
+    def run_detection(self, skip_pipette: bool = False) -> Dict[str, Any]:
         """
         Executes the full pipeline with USER INTERACTION.
         Used during the setup phase to let the user tune parameters.
+
+        skip_pipette: keep the entrance in self.pipette_coords (e.g. the saved
+        one) and open only the threshold windows (--thresholds).
         """
         if not self.roi_images or all(frame is None for frame in self.roi_images):
             logger.warning("No valid frames found for analysis.")
@@ -246,10 +249,13 @@ class LineDetectionMFA:
         
         # --- Step 1: User sets Pipette Entrance ---
         # This defines the "Zero" point for length calculations
-        signal, pipette_start_x = self._interactive_pipette_positioning(test_image)
-        if signal in ('restart', 'stop'):
-            self.results['signal'] = signal
-            return self.results
+        if skip_pipette and self.pipette_coords:
+            pipette_start_x = int(self.pipette_coords[0])
+        else:
+            signal, pipette_start_x = self._interactive_pipette_positioning(test_image)
+            if signal in ('restart', 'stop'):
+                self.results['signal'] = signal
+                return self.results
         self.results['pipette_start_x_used'] = pipette_start_x
 
         # --- Steps 2 & 3: Threshold / Canny Sigma Selection ---
