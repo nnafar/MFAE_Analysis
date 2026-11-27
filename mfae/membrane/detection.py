@@ -1724,14 +1724,10 @@ class LineDetectionMFA:
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
             self.results['frame_masks'].append((mask_prot, mask_body_standard))
 
-        # Tip on the kymograph (replaces the mask-based length where tracked)
+        # Mask-based lengths decide WHEN a cell is there (entry, exit, cell
+        # changes, below). With tip_tracking: kymograph the tip position inside
+        # the analysed cell is replaced afterwards, see the end of this method.
         self.results['protrusion_lengths_mask_px'] = list(protrusion_px_list)
-        kymo_clear: Optional[List[bool]] = None
-        if use_kymo_tip and kymo_bands:
-            protrusion_px_list, tip_at_edge, kymo_clear = self._track_tip_on_kymograph(
-                kymo_bands, kymo_rows, protrusion_px_list, tip_at_edge,
-                pipette_start_x, edge_margin_px)
-        self.results['kymo_tip_clear'] = kymo_clear
 
         # Post-Processing: spikes, then (optional) smoothing
         r_cfg_spk = self.params.get('rupture_detection', {})
@@ -1826,8 +1822,6 @@ class LineDetectionMFA:
                 return False   # too short, or clamped (debris / channel-filling object)
             if i < len(tip_at_edge) and tip_at_edge[i]:
                 return False   # tip at the box edge: true length unknown
-            if kymo_clear is not None and i < len(kymo_clear) and not kymo_clear[i]:
-                return False   # no clear tip edge on the kymograph (haze, not a cell)
             body_a = body_areas[i] if i < len(body_areas) else 0.0
             if isinstance(body_a, float) and np.isnan(body_a):
                 body_a = 0.0
@@ -2031,8 +2025,44 @@ class LineDetectionMFA:
                 for key in ('linear_size_prot_um', 'linear_size_body_um', 'linear_size_total_um',
                             'volume_prot_um3', 'volume_body_um3', 'volume_total_um3'):
                     self.results[key][i] = np.nan
+
+        # Kymograph tip: WHERE the tip is, inside the analysed cell only. The
+        # cell's frames were found from the mask lengths above (entry, exit and
+        # cell changes work as in mask mode); the path is tracked over those
+        # frames alone, so it never carries a tip from one cell to the next.
+        if use_kymo_tip and kymo_bands and entry_confirmed:
+            self._apply_kymograph_tip(kymo_bands, kymo_rows, entry_idx, exit_idx,
+                                      pipette_start_x, scale_factor)
         
         self.results['downstream_intensities'] = downstream_int_list
+
+    def _apply_kymograph_tip(self, bands, rows, entry_idx: int, exit_idx: int,
+                             pipette_x: int, scale_factor: float) -> None:
+        """Replace the lengths of frames entry_idx..exit_idx by the kymograph-tracked tip."""
+        n = len(self.results['protrusion_lengths_px'])
+        mask_px = self.results.get('protrusion_lengths_mask_px') or []
+        seg = [float(mask_px[i] or 0) if entry_idx <= i <= exit_idx and i < len(mask_px) else 0.0
+               for i in range(n)]
+        tracked, _, _ = self._track_tip_on_kymograph(bands, rows, seg, [False] * n, pipette_x, 0)
+        idx = [i for i in range(entry_idx, min(exit_idx, n - 1) + 1)
+               if tracked[i] is not None and np.isfinite(tracked[i]) and seg[i] > 0]
+        if not idx:
+            return
+        r = self.params.get('rupture_detection', {})
+        vals, spikes = self._remove_length_spikes(
+            [tracked[i] for i in idx],
+            window=int(r.get('spike_filter_window', 7)),
+            min_jump_px=float(r.get('spike_filter_min_jump_um', 2.0)) / max(scale_factor, 1e-9),
+            n_mad=float(r.get('spike_filter_n_mad', 3.0)))
+        if r.get('enable_smoothing', True):
+            vals = self._simple_smoothing_filter(vals)
+        raw = self.results.setdefault('protrusion_lengths_raw_px', list(mask_px))
+        flags = self.results.setdefault('spike_removed', [False] * n)
+        for k, i in enumerate(idx):
+            raw[i] = tracked[i]
+            flags[i] = bool(spikes[k])
+            self.results['protrusion_lengths_px'][i] = vals[k]
+            self.results['protrusion_lengths_um'][i] = vals[k] * scale_factor
 
     def _track_tip_on_kymograph(self, bands: List[Optional[np.ndarray]],
                                 rows: List[Tuple[float, float]], lengths_px: List[float],
