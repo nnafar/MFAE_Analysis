@@ -293,3 +293,31 @@ def test_thresholds_option_reopens_every_experiment(tmp_path, monkeypatch):
     assert all(c[2] for c in calls)                             # saved setups kept
     args.fresh = True
     assert batch.run_batch(args) == 1
+
+
+def test_tip_tracking_option_reaches_the_analysis(tmp_path, monkeypatch):
+    setup = _tree(tmp_path)
+    out = tmp_path / "Output"
+    seen = []
+
+    class FakeAnalysis:
+        def __init__(self, path, name, config, output_root=None, use_session_cache=True, log_mode='w'):
+            seen.append(config.image_processing.tip_tracking)
+            self.name, self.results_dir, self.stopped_by_user = name, Path(output_root) / name, False
+
+        def run_analysis(self, setup_only=False):
+            return True
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(batch, "MFAAnalysis", FakeAnalysis)
+    monkeypatch.setattr(cli, "save_effective_config", lambda *a, **k: None)
+    args = types.SimpleNamespace(config_path=ROOT / "config" / "config_asymmetric.yaml",
+                                 batch=[str(setup)], setup=None, output_dir=out, redo=True,
+                                 fresh=False, check=False, show_config=False, debug=False,
+                                 experiment_id=None, traps=None, only=None, thresholds=False,
+                                 tip_tracking="kymograph")
+    assert batch.run_batch(args) == 0
+    assert seen and set(seen) == {"kymograph"}
+    assert cli.build_arg_parser().parse_args(["x.yaml", "--tip-tracking", "mask"]).tip_tracking == "mask"
