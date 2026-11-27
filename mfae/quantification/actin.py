@@ -20,7 +20,7 @@ Three levels of analysis
    LOW  CV = small spread around the ring mean = even signal = continuous cortex.
    HIGH CV = large spread = bright spots and dark gaps = patches.
    The threshold is self.cortex_cv_threshold (default 0.4, configurable in
-   config/defaults.yaml under actin_parameters → cortex_cv_threshold).
+   config/pipeline/defaults.yaml under actin_parameters → cortex_cv_threshold).
 
 3. Four spatial zones.
    Defined dynamically each frame from the mask extents:
@@ -890,7 +890,7 @@ class ActinAnalyzer:
             3. Cortex shell = mask_body − lumen.
 
         If lumen=0px in the strip, the body is too narrow for the erosion —
-        reduce cortex_thickness_px in config/defaults.yaml.
+        reduce cortex_thickness_px in config/pipeline/defaults.yaml.
         Saved as Trap_XX_actin_cortex.avi
         """
         n_frames = len(self.results.get('time_s', []))

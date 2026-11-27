@@ -17,7 +17,9 @@ You only ever run these two scripts. Everything else is the `mfae/` package they
 ```
 run_experiment.py        analyse one experiment
 run_bulk_analysis.py     pool many experiments
-config/                  your experiment configs + defaults.yaml (pipeline settings)
+config/                  your configs: config_tiff.yaml, config_czi.yaml
+  pipeline/              defaults.yaml (pipeline settings; developers only)
+  archive/               old configs, for reference
 mfae/                    the analysis code (see "For developers")
 tools/                   small helpers (czi_info.py, plot_cell_status_overview.py)
 docs/                    experiment naming rule
@@ -58,7 +60,7 @@ These two cover the lab's data as they are: list your data folders in them and r
 `--batch` (see [Many experiments at once](#many-experiments-at-once-batch)). Pulsed or
 aspiration-only, and the pulse frame, are read from each experiment's name, so the same config
 serves every condition. Only make a new config for data recorded with different settings (another
-objective, pressure or channel order). `config/defaults.yaml` holds the pipeline settings and is
+objective, pressure or channel order). `config/pipeline/defaults.yaml` holds the pipeline settings and is
 the same for everyone. Older per-folder configs are kept in `config/archive/` for reference.
 
 **Step 1 – a config file.** For the lab's data, use `config/config_tiff.yaml` or `config/config_czi.yaml` with `--data-folder` and skip to step 2. For data recorded with other settings, create your own copy with the data folder filled in:
@@ -236,14 +238,14 @@ affecting the other:
 | File | Contains | Who edits it |
 |---|---|---|
 | Your user configs (`config/config_tiff.yaml`, `config/config_czi.yaml`, or copies of them) | Exactly the user settings listed above. | You, per experiment |
-| `config/defaults.yaml` | Pipeline settings: image processing, detection thresholds, fitting, figures. | Developers only |
+| `config/pipeline/defaults.yaml` | Pipeline settings: image processing, detection thresholds, fitting, figures. | Developers only |
 
 The pipeline refuses to start if a user config is missing a user setting or contains a pipeline
-setting (a typo also ends up here), or if `config/defaults.yaml` contains a user setting. The list of
+setting (a typo also ends up here), or if `config/pipeline/defaults.yaml` contains a user setting. The list of
 user settings is `USER_KEYS` in `mfae/config/loader.py`.
 
 - **To see exactly what a run will use:** `python run_experiment.py my.yaml --show-config`. Every
-  value that doesn't come from `config/defaults.yaml` is marked with where it came from.
+  value that doesn't come from `config/pipeline/defaults.yaml` is marked with where it came from.
 - **Every run saves its complete settings** to `Output/<experiment_id>/Run_Info/effective_config.yaml`. That
   file is a *full config* (it lists every setting and has no `experiment_type`), so you can rerun an
   old analysis with exactly the same settings even after the defaults have changed. Old full-length
@@ -346,7 +348,7 @@ folder) finds the file, skips the setup windows and goes straight to the analysi
 | `source_files` | The image files the setup was made on |
 
 Only these interactive choices are stored. Every other setting is read from your config and
-`config/defaults.yaml` on each run, so you can change e.g. `scale_factor` or rupture settings
+`config/pipeline/defaults.yaml` on each run, so you can change e.g. `scale_factor` or rupture settings
 and re-run without repeating the setup.
 
 - **Redo the setup:** run with `--fresh` (or delete the file). The new setup overwrites it.
@@ -418,7 +420,7 @@ clear and consistent from frame to frame:
 **Dye and actin intensities are always measured on the raw pixels.** They only borrow the masks;
 this also holds when actin is imaged in the same channel as the membrane.
 
-The settings are in `config/defaults.yaml` under `image_processing` (`membrane_enhancement`,
+The settings are in `config/pipeline/defaults.yaml` under `image_processing` (`membrane_enhancement`,
 `membrane_denoise_sigma`, `membrane_denoise_sigma_along`, `membrane_temporal_window`, `membrane_snr_full_scale`,
 `membrane_fill_holes`, `membrane_max_hole_fraction`, `membrane_relative_level`). Set `membrane_enhancement: False` to return
 to the older CLAHE-based segmentation; thresholds picked in one mode are not comparable with the
@@ -462,7 +464,7 @@ numbers were measured in. All folder and file names are defined in `mfae/files/o
 Each plot type is one multipanel PDF with every trap as a panel. Panels share their axes and,
 for kymographs, one colour scale, so traps can be compared at a glance. To also get one PDF per
 trap (e.g. for a slide), set `plotting_parameters.save_individual_trap_plots: True` in
-`config/defaults.yaml`; the number of panels per row is `plotting_parameters.multipanel_columns`
+`config/pipeline/defaults.yaml`; the number of panels per row is `plotting_parameters.multipanel_columns`
 (both are pipeline settings).
 
 The tracking movies (`workflow_settings.save_tracking_movies`, on by default) show the membrane
@@ -582,13 +584,13 @@ failed (these are excluded and only counted in the attrition table). Older
 | Message | What to do |
 |---|---|
 | `... has N problem(s): - section.key: ...` | The named setting is invalid; the message says why. |
-| `unknown setting (typo, or not supported ...)` | The key is misspelled or not a real setting. Compare with `config/defaults.yaml`. |
+| `unknown setting (typo, or not supported ...)` | The key is misspelled or not a real setting. Compare with `config/pipeline/defaults.yaml`. |
 | `Config key '...' is ignored: ...` | The setting exists in older configs but has no effect; you can delete it. |
 | `is not valid YAML` | Usually inconsistent indentation or an unclosed quote. Windows paths are safest in single quotes. |
 | `No .tif files found` | Check `paths.data_folder`. |
 | `Dye analysis is enabled but no file names contain 'C2'` | Set `dye_channel_pattern` to the text that identifies your dye images. |
 | The setup windows don't appear on a re-run | A saved setup is being reused; add `--fresh`. |
-| Windows are too small on a high-resolution screen | Raise `workflow_settings.window_scale_factor` (e.g. 1.5) in `config/defaults.yaml`. |
+| Windows are too small on a high-resolution screen | Raise `workflow_settings.window_scale_factor` (e.g. 1.5) in `config/pipeline/defaults.yaml`. |
 | The computer becomes sluggish | Lower `workflow_settings.n_workers` in your config. |
 | A faint cell is barely captured in the threshold window | Press `F` for more smoothing, then lower the threshold (stay above ~3 sigma). |
 | The mask includes background noise | Raise the threshold, or press `F` to reduce smoothing if it is high. |
@@ -621,7 +623,7 @@ adds the same two commands, `mfae-experiment` and `mfae-bulk`, usable from any f
 | `mfae/batch.py` | `--batch`: find every experiment under a setup folder, setups first, then analyses |
 | `mfae/paths.py` | Project, `config/` and default `Output/` folders |
 | `mfae/config/schema.py` | Config validation (pydantic); every allowed setting is defined here |
-| `mfae/config/loader.py` | Combining `config/defaults.yaml` with a user config |
+| `mfae/config/loader.py` | Combining `config/pipeline/defaults.yaml` with a user config |
 | `mfae/config/naming.py` | The experiment-name rule (pulse settings, bulk condition groups) |
 | `mfae/files/readers.py` | Finding images (.tif / .czi), channel matching, timestamps |
 | `mfae/files/output_layout.py` | Folder layout and file names of the results (bulk readers use it too) |
@@ -640,5 +642,5 @@ tests put the project folder on the path. To change where results are written, e
 
 When you add a config setting, define it in `mfae/config/schema.py` (unknown keys are rejected, so typos
 can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value and an
-explanation, in `config/defaults.yaml`; a user setting goes in `USER_KEYS` in `mfae/config/loader.py`
+explanation, in `config/pipeline/defaults.yaml`; a user setting goes in `USER_KEYS` in `mfae/config/loader.py`
 and in every user config, starting with `config/config_tiff.yaml` and `config/config_czi.yaml`.

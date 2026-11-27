@@ -2,7 +2,7 @@
 """
 Configuration loading: two files that never share a setting.
 
-    config/defaults.yaml       pipeline settings, for developers only
+    config/pipeline/defaults.yaml       pipeline settings, for developers only
     the user's config          the experiment: experiment_type, paths,
                                microscope, which analyses to run, channel
                                names, interactive setup, CPU cores
@@ -42,7 +42,7 @@ from mfae.config.naming import ExperimentName, NAMING_RULE, parse_experiment_nam
 logger = logging.getLogger(__name__)
 
 from mfae.paths import CONFIG_DIR  # noqa: E402  (project config/ folder)
-DEFAULTS_FILE = CONFIG_DIR / "defaults.yaml"
+DEFAULTS_FILE = CONFIG_DIR / "pipeline" / "defaults.yaml"
 
 EXPERIMENT_TYPES = ("ep", "asp")   # electroporation, aspiration only
 
@@ -185,7 +185,7 @@ def read_defaults() -> Dict[str, Any]:
 def load_layers(user_path: Path, overrides: Optional[Dict[str, Any]] = None,
                 experiment_type_override: Optional[str] = None) -> LayeredConfig:
     """
-    Combine config/defaults.yaml with a user config (or load a full config on
+    Combine config/pipeline/defaults.yaml with a user config (or load a full config on
     its own), apply command-line overrides and the experiment name.
     experiment_type_override ('ep' / 'asp') replaces the config's
     experiment_type: batch runs use it so each experiment's type follows its

@@ -46,7 +46,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "  python run_experiment.py config/my_setup.yaml --batch D:/data/A D:/data/B\n"
             "\n"
             "Your file holds the experiment's settings; everything else comes from\n"
-            "config/defaults.yaml. See README.md for details."
+            "config/pipeline/defaults.yaml. See README.md for details."
         ),
     )
     parser.add_argument("config_path", nargs="?", type=Path,
@@ -211,7 +211,7 @@ def load_config(config_path: Path, data_folder: Optional[Path] = None,
 def show_config(config: MFAConfig, layered: config_loader.LayeredConfig) -> str:
     """All settings of a run, each value annotated with the file that set it (blank = defaults)."""
     header = (f"# Settings from: {' <- '.join(layered.layers)}\n"
-              f"# Values without a comment come from config/defaults.yaml.\n\n")
+              f"# Values without a comment come from config/pipeline/defaults.yaml.\n\n")
     return header + config_loader.render_settings(
         config.model_dump(mode="json"), layered.sources, hide_source="defaults")
 
