@@ -933,3 +933,25 @@ def test_kymograph_mode_finds_the_same_cells_as_mask_mode(lengths, pulse):
     assert np.array_equal(np.isnan(La), np.isnan(Lb))                  # same frames tracked
     both = ~np.isnan(La)
     assert np.median(np.abs(La[both] - Lb[both])) < 3                  # same tip on clean cells
+
+
+def test_kymograph_tip_starts_at_the_cell_not_at_faint_haze_ahead():
+    """Exp 2 traps 3, 4, 8, 10: a new cell enters with a soft leading edge and a
+    faint glow in the channel ahead (about 1 % of the cell's contrast). On the
+    smoothed signal image that glow is many 'noise units'; the tracked tip sat
+    at its outer edge, 8-20 um ahead of the cell, until the cell grew into it."""
+    from scipy.ndimage import gaussian_filter1d
+    from mfae.membrane.kymo_tip import track_tip
+    rng = np.random.default_rng(5)
+    n, Wd = 80, 80
+    x = np.arange(Wd, dtype=float)
+    tips_true = np.linspace(58, 40, n)                       # growing from the entrance
+    K = np.empty((n, Wd))
+    for k in range(n):
+        ramp = np.clip((x - tips_true[k]) / 8.0, 0, 1)       # soft edge, ~8 px wide
+        haze = 1.2 * np.clip((x - 20) / 30.0, 0, 1)          # faint glow rising towards the cell
+        prof = 100.0 * ramp + haze + rng.normal(0, 1.0, Wd)
+        K[k] = gaussian_filter1d(prof, 3.0)                  # along-channel smoothing
+    tips, _ = track_tip(K, Wd, np.ones(n, bool))
+    level = tips_true + 0.25 * 8                              # where the ramp reaches 25 %
+    assert np.all(np.abs(tips - level) <= 4), np.round(tips - level, 1)

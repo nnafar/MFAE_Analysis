@@ -111,7 +111,8 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
               level_fraction: float = 0.25, min_contrast: float = 3.0,
               time_sigma: float = 0.0, jump_cost: float = 3.0,
               base_px: int = 12, ahead_weight: float = 10,
-              jump_cap_px: int = 10) -> Tuple[np.ndarray, np.ndarray]:
+              jump_cap_px: int = 10, haze_fraction: float = 0.05
+              ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Tip x per frame from the kymograph K (frames x columns, columns 0..pipette_x-1
     used; signal in noise units or any linear scale).
@@ -126,6 +127,13 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
     units of edge strength (3.0 -> a jump of jump_cap_px = 10 px or more costs
     as much as a 30-noise-unit edge; a bright edge is worth far more). Tuned
     on real LifeAct kymographs (Exp 2 traps 3, 5, 11, 15).
+    haze_fraction: signal ahead of an edge, or inside it, counts only when it
+    also reaches this fraction of the protrusion contrast. A faint haze or glow
+    in the channel (about 1 % of the cell's contrast, yet many 'noise units'
+    because the smoothed signal image makes the noise estimate low) neither
+    hides the real edge nor makes an edge of its own (Exp 2 traps 3, 4, 8, 10:
+    the early tip sat on the outer edge of the haze, far ahead of the cell).
+    A dim far end (20-40 % of the contrast in the tests) still counts.
     time_sigma: optional Gaussian smoothing over frames (0 = off; smoothing
     leaks a moving tip into neighbouring frames, so it is off by default).
 
@@ -186,9 +194,16 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
     # penalty (followed however fast it moves), a faint one has to beat it
     # (so one-frame excursions are not taken).
     step_snr = (inside - outside) * snr_scale * np.sqrt(1.5)     # 3-px means on both sides
+    # Signal must also reach haze_fraction of the protrusion contrast to count
+    # (Kn = 1 is the protrusion base, so haze_fraction x snr_scale in noise units).
+    ahead_floor = np.maximum(2.0, haze_fraction * snr_scale * np.sqrt(7))
+    inner_floor = np.maximum(min_contrast, haze_fraction * snr_scale * np.sqrt(6))
+    # A position with no protrusion just inside it is not a tip: that costs as
+    # much as signal ahead of it (with a small cap here, an empty stretch of
+    # channel beat a real edge whose soft toe put a little signal ahead of it).
     score = step_snr \
-        - ahead_weight * np.maximum(0.0, ahead_snr - 2.0) \
-        - np.maximum(0.0, min_contrast - inner_snr)
+        - ahead_weight * np.maximum(0.0, ahead_snr - ahead_floor) \
+        - ahead_weight * np.maximum(0.0, inner_floor - inner_snr)
     score[:, W - base_px:] = -1e3           # the base itself is not a tip
 
     xs = np.arange(W)
