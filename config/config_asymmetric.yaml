@@ -1,12 +1,14 @@
 # ===================================================================
-# MFA CONFIG: all .tif data (asymmetric E-field + aspiration controls)
+# MFA CONFIG: asymmetric microscope (.tif): asymmetric E-field + aspiration controls
 # ===================================================================
-# The one config for exported .tif folders (20x, C1 = membrane, C2 = dye).
-# For Zeiss .czi files use config/config_czi.yaml.
+# Settings of the asymmetric microscope: exported .tif folders, 20x
+# (0.315 um/px), 1100 Pa, C1 = membrane, C2 = dye.
+# Symmetric microscope (.czi): config/config_symmetric.yaml.
+# For a new setup, copy a template: see config/pipeline/.
 #
 # Analyse every experiment in the folders listed under data_folder below
 # (searched at any depth for folders of .tif images):
-#   python run_experiment.py config/config_tiff.yaml --batch
+#   python run_experiment.py config/config_asymmetric.yaml --batch
 # Each listed folder gets its own results folder: Output/Asymmetric_Efield/,
 # Output/Aspiration/. Already analysed experiments are skipped when you run it
 # again (--redo analyses them again). Pulsed or aspiration-only (ep / asp) and
@@ -17,7 +19,7 @@
 #   ... --batch --only Experiment4 --traps 7     redo the setup of trap 7 only
 #   ... --batch "E:/other/folder"                another folder instead of the list below
 # One experiment (results go to the same place as in the batch):
-#   python run_experiment.py config/config_tiff.yaml --data-folder "<one experiment folder>"
+#   python run_experiment.py config/config_asymmetric.yaml --data-folder "<one experiment folder>"
 #
 # Check a config:      python run_experiment.py <this file> --batch --check
 # See all settings:    python run_experiment.py <this file> --data-folder "<one experiment folder>" --show-config
@@ -31,7 +33,7 @@ experiment_type: ep
 # -------------------------------------------------------------------
 paths:
   # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
-  # (to analyse .czi files, use config/config_czi.yaml)
+  # (.czi files: config/config_symmetric.yaml)
   image_format: tiff
   # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
   data_folder:

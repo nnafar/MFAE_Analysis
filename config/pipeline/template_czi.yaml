@@ -1,27 +1,19 @@
 # ===================================================================
-# MFA CONFIG: all Zeiss .czi data (symmetric E-field)
+# TEMPLATE: Zeiss .czi files
 # ===================================================================
-# The one config for .czi files. For exported .tif folders use config/config_tiff.yaml.
+# Don't edit this file. It is the starting point for a new config:
+#   python run_experiment.py --init-config config/my_setup.yaml --data-folder "<folder or file>"
+# copies it to config/my_setup.yaml with the data folder and experiment name
+# filled in (this template is used when --data-folder is a .czi file). Then open the copy
+# and check every value, in particular scale_factor, constant_pressure,
+# frame_interval and the channels.
 #
-# Analyse every experiment in the folders listed under data_folder below
-# (searched at any depth for .czi files):
-#   python run_experiment.py config/config_czi.yaml --batch
-# Each listed folder gets its own results folder (Output/Symmetric_Efield/).
-# Already analysed experiments are skipped when you run it again (--redo
-# analyses them again). Pulsed or aspiration-only (ep / asp) and the pulse
-# frame are read from each experiment's name (0V = aspiration only).
-#
-# Only some experiments / traps:
-#   ... --batch --only Experiment2               experiments whose name contains the text
-#   ... --batch --only Experiment2 --traps 7     redo the setup of trap 7 only
-# One experiment (results go to the same place as in the batch):
-#   python run_experiment.py config/config_czi.yaml --data-folder "<one .czi file>"
-#
-# Check a config:      python run_experiment.py <this file> --batch --check
-# See all settings:    python run_experiment.py <this file> --data-folder "<one .czi file>" --show-config
+# The lab's ready-to-use configs are config/config_asymmetric.yaml (.tif) and
+# config/config_symmetric.yaml (.czi). Pipeline settings: config/pipeline/defaults.yaml.
 
-# Only used when the experiment name can't be read (batch runs and folder
-# lists take it from the name): ep = electroporation, asp = aspiration only
+# ep = electroporation, asp = aspiration only (must agree with the experiment
+# name: 0V = asp). Batch runs and configs listing several folders take it
+# from each experiment's name instead.
 experiment_type: ep
 
 # -------------------------------------------------------------------
@@ -30,10 +22,11 @@ experiment_type: ep
 paths:
   # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
   image_format: czi
-  # Folder(s) to search for experiments (--batch); a list ('- ...' lines) or one folder.
-  data_folder:
-    - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Symmetric_Efield'
-    # - 'E:\Data\MFAE_Symmetric'   (add more folders like this; '#' switches a line off)
+  # Folder(s) to search for experiments (--batch): one folder, or a list:
+  #   data_folder:
+  #     - 'M:\...\folder A'
+  #     - 'M:\...\folder B'
+  data_folder: 'D:\MFAE\261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi'
   # Example experiment name (only used when no file is given); names must follow:
   #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
   #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10

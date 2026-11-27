@@ -37,7 +37,7 @@ def _load_config(name: str) -> dict:
 LEGACY = ROOT / 'tests' / 'data' / 'legacy_full_config.yaml'
 
 
-TIFF_TEMPLATE = 'config/config_tiff.yaml'
+TIFF_TEMPLATE = 'config/pipeline/template_tiff.yaml'
 
 
 def _variant(tmp_path, name, replacements):
@@ -51,12 +51,12 @@ def _variant(tmp_path, name, replacements):
     return str(path)
 
 
-@pytest.mark.parametrize('name', [TIFF_TEMPLATE, 'config/config_czi.yaml'])
+@pytest.mark.parametrize('name', [TIFF_TEMPLATE, 'config/pipeline/template_czi.yaml', 'config/config_asymmetric.yaml', 'config/config_symmetric.yaml'])
 def test_shipped_configs_validate(name):
     MFAConfig(**_load_config(name))
 
 
-@pytest.mark.parametrize('name', [TIFF_TEMPLATE, 'config/config_czi.yaml'])
+@pytest.mark.parametrize('name', [TIFF_TEMPLATE, 'config/pipeline/template_czi.yaml', 'config/config_asymmetric.yaml', 'config/config_symmetric.yaml'])
 def test_rupture_detection_off_by_default(name):
     assert MFAConfig(**_load_config(name)).rupture_detection.enable is False
 

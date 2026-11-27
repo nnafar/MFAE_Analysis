@@ -1,0 +1,92 @@
+# ===================================================================
+# TEMPLATE: exported .tif folders
+# ===================================================================
+# Don't edit this file. It is the starting point for a new config:
+#   python run_experiment.py --init-config config/my_setup.yaml --data-folder "<folder or file>"
+# copies it to config/my_setup.yaml with the data folder and experiment name
+# filled in (this template is used for a folder of .tif files). Then open the copy
+# and check every value, in particular scale_factor, constant_pressure,
+# frame_interval and the channels.
+#
+# The lab's ready-to-use configs are config/config_asymmetric.yaml (.tif) and
+# config/config_symmetric.yaml (.czi). Pipeline settings: config/pipeline/defaults.yaml.
+
+# ep = electroporation, asp = aspiration only (must agree with the experiment
+# name: 0V = asp). Batch runs and configs listing several folders take it
+# from each experiment's name instead.
+experiment_type: ep
+
+# -------------------------------------------------------------------
+# EXPERIMENT
+# -------------------------------------------------------------------
+paths:
+  # 'tiff' = a folder of exported .tif files, 'czi' = a Zeiss .czi file
+  # (for .czi files, start from config/pipeline/template_czi.yaml)
+  image_format: tiff
+  # Folder(s) to search for experiments (--batch): one folder, or a list:
+  #   data_folder:
+  #     - 'M:\...\folder A'
+  #     - 'M:\...\folder B'
+  data_folder: 'D:\MFAE\260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10'
+  # Example experiment name (only used when no folder is given); names must follow:
+  #   YYMMDD_Cell_Treatment_Chip_Experiment-<P>Pa-<V>V-<D>ms-frame<N>
+  #   e.g. 260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
+  experiment_id: '260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10'
+
+experiment_parameters:
+  # Microns per pixel: 10x = 0.629, 20x = 0.315, 40x = 0.158
+  scale_factor: 0.315
+  # Aspiration pressure [Pa] = (P_inlet - P_waste_outlet) x 0.55
+  # (factor from Jessy's COMSOL simulation)
+  constant_pressure: 1100
+  # Seconds between frames; used only if the images have no timing metadata
+  frame_interval: 1.75
+  # Maximum number of traps to set up
+  max_traps: 18
+
+# -------------------------------------------------------------------
+# ANALYSES (True / False) AND CHANNELS
+# -------------------------------------------------------------------
+# The membrane channel is always analysed (protrusion length and shape).
+dye_uptake_parameters:
+  enable: True
+  # Text in the file names that identifies each channel (C1, C2 as exported)
+  membrane_channel_pattern: 'C1'
+  dye_channel_pattern: 'C2'
+
+actin_parameters:
+  enable: True
+  channel_pattern: 'C1'
+
+rupture_detection:
+  # Rupture / dead-on-arrival detection (a heuristic; results are hints)
+  enable: False
+  # 3-frame rolling median on the protrusion length trace
+  enable_smoothing: False
+  # Remove outlier length points before viscoelastic fitting
+  enable_outlier_rejection: False
+
+model_parameters:
+  # Viscoelastic fitting (skipped automatically for pulsed experiments)
+  perform_fitting: False
+
+workflow_settings:
+  # Membrane kymographs (CSV + multipanel figure)
+  create_kymographs: True
+
+  # ---------------------------------------------------------------
+  # INTERACTIVE SETUP
+  # ---------------------------------------------------------------
+  # Frame shown during setup, as a fraction of the recording (0.5 = middle)
+  # A later frame (0.4) shows the protrusion after some bleaching, so the
+  # threshold picked there still holds at the end of the recording.
+  selection_frame_fraction: 0.4
+  # Starting size of the trap box [µm]; adjust it during setup as needed
+  default_roi_width_um: 75.0
+  default_roi_height_um: 31.0
+
+  # ---------------------------------------------------------------
+  # COMPUTER
+  # ---------------------------------------------------------------
+  # CPU cores to use; lower it if the computer becomes slow
+  n_workers: 3

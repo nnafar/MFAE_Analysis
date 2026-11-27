@@ -139,7 +139,7 @@ def test_frames_cached_for_workers_match_the_file(tmp_path, czi_file):
     from mfae.config import loader as config_loader
     from mfae.config.schema import MFAConfig
     cfg = MFAConfig(**config_loader.load_layers(
-        ROOT / "config" / "config_czi.yaml",
+        ROOT / "config" / "pipeline/template_czi.yaml",
         {"paths": {"data_folder": str(czi_file), "experiment_id": EXP_NAME}}).data)
     analysis = pipeline.MFAAnalysis(czi_file, EXP_NAME, cfg, output_root=tmp_path / "out")
     try:
@@ -178,20 +178,20 @@ def test_tiff_template_refused_for_a_czi_file(tmp_path, czi_file):
     from mfae import cli, pipeline
     dest = tmp_path / "exp.yaml"
     assert cli.main(["--init-config", str(dest), "--data-folder", str(czi_file),
-                     "--from", str(ROOT / "config" / "config_tiff.yaml")]) == 1
+                     "--from", str(ROOT / "config" / "pipeline/template_tiff.yaml")]) == 1
     assert not dest.exists()
 
 
 def test_format_mismatch_is_reported(tmp_path, czi_file):
     from mfae import cli, pipeline
     # TIFF config pointed at a .czi file
-    config, _ = cli.load_config(ROOT / "config" / "config_tiff.yaml", data_folder=czi_file)
+    config, _ = cli.load_config(ROOT / "config" / "pipeline/template_tiff.yaml", data_folder=czi_file)
     assert config is None
 
 
 def test_channel_settings_of_the_other_format_are_refused(tmp_path, czi_file):
     from mfae.config import loader as config_loader
-    text = (ROOT / "config" / "config_czi.yaml").read_text(encoding="utf-8")
+    text = (ROOT / "config" / "pipeline/template_czi.yaml").read_text(encoding="utf-8")
     bad = tmp_path / "bad.yaml"
     bad.write_text(text.replace("  dye_channel_number: 1\n", "  dye_channel_pattern: 'C2'\n"),
                    encoding="utf-8")
