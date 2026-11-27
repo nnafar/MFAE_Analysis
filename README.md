@@ -28,6 +28,64 @@ tests/                   automated tests (synthetic data)
 
 ---
 
+## Command cheat sheet
+
+Copy a line into Spyder's IPython console. Everything inside `--args "..."` is passed to the
+script; `--wdir` runs it from the repository folder so `config/...` is found. Change
+`C:/GitHub/MFAE_Analysis` if your copy is elsewhere. (In a terminal, type
+`python run_experiment.py` followed by what is inside the quotes.)
+
+Use `config/config_asymmetric.yaml` for the asymmetric microscope (.tif: asymmetric E-field and
+aspiration) and `config/config_symmetric.yaml` for the symmetric microscope (.czi). The examples
+use the asymmetric one; swap the config name for symmetric data.
+
+**Analyse**
+
+| To | Run |
+|---|---|
+| Analyse all new experiments (asymmetric) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch" --wdir` |
+| Analyse all new experiments (symmetric) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch" --wdir` |
+| Check everything first (no windows, writes nothing) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir` |
+| Analyse a folder that isn't listed in the config | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch E:/Data/MFAE/Aspiration" --wdir` |
+| Only experiments whose name contains a text | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4" --wdir` |
+| One experiment, by its folder (or `.czi` file) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --data-folder M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10" --wdir` |
+
+Experiments that already have results are skipped. A batch first opens the setup windows for every
+new experiment, then analyses them all without further questions.
+
+**Redo**
+
+| To | Run |
+|---|---|
+| Analyse again, keeping the saved trap setup | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo" --wdir` |
+| Redo the whole setup (boxes, entrances, thresholds) and analyse again | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo --fresh" --wdir` |
+| Redo the setup of single traps only, then analyse again | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7,12" --wdir` |
+| Re-analyse everything | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --redo" --wdir` |
+
+Without `--only`, `--redo` and `--fresh` apply to every experiment in the config's folders.
+`--traps` needs exactly one experiment, so always pair it with `--only`.
+
+**Pool experiments (bulk analysis)**
+
+| To | Run |
+|---|---|
+| Statistics and figures per setup, aspiration experiments as controls | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --wdir` |
+| Same, without shared aspiration controls | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --args "--controls none" --wdir` |
+| Results stored somewhere other than `Output/` | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --args "--output-root D:/MFAE_Output" --wdir` |
+
+**Settings, new setups, help**
+
+| To | Run |
+|---|---|
+| Show every setting a run uses, and where it comes from | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --show-config" --wdir` |
+| New config for data recorded with other settings (copies a template into `config/`; a `.czi` file picks the CZI template) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10" --wdir` |
+| See how a `.czi` file is organised (channels, frames) | `%runfile C:/GitHub/MFAE_Analysis/tools/czi_info.py --args "D:/MFAE/261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi" --wdir` |
+| List all options | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--help" --wdir` |
+
+Options go **inside** the quotes; anything after `--wdir` is read by Spyder, not by the script.
+
+---
+
 ## 1. Installation
 
 Requires **Python 3.10 or newer** (3.11–3.12 are tested).
