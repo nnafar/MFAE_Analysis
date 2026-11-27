@@ -1207,32 +1207,41 @@ def draw_ui_text(img: np.ndarray, text: str, pos: Tuple[int, int],
     # Main Text
     cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
     
-def add_text_overlay(img: np.ndarray, text_lines: List[str], bottom_margin: int = 30) -> None:
+def add_text_overlay(img: np.ndarray, text_lines: List[str], bottom_margin: int = 30,
+                     max_width: Optional[int] = None, max_scale: float = 0.8) -> None:
     """
     Adds multiple lines of text to an image's bottom-left corner.
     Includes a semi-transparent background box to ensure readability.
+
+    max_width: keep the box within the leftmost max_width pixels (e.g. one
+    panel of a window with several panels); the font shrinks until the
+    longest line fits, down to a readable minimum. max_scale: largest font.
     """
     if not text_lines: return
     
     h, w = img.shape[:2]
-    
-    # Settings for larger, readable text
-    font_scale = 0.8
-    font_thickness = 2
-    line_height = 35
-    padding = 15
-    
+    avail = min(w, max_width) if max_width else w
+    padding = 12
+
+    # Largest font (<= max_scale) whose longest line fits the available width
+    font_scale, font_thickness = max_scale, 2
+    while True:
+        widest = max(cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)[0][0]
+                     for t in text_lines)
+        if widest + 2 * padding <= avail or font_scale <= 0.4:
+            break
+        font_scale = round(font_scale - 0.05, 2)
+    if font_scale < 0.6:
+        font_thickness = 1
+    line_height = int(round(44 * font_scale))
+
     # Calculate Box Dimensions
     num_lines = len(text_lines)
     text_block_height = num_lines * line_height
-    
-    # Estimate width (approximate, usually sufficient)
-    max_char_count = max(len(line) for line in text_lines)
-    box_width = int(max_char_count * 15 * font_scale) + (padding * 2)
-    box_width = min(box_width, w) # Clamp to image width
+    box_width = min(widest + 2 * padding, avail)
     
     # Box Coordinates
-    y_start = h - bottom_margin - text_block_height - padding
+    y_start = max(0, h - bottom_margin - text_block_height - padding)
     y_end = h - bottom_margin + padding
     
     # Draw Semi-Transparent Background Box
@@ -1242,7 +1251,7 @@ def add_text_overlay(img: np.ndarray, text_lines: List[str], bottom_margin: int 
     
     # Draw Lines
     # We iterate forward to draw Top-to-Bottom within the calculated box
-    current_y = y_start + line_height + 5
+    current_y = y_start + line_height
     for text in text_lines:
         draw_ui_text(img, text, (padding, current_y), scale=font_scale, thickness=font_thickness, color=UI_COLORS['text'])
         current_y += line_height
