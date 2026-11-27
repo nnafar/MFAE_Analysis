@@ -227,3 +227,42 @@ def test_membrane_kymographs_mark_the_pulse_only_when_there_is_one():
     assert 'Pulse' in labels[0]
     assert 'Pulse' not in labels[1]
     matplotlib.pyplot.close(fig)
+
+
+def _superplot_df(levels):
+    import pandas as pd
+    rng = np.random.default_rng(0)
+    rows = []
+    for t_i, (cond, level) in enumerate(levels.items()):
+        for exp in range(2):
+            for cell in range(8):
+                rows.append({'Date': 260101 + 10 * t_i + exp, 'Treatment': 'WT', 'Cond': cond,
+                             'Experiment_Folder': f"2601{t_i}{exp}_MDAMB231_WT_Chip{exp + 1}_Experiment{exp}-1100Pa-0V-0ms-frame0",
+                             'E': level * rng.lognormal(0, 0.1)})
+    return pd.DataFrame(rows)
+
+
+def test_superplot_draws_a_bracket_for_every_significant_pair(tmp_path, monkeypatch):
+    """The bracket code used to run once after the pair loop: only the last pair got one."""
+    import matplotlib
+    matplotlib.use('Agg')
+    from mfae.bulk.plots import common
+    drawn = []
+    real = common._add_bracket
+    monkeypatch.setattr(common, '_add_bracket',
+                        lambda ax, x1, x2, y_top, label, **k: drawn.append((x1, x2, y_top)) or real(ax, x1, x2, y_top, label, **k))
+    df = _superplot_df({'A': 1.0, 'B': 3.0, 'C': 9.0})
+    common.render_visco_parameter_superplot(df, [('E', 'E', 'E')], tmp_path / 'sp.pdf', category_col='Cond', categories=['A', 'B', 'C'],
+                               grid_shape=(1, 2), figsize=(8, 4), bracket_pairs=[(0, 1), (1, 2), (0, 2)])
+    assert [(a, b) for a, b, _ in drawn] == [(0, 1), (1, 2), (0, 2)]
+    assert drawn[2][2] > max(drawn[0][2], drawn[1][2])     # spanning bracket stacked above the others
+    assert (tmp_path / 'sp.pdf').exists()
+
+
+def test_superplot_with_one_category_does_not_crash(tmp_path):
+    import matplotlib
+    matplotlib.use('Agg')
+    from mfae.bulk.plots import common
+    common.render_visco_parameter_superplot(_superplot_df({'A': 1.0}), [('E', 'E', 'E')], tmp_path / 'one.pdf',
+                               category_col='Cond', categories=['A'], grid_shape=(1, 2), figsize=(8, 4))
+    assert (tmp_path / 'one.pdf').exists()

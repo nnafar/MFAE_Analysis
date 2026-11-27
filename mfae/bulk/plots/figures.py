@@ -350,8 +350,7 @@ def plot_thesis_asp_best_fit_multipanel(all_grouped_data: Dict,
         cols = 5
         rows = math.ceil(n / cols)
         fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-        if n == 1: axes = [axes]
-        else: axes = axes.flatten()
+        axes = np.asarray(axes).flatten()   # one panel or many
 
         handles = [
             mlines.Line2D([], [], color='black', marker='o', lw=0, label='Data', alpha=0.4, ms=4),
@@ -1613,10 +1612,7 @@ def plot_thesis_mi_wholetrace_best_fit_multipanel(mi_whole_grouped_data: Dict,
             cols = 5
             rows = math.ceil(n / cols)
             fig, axes = plt.subplots(rows, cols, figsize=(20, 3.5 * rows))
-            if n == 1:
-                axes = [axes]
-            else:
-                axes = np.asarray(axes).flatten()
+            axes = np.asarray(axes).flatten()   # one panel or many
 
             handles = [
                 mlines.Line2D([], [], color='black', marker='o', lw=0,
@@ -4025,13 +4021,9 @@ def run_thesis_claim2_plots(grouped_data: Dict,
     _try("Fate wholetrace mi boxplots", plot_thesis_fate_wholetrace_mi_boxplots,
          mechanics_df, wt_dir)
 
-    _try("Combined prepulse trace by fate", 
-         plot_thesis_combined_prepulse_trace_by_fate(grouped_data, mechanics_df, 
-                                                     output_dir, global_pre_dur,
-                                                     title_fontsize  =  15,
-                                                     label_fontsize  =  15,
-                                                     tick_fontsize   =  15,
-                                                     legend_fontsize =  15))
+    _try("Combined prepulse trace by fate", plot_thesis_combined_prepulse_trace_by_fate,
+         grouped_data, mechanics_df, output_dir, global_pre_dur,
+         title_fontsize=15, label_fontsize=15, tick_fontsize=15, legend_fontsize=15)
     _try("Combined wholetrace trace by fate", plot_thesis_combined_wholetrace_trace_by_fate,
          grouped_data, mechanics_df, wt_dir, global_whole_dur)
 
