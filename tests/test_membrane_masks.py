@@ -865,6 +865,9 @@ def test_kymograph_tip_does_not_jump_to_the_box_edge_in_a_hazy_channel():
     rng = np.random.default_rng(3)
     n, Wd, tip = 40, 120, 70
     x = np.arange(Wd)
-    K = np.array([np.where(x >= tip, 40.0, 6.0) + rng.normal(0, 1.0, Wd) for _ in range(n)])   # haze = 6
+    # faint protrusion; the channel ahead is dark near the tip and hazier
+    # towards the far end of the box
+    prof = np.where(x >= tip, 14.0, np.where(x < 25, 9.0, 0.0))
+    K = np.array([prof + rng.normal(0, 1.0, Wd) for _ in range(n)])
     tips, _ = track_tip(K, Wd, np.ones(n, bool))
     assert np.all(np.abs(tips - tip) <= 2)
