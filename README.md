@@ -492,6 +492,19 @@ The settings are in `config/pipeline/defaults.yaml` under `image_processing` (`m
 to the older CLAHE-based segmentation; thresholds picked in one mode are not comparable with the
 other.
 
+**Tip tracking on the kymograph.** The protrusion length is not read from each frame's mask on
+its own. The membrane profile along the channel centre line is followed through time, as you would
+read the edge on the kymograph: in every frame each position gets a score for looking like the
+protrusion's outer edge (protrusion signal on the entrance side, nothing left on the channel side,
+judged in noise units so a faint far end counts and an internal step next to it does not), and
+the tip path through all frames is the one with the best total score, with a penalty for jumping
+between frames. A wrong edge in single frames or short runs can't pull the path away; bright edges
+are followed however fast they move. Where a faint far end drops below the threshold the mask gets
+shorter, but the tracked length does not. Areas and shape still come from the masks; the trace CSV
+also has the mask-based length (`Protrusion_Length_mask_um`) for comparison. Set
+`tip_tracking: mask` under `image_processing` in `config/pipeline/defaults.yaml` to go back to the
+mask-based tip; `tip_jump_cost` sets how strongly jumps are resisted.
+
 **Length spikes (faint cells).** With a faint cell the tip can jump for a frame or two onto faint
 signal ahead of it, or lose the faint far end of the protrusion. Each frame's length is compared
 with the median of the 7 frames around it; a frame that is at least 2 µm and 3 robust standard

@@ -484,6 +484,20 @@ class ImageProcessingConstants(_StrictModel):
         default=15.0, ge=0.0, le=30.0,
         description="Tip refinement (level crossing along the centre line) is used only if it lies at most this far beyond the mask edge [px]; otherwise the mask edge is used."
     )
+    tip_tracking: Literal['kymograph', 'mask'] = Field(
+        default='kymograph',
+        description=(
+            "'kymograph': the tip is tracked on the membrane profile along the channel centre "
+            "line through time (the kymograph), linking frames so a wrong edge in single frames or "
+            "short runs can't pull it away; robust for faint, flickering cells. 'mask': each frame's "
+            "tip from its own protrusion mask (the earlier method). Areas and shape always come "
+            "from the masks."
+        )
+    )
+    tip_jump_cost: float = Field(
+        default=1.0, ge=0.0, le=20.0,
+        description="Kymograph tracking: penalty per pixel of tip movement between frames (up to 10 px), in noise units of edge strength. Higher = steadier, slower to follow faint fast changes; bright edges are followed regardless."
+    )
     tip_level_fraction: float = Field(
         default=0.25, gt=0.0, lt=1.0,
         description=(
