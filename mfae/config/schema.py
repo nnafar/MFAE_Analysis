@@ -485,7 +485,7 @@ class ImageProcessingConstants(_StrictModel):
         description="Tip refinement (level crossing along the centre line) is used only if it lies at most this far beyond the mask edge [px]; otherwise the mask edge is used."
     )
     tip_tracking: Literal['kymograph', 'mask'] = Field(
-        default='kymograph',
+        default='mask',
         description=(
             "'kymograph': the tip is tracked on the membrane profile along the channel centre "
             "line through time (the kymograph), linking frames so a wrong edge in single frames or "

@@ -1614,7 +1614,7 @@ class LineDetectionMFA:
         # channel lumen rows of the signal image left of the entrance, and where
         # the protrusion mask sits in them; the tip is tracked after the loop.
         ip_cfg = self.params.get('image_processing', {})
-        use_kymo_tip = (ip_cfg.get('tip_tracking', 'kymograph') == 'kymograph'
+        use_kymo_tip = (ip_cfg.get('tip_tracking', 'mask') == 'kymograph'
                         and not self.params.get('guv_settings', {}).get('enable', False))
         kymo_bands: List[Optional[np.ndarray]] = []
         kymo_rows: List[Tuple[float, float]] = []      # (centre row, height) of the mask
