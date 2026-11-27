@@ -2075,7 +2075,11 @@ class LineDetectionMFA:
                 # band column x is ROI column x; the entrance is at pipette_x
                 out[i] = float(pipette_x) - float(tip_x[i])
                 if i < len(edge):
-                    edge[i] = bool(tip_x[i] <= edge_margin_px)
+                    # "tip at the box edge" ends tracking ('left ROI'), so it
+                    # needs both: the mask reaches the edge AND the tracked tip
+                    # is there. Either alone is a leak or a false edge on haze
+                    # (Exp 2 trap 5 lost its whole cell to the latter).
+                    edge[i] = bool(edge[i]) and bool(tip_x[i] <= edge_margin_px)
                 clear_out[i] = bool(clear[i])
             elif active[i] and present[i]:
                 clear_out[i] = False          # protrusion mask but no usable kymograph edge

@@ -871,3 +871,21 @@ def test_kymograph_tip_does_not_jump_to_the_box_edge_in_a_hazy_channel():
     K = np.array([prof + rng.normal(0, 1.0, Wd) for _ in range(n)])
     tips, _ = track_tip(K, Wd, np.ones(n, bool))
     assert np.all(np.abs(tips - tip) <= 2)
+
+
+
+def test_kymograph_tip_at_the_box_edge_alone_does_not_end_tracking(monkeypatch):
+    """Exp 2 trap 5: the tracker put the tip at the box edge on haze; 'left ROI'
+    ended tracking at frame 0. The mask must reach the edge too."""
+    from mfae.membrane import kymo_tip
+    real = kymo_tip.track_tip
+
+    def edge_for_a_while(K, pipette_x, active, **kw):
+        tips, clear = real(K, pipette_x, active, **kw)
+        tips[12:18] = 0.0                     # false edge at the box edge, 6 frames, mid-cell
+        return tips, clear
+
+    monkeypatch.setattr(kymo_tip, 'track_tip', edge_for_a_while)
+    res = _run_cells([0] * 3 + [60] * 25, tip_tracking='kymograph')
+    assert len(res['cell_segments']) == 1, res['cell_segments']     # not split at the false edge
+    assert res['cell_segments'][0][2] is None and res['exit_frame_index'] == 27
