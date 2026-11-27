@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Output folder layout and the readers' fallback to the old flat layout."""
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -230,3 +231,54 @@ def test_readme_lists_the_data_subfolders(tmp_path):
     text = ol.write_readme(tmp_path, 'X').read_text()
     assert 'Data/Traces/' in text and 'Data/Kymographs/' in text
     assert 'Trap_XX_protrusion_trace.csv' in text and 'protrusion length' in text
+
+
+
+def _setup_with_script(monkeypatch, script):
+    """MFAAnalysis whose per-trap windows answer from `script` (trap -> list of signals)."""
+    from mfae import pipeline, utils
+    obj = pipeline.MFAAnalysis.__new__(pipeline.MFAAnalysis)
+    obj.params, obj.skipped = {'workflow_settings': {}}, []
+    obj.file_reader = types.SimpleNamespace(tif_files=[0] * 10)
+    obj.loader = types.SimpleNamespace(get_frame=lambda i: 'frame', clear_cache=lambda: None)
+    obj.cropper = types.SimpleNamespace(selected_traps=[0, 3, 5], pipette_coords=[50, 0],
+                                        process_frame=lambda img, t: f'roi{t}')
+    calls = []
+
+    class FakeDet:
+        def __init__(self, rois, pip, params):
+            self.trap = int(rois[0][3:]); self.pip = pip
+
+        def run_detection(self, skip_pipette=False, initial_thresholds=None):
+            calls.append((self.trap, initial_thresholds))
+            sig, thr = script[self.trap].pop(0)
+            if sig != 'confirm':
+                return {'signal': sig}
+            return {'signal': 'confirm', 'pipette_start_x_used': self.pip[0],
+                    'threshold_prot': thr, 'threshold_body': thr + 10}
+
+    monkeypatch.setattr(pipeline, 'LineDetectionMFA', FakeDet)
+    return obj, calls
+
+
+def test_setup_back_returns_to_the_previous_trap_at_its_values(monkeypatch):
+    obj, calls = _setup_with_script(monkeypatch, {
+        0: [('confirm', 70), ('confirm', 75)],
+        3: [('back', None), ('confirm', 90)],
+        5: [('confirm', 100)]})
+    signal, configs = obj._collect_interactive_parameters()
+    assert signal == 'confirm'
+    assert calls == [(0, None), (3, None), (0, (70, 80)), (3, None), (5, None)]
+    assert [(c['trap_index'], c['thr_prot']) for c in configs] == [(0, 75), (3, 90), (5, 100)]
+
+
+def test_setup_restart_goes_to_the_first_trap_and_keeps_the_boxes(monkeypatch):
+    obj, calls = _setup_with_script(monkeypatch, {
+        0: [('confirm', 70), ('confirm', 71)],
+        3: [('confirm', 90), ('confirm', 91)],
+        5: [('restart', None), ('confirm', 100)]})
+    signal, configs = obj._collect_interactive_parameters()
+    assert signal == 'confirm'                      # not 'restart': the trap boxes stay
+    assert [c[0] for c in calls] == [0, 3, 5, 0, 3, 5]
+    assert calls[3] == (0, (70, 80))               # earlier choices pre-filled
+    assert [(c['trap_index'], c['thr_prot']) for c in configs] == [(0, 71), (3, 91), (5, 100)]

@@ -357,7 +357,8 @@ own key hints; the common keys are:
 | Key | Action |
 |---|---|
 | `Enter` | Confirm this step |
-| `R` | Restart the setup from the beginning |
+| `B` (or `Backspace`) | Entrance and threshold windows: go back one window: body threshold → protrusion threshold → entrance → the previous trap. Each window opens at the value you chose before, so `Enter` keeps it |
+| `R` | Entrance and threshold windows: start again at the first trap (trap boxes kept, earlier values pre-filled). In the rotation / trap-box windows: restart the setup from the beginning |
 | `Esc` | Stop the analysis |
 | `W` `A` `S` `D` | Adjust (rotation / ROI position / pipette position / threshold – depends on the step) |
 | `F` | Threshold windows only: change the faint-cell smoothing (see below) |
