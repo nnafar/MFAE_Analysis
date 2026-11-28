@@ -121,40 +121,56 @@ def _experiment(tmp_path, traps=(1, 3, 6)):
     return exp
 
 
-def test_review_keys_tag_and_move(tmp_path):
+def test_review_keys_combine_and_enter_moves_on(tmp_path):
     from mfae import review
     exp = _experiment(tmp_path)
     rv = review.Review(review.build_items([exp]))
     assert [it.trap for it in rv.items] == [1, 3, 6]
-    assert rv.handle_key(ord('o')) == 'next' and rv.item.trap == 3   # tag saves and advances
-    assert rv.handle_key(ord('x')) == 'next' and rv.item.trap == 6
-    assert annotations.tags(exp)[3]['Tag'] == 'R_DOA'
-    assert rv.handle_key(ord('b')) == 'next' and rv.handle_key(ord('Z')) == 'next'
-    assert annotations.tags(exp)[3]['Tag'] == 'R0_DOA'
-    assert rv.handle_key(ord('b')) == 'next' and rv.item.trap == 3
-    assert rv.handle_key(ord('R')) == 'next' and rv.item.trap == 6
-    assert rv.handle_key(ord('b')) == 'next' and rv.item.trap == 3   # back
-    assert rv.handle_key(ord('c')) == '' and rv.item.trap == 3       # clear, stay
-    assert rv.handle_key(13) == 'next' and rv.item.trap == 6         # Enter: next, unchanged
-    assert rv.handle_key(ord('m')) == 'quit' and rv.done             # past the last trap
-    t = annotations.tags(exp)
-    assert (t[1]['Tag'], t[3]['Tag'], t[6]['Tag']) == ('OK', '', 'MASK')
-    assert review.first_untagged(review.build_items([exp])) == 1     # trap 3 is untagged again
+    tag = lambda t: annotations.tags(exp).get(t, {}).get('Tag')
+
+    assert rv.handle_key(13) == 'next' and tag(1) == 'OK'             # Enter on untagged: OK
+    assert rv.handle_key(ord('r')) == '' and tag(3) == 'R'            # tag keys stay on the trap
+    assert rv.handle_key(ord('d')) == '' and tag(3) == 'R_DOA'        # R + D
+    assert rv.handle_key(ord('B')) == '' and tag(3) == 'R0_DOA'       # rupture before instead
+    assert rv.handle_key(ord('d')) == '' and tag(3) == 'R0'           # D again removes DOA
+    assert rv.handle_key(ord('b')) == '' and tag(3) == ''             # B again removes R0
+    assert rv.handle_key(ord('d')) == '' and tag(3) == 'DOA'
+    assert rv.handle_key(ord('r')) == '' and tag(3) == 'R_DOA'        # D then R works too
+    assert rv.handle_key(ord('m')) == '' and tag(3) == 'MASK'         # stand-alone replaces
+    assert rv.handle_key(ord('l')) == '' and tag(3) == 'after'
+    assert rv.handle_key(ord('p')) == '' and tag(3) == 'PI'
+    assert rv.handle_key(13) == 'next' and tag(3) == 'PI'             # Enter keeps a tag
+    assert rv.handle_key(2424832) == 'next' and rv.item.trap == 3     # <- (Windows code)
+    assert rv.handle_key(ord('c')) == '' and tag(3) == ''             # clear
+    assert rv.handle_key(65363) == 'next' and rv.item.trap == 6       # -> (Linux code): skip
+    assert tag(3) == ''                                               # skipping doesn't tag
+    assert rv.handle_key(8) == 'next' and rv.item.trap == 3           # Backspace: back
+    assert rv.handle_key(63235) == 'next' and rv.item.trap == 6       # -> (macOS code)
+    assert rv.handle_key(ord('s')) == '' and rv.handle_key(3014656) == '' and tag(6) == ''   # Delete clears
+    assert rv.handle_key(ord('i')) == '' and rv.handle_key(13) == 'quit' and rv.done
+    assert tag(6) == 'IRREGULAR'
+    assert review.first_untagged(review.build_items([exp])) == 1      # trap 3 is untagged
+
+
+def test_compose_covers_every_tag():
+    from mfae import review
+    seen = {review.compose('', k) for k in 'rbdplmsi'} | {review.compose('R', 'd'), review.compose('R0', 'd')}
+    assert seen | {'OK'} == set(annotations.TAGS) - {'POST'}           # POST = after (older name)
 
 
 def test_review_window_runs_headless(tmp_path, monkeypatch):
     """The real player loop with scripted keys: pause, step, speed, tag, quit."""
     from mfae import review
     exp = _experiment(tmp_path)
-    keys = iter([-1, ord(' '), ord('.'), ord(','), ord(']'), ord('['), ord('d'), -1, ord('q')])
+    keys = iter([-1, ord(' '), ord('.'), ord(','), ord(']'), ord('['), ord('d'), -1, 13, ord('q')])
     shown = []
     monkeypatch.setattr(review.cv2, "namedWindow", lambda *a, **k: None)
     monkeypatch.setattr(review.cv2, "imshow", lambda name, img: shown.append(img.shape))
-    monkeypatch.setattr(review.cv2, "waitKey", lambda ms: next(keys, ord('q')))
+    monkeypatch.setattr(review.cv2, "waitKeyEx", lambda ms: next(keys, ord('q')))
     monkeypatch.setattr(review.cv2, "getWindowProperty", lambda *a: 1.0)
     monkeypatch.setattr(review.cv2, "destroyAllWindows", lambda: None)
     assert review.run(review.find_experiments(tmp_path / "Output", "Experiment5")) == 0
-    assert shown and shown[0][0] == 70 + 80 + 24                       # banner + movie + help
+    assert shown and shown[0][0] == 70 + 80 + review.HELP_HEIGHT      # banner + movie + help
     assert annotations.tags(exp)[1]['Tag'] == 'DOA'
 
 

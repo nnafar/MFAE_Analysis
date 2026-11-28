@@ -7,15 +7,15 @@ after another (from just before the analysed cell arrives, looping), and writes 
 (see mfae/files/annotations.py) right away. It needs only the results folder,
 not the config or the raw data.
 
-Keys (shown in the window):
-    R  ruptured after the pulse      0  ruptured before the pulse (R0)
-    D  not viable (DOA)              P  not viable (PI)
-    X  ruptured after the pulse and not viable (R_DOA)
-    Z  ruptured before the pulse and not viable (R0_DOA)
-    A  arrived after the pulse       M / S / I  detection failed (MASK / SHAPE / IRREGULAR)
-    O  reviewed, nothing wrong (OK)  C  clear the tag
-    A tag key saves and goes to the next trap.
-    Enter / N  next trap (tag unchanged)     B  previous trap
+Keys (shown in the window). Tag keys follow the words and combine; each
+change is saved at once, Enter moves on:
+    R  ruptured (after the pulse)        B  ruptured before the pulse (R0)
+    D  dead on arrival (DOA)             R + D -> R_DOA,  B + D -> R0_DOA
+    P  PI positive                       L  late: arrived after the pulse
+    M / S / I  detection failed (mask / shape / irregular)
+    Press a key again to remove that part; C or Delete clears the tag.
+    Enter  accept and go to the next trap (no tag yet: tagged OK)
+    ->  next trap without tagging        <- or Backspace  previous trap
     Space  pause / play     , .  one frame back / forward     [ ]  slower / faster
     Q / Esc  quit (every tag is already saved)
 """
@@ -34,11 +34,41 @@ from mfae.files import annotations, output_layout
 
 logger = logging.getLogger(__name__)
 
-KEY_TAGS = {'r': 'R', '0': 'R0', 'd': 'DOA', 'x': 'R_DOA', 'z': 'R0_DOA', 'p': 'PI', 'a': 'after', 'm': 'MASK',
-            's': 'SHAPE', 'i': 'IRREGULAR', 'o': 'OK'}
-HELP = ("R rupt  0 R0  D DOA  X R+DOA  Z R0+DOA  P PI  A after  M mask  S shape  I irregular  O ok  C clear | "
-        "Enter next  B back  Space pause  ,/. step  [/] speed  Q quit")
+# Tag keys. Rupture (R after, B before the pulse) and dead-on-arrival (D) combine
+# (R_DOA, R0_DOA); the others stand alone and replace whatever was set.
+RUPTURE_KEYS = {'r': 'R', 'b': 'R0'}
+ALONE_KEYS = {'p': 'PI', 'l': 'after', 'm': 'MASK', 's': 'SHAPE', 'i': 'IRREGULAR'}
+HELP = ("Tag: R ruptured  B ruptured before pulse  D dead on arrival (R+D, B+D combine)  P PI+  L late  "
+        "M mask  S shape  I irregular  C clear",
+        "Enter accept + next (untagged = OK)   -> skip   <- back   Space pause   , . frame   [ ] speed   Q quit")
+# Special keys as cv2.waitKeyEx reports them (Windows, Linux/GTK, macOS)
+KEYS_RIGHT = {2555904, 65363, 63235}
+KEYS_LEFT = {2424832, 65361, 63234}
+KEYS_DELETE = {3014656, 65535, 63272}
+KEYS_BACKSPACE = {8, 127}
+
+
+def compose(current: str, key: str) -> str:
+    """The tag after pressing a tag key on a trap tagged `current` ('' = none)."""
+    cur = annotations.normalise_tag(current) or ''
+    rupture = {'R': 'R', 'R0': 'R0', 'R_DOA': 'R', 'R0_DOA': 'R0'}.get(cur, '')
+    doa = cur in ('DOA', 'R_DOA', 'R0_DOA')
+    alone = cur if cur in ALONE_KEYS.values() else ''
+    if key in RUPTURE_KEYS:
+        rupture = '' if rupture == RUPTURE_KEYS[key] else RUPTURE_KEYS[key]
+        alone = ''
+    elif key == 'd':
+        doa, alone = not doa, ''
+    elif key in ALONE_KEYS:
+        alone = '' if alone == ALONE_KEYS[key] else ALONE_KEYS[key]
+        rupture, doa = '', False
+    if alone:
+        return alone
+    if rupture and doa:
+        return rupture + '_DOA'
+    return rupture or ('DOA' if doa else '')
 WINDOW = "MFAE review"
+HELP_HEIGHT = 42
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
@@ -130,8 +160,8 @@ class Review:
         self.pos = new
         return True
 
-    def tag(self, tag: str, advance: bool = True) -> bool:
-        """Save a tag ('' clears) for the current trap; advance on success."""
+    def tag(self, tag: str, advance: bool = False) -> bool:
+        """Save a tag ('' clears) for the current trap; optionally go to the next one."""
         it = self.item
         try:
             annotations.set_tag(it.results_dir, it.trap, tag)
@@ -146,28 +176,36 @@ class Review:
 
     def handle_key(self, key: int) -> str:
         """
-        Apply one key press. Returns what the player has to do: 'next' (load
-        the new trap's movie), 'pause', 'back1' / 'fwd1' (one frame), 'slower',
-        'faster', 'quit' or '' (nothing).
+        Apply one key press (as cv2.waitKeyEx reports it). Returns what the
+        player has to do: 'next' (load the new trap's movie), 'pause',
+        'back1' / 'fwd1' (one frame), 'slower', 'faster', 'quit' or '' (nothing).
         """
         if key < 0:
             return ''
-        k = chr(key & 0xFF).lower() if (key & 0xFF) < 128 else ''
-        if key in (27,) or k == 'q':
-            self.done = True
-            return 'quit'
-        if k in KEY_TAGS:
-            before = self.pos
-            ok = self.tag(KEY_TAGS[k])
-            return 'quit' if self.done else ('next' if ok and self.pos != before else '')
-        if k == 'c':
-            self.tag('', advance=False)
-            return ''
-        if key in (13, 10) or k == 'n':
+        if key in KEYS_RIGHT:
             moved = self.move(+1)
             return 'quit' if self.done else ('next' if moved else '')
-        if k == 'b' or key == 8:
+        if key in KEYS_LEFT or key in KEYS_BACKSPACE:
             return 'next' if self.move(-1) else ''
+        if key in KEYS_DELETE:
+            self.tag('')
+            return ''
+        k = chr(key).lower() if 0 <= key < 128 else ''
+        if key == 27 or k == 'q':
+            self.done = True
+            return 'quit'
+        if k in RUPTURE_KEYS or k in ALONE_KEYS or k == 'd':
+            self.tag(compose(self.row().get('Tag', ''), k))
+            return ''
+        if k == 'c':
+            self.tag('')
+            return ''
+        if key in (13, 10):                       # Enter: accept (untagged -> OK) and go on
+            if not self.row().get('Tag') or self.row().get('Check'):
+                if not self.tag(self.row().get('Tag') or 'OK'):
+                    return ''
+            moved = self.move(+1)
+            return 'quit' if self.done else ('next' if moved else '')
         if k == ' ':
             return 'pause'
         if k == ',':
@@ -213,7 +251,8 @@ def _banner(rv: Review, width: int, paused: bool, speed: float) -> np.ndarray:
     tag = r.get('Tag') or '-'
     line1 = f"{it.results_dir.name[:46]} | Trap {it.trap:02d} ({rv.pos + 1}/{len(rv.items)}) | {cell}"
     cv2.putText(strip, line1, (8, 20), _FONT, 0.5, (235, 235, 235), 1, cv2.LINE_AA)
-    cv2.putText(strip, f"Tag: {tag}", (8, 44), _FONT, 0.65,
+    meaning = annotations.TAGS.get(annotations.normalise_tag(r.get('Tag')) or '', '')
+    cv2.putText(strip, f"Tag: {tag}" + (f"  ({meaning})" if meaning else ""), (8, 44), _FONT, 0.55,
                 (90, 220, 90) if r.get('Tag') else (170, 170, 170), 2, cv2.LINE_AA)
     info = []
     if r.get('Pipeline_hint'):
@@ -224,16 +263,18 @@ def _banner(rv: Review, width: int, paused: bool, speed: float) -> np.ndarray:
         info.append("PAUSED")
     if abs(speed - 1.0) > 1e-6:
         info.append(f"speed x{speed:g}")
-    cv2.putText(strip, " | ".join(info)[:120], (130, 44), _FONT, 0.45,
+    cv2.putText(strip, " | ".join(info)[:110], (8, 64) if not (rv.message and time.monotonic() < rv.message_until)
+                else (420, 64), _FONT, 0.45,
                 (80, 200, 255) if r.get('Check') else (200, 200, 200), 1, cv2.LINE_AA)
     if rv.message and time.monotonic() < rv.message_until:
-        cv2.putText(strip, rv.message[:130], (8, 64), _FONT, 0.45, (120, 220, 255), 1, cv2.LINE_AA)
+        cv2.putText(strip, rv.message[:60], (8, 64), _FONT, 0.45, (120, 220, 255), 1, cv2.LINE_AA)
     return strip
 
 
 def _help(width: int) -> np.ndarray:
-    strip = np.full((24, width, 3), 20, np.uint8)
-    cv2.putText(strip, HELP, (8, 16), _FONT, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+    strip = np.full((HELP_HEIGHT, width, 3), 20, np.uint8)
+    for k, line in enumerate(HELP):
+        cv2.putText(strip, line, (8, 16 + 18 * k), _FONT, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
     return strip
 
 
@@ -277,7 +318,7 @@ def run(experiments: Sequence[Path], traps: Optional[Sequence[int]] = None) -> i
                 frame = np.zeros((200, 600, 3), np.uint8)
             w = frame.shape[1]
             cv2.imshow(WINDOW, np.vstack([_banner(rv, w, paused, speed), frame, _help(w)]))
-            key = cv2.waitKey(max(1, int(1000 / (fps * speed))))
+            key = cv2.waitKeyEx(max(1, int(1000 / (fps * speed))))
             try:
                 if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                     break                                    # window closed

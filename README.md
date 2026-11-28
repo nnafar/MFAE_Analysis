@@ -421,27 +421,41 @@ Spyder (IPython console):
 %runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--review --only LifeAct_Chip1_Experiment5" --wdir
 ```
 
-A window plays each trap's tracking movie (from just before the analysed cell arrives, on a loop), starting at the first trap without a tag. Above the movie
-it shows the trap, the analysed cell and its frames, the current tag and the pipeline's hint. Each
-key press is saved immediately, so you can stop at any time and continue later.
+A window plays each trap's tracking movie (from just before the analysed cell arrives, on a loop),
+starting at the first trap without a tag. Above the movie it shows the trap, the analysed cell and
+its frames, the current tag with its meaning, and the pipeline's hint. Every change is saved
+immediately, so you can stop at any time and continue later.
+
+**Per trap: press the tag key(s), then `Enter`.** For a good cell, just press `Enter`.
 
 | Key | Tag | Meaning | In the bulk analysis |
 |---|---|---|---|
-| `O` | OK | Reviewed, nothing wrong | Analysed |
-| `R` | R | Ruptured after the pulse | Analysed (as ruptured) |
-| `0` | R0 | Ruptured before the pulse | Excluded |
-| `D` | DOA | Not viable (dead on arrival) | Excluded |
-| `X` | R_DOA | Ruptured after the pulse and not viable | Excluded |
-| `Z` | R0_DOA | Ruptured before the pulse and not viable | Excluded |
-| `P` | PI | Not viable (PI positive) | Excluded |
-| `A` | after | Arrived after the pulse | Excluded |
-| `M` / `S` / `I` | MASK / SHAPE / IRREGULAR | Detection failed | Excluded |
-| `C` | (clear) | Remove the tag | Analysed (untagged) |
+| `Enter` on an untagged trap | OK | Reviewed, nothing wrong | Analysed |
+| `R` | R | **R**uptured (after the pulse) | Analysed (as ruptured) |
+| `B` | R0 | Ruptured **b**efore the pulse | Excluded |
+| `D` | DOA | **D**ead on arrival (not viable) | Excluded |
+| `R` + `D` | R_DOA | Ruptured after the pulse and dead | Excluded |
+| `B` + `D` | R0_DOA | Ruptured before the pulse and dead | Excluded |
+| `P` | PI | **P**I positive (not viable) | Excluded |
+| `L` | after | **L**ate: arrived after the pulse | Excluded |
+| `M` / `S` / `I` | MASK / SHAPE / IRREGULAR | Detection failed: **m**ask / **s**hape / **i**rregular | Excluded |
+| `C` or `Delete` | (none) | **C**lear the tag | Analysed (untagged) |
 
-A tag key saves and moves on to the next trap. Other keys: `Enter`/`N` next trap (tag unchanged),
-`B` previous trap, `Space` pause, `,` `.` one frame back/forward, `[` `]` slower/faster, `Q` or
-`Esc` quit. Add `--traps 3,6` to review only some traps. Without `--only`, every analysed
-experiment in `Output/` is reviewed.
+`R`, `B` and `D` combine, in either order; pressing a key again removes that part (so a wrong key
+is undone by pressing it again). `P`, `L`, `M`, `S`, `I` stand alone and replace what was set.
+
+| Key | Does |
+|---|---|
+| `Enter` | Accept the tag (an untagged trap becomes OK) and go to the next trap |
+| `→` | Next trap without tagging (skip) |
+| `←` or `Backspace` | Previous trap |
+| `Space` | Pause / play |
+| `,` `.` | One frame back / forward |
+| `[` `]` | Slower / faster |
+| `Q` or `Esc` | Quit (everything is already saved) |
+
+Add `--traps 3,6` to review only some traps. Without `--only`, every analysed experiment in
+`Output/` is reviewed.
 
 **Or edit the table in a spreadsheet.** `cell_annotations.csv` opens in Excel:
 
