@@ -89,6 +89,24 @@ TREATMENT_RAMPS: Dict[str, List[str]] = {
     "CytD": CYTD_DATE_RAMP,
 }
 
+# Treatments without a ramp above (e.g. LifeAct) get one generated from a
+# fixed list of colour families, the same for a treatment in every run.
+_EXTRA_RAMP_BASES: List[str] = ["#1b7837", "#762a83", "#e08214", "#01665e", "#8c510a", "#c51b7d"]
+
+
+def treatment_ramp(treatment: str) -> List[str]:
+    """Date ramp for a treatment not in TREATMENT_RAMPS (six shades of one colour)."""
+    if treatment in TREATMENT_RAMPS:
+        return TREATMENT_RAMPS[treatment]
+    import hashlib
+    import matplotlib.colors as mcolors
+    k = int(hashlib.md5(str(treatment).encode()).hexdigest(), 16) % len(_EXTRA_RAMP_BASES)
+    base = np.array(mcolors.to_rgb(_EXTRA_RAMP_BASES[k]))
+    shades = [base * f + (1 - f) * np.ones(3) if f <= 1 else base / f for f in (1.0, 0.75, 0.55, 0.4, 1.3, 1.7)]
+    ramp = [mcolors.to_hex(np.clip(c, 0, 1)) for c in shades]
+    TREATMENT_RAMPS[treatment] = ramp
+    return ramp
+
 # --- Chip_ID -> marker mapping (global, stable) ---
 CHIP_MARKER_MAP: Dict[str, str] = {
     "Chip1": "o",
@@ -297,12 +315,7 @@ def _sp_build_style_maps(df: pd.DataFrame
     date_colours: Dict[int, str] = {}
     date_labels:  Dict[int, str] = {}
     for treatment, dates in dates_by_treatment.items():
-        ramp = TREATMENT_RAMPS.get(treatment)
-        if ramp is None:
-            raise ValueError(
-                f"No colour ramp defined for treatment '{treatment}'. "
-                f"Extend TREATMENT_RAMPS in mfae/bulk/plots/common.py."
-            )
+        ramp = TREATMENT_RAMPS.get(treatment) or treatment_ramp(treatment)
         if len(dates) > len(ramp):
             raise ValueError(
                 f"Treatment '{treatment}' has {len(dates)} experiment-dates "

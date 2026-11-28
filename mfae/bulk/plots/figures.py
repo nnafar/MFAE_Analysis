@@ -613,9 +613,14 @@ def _parse_bucket_to_style(bucket_label: str) -> Tuple[str, str]:
     elif '5ms' in label:
         protocol = '5ms'
     else:
-        logger.warning("_parse_bucket_to_style: could not identify protocol "
-                       "in %r; defaulting to 'ASP'.", bucket_label)
-        return ('ASP', 'intact')
+        # other durations (e.g. 1 ms on the symmetric setup) keep their own
+        # label; styling them as aspiration-only would mislabel the cohort
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(us|µs|ms|s)\b", label)
+        if m is None:
+            logger.warning("_parse_bucket_to_style: could not identify protocol "
+                           "in %r; defaulting to 'ASP'.", bucket_label)
+            return ('ASP', 'intact')
+        protocol = f"{m.group(1)}{m.group(2).replace('µs', 'us')}"
     return (protocol, fate)
 
 

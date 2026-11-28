@@ -625,14 +625,40 @@ class BulkDataLoader:
             )
             return
 
-        # Align by row index; both CSVs are one row per acquisition frame.
-        n = min(len(L_um), len(V_body))
-        if len(L_um) != len(V_body):
-            logger.warning(
-                f"Frame-count mismatch between detection ({len(L_um)}) and "
-                f"uptake ({len(V_body)}) CSVs; truncating to {n}."
-            )
-        L_aligned = np.asarray(L_um[:n], dtype=float)
+        # Align the two CSVs by time. The protrusion trace has every frame of
+        # the recording; the uptake CSV starts at the analysed cell's entry, so
+        # pairing by row index put the length of a frame up to <entry> frames
+        # earlier next to each uptake row (wrong protrusion volume and VolNorm).
+        # Older CSVs without times fall back to row order.
+        t_up = uptake_dict.get('Time_s')
+        t_pr = prot_dict.get('Time_s')
+        L_all = np.asarray(L_um, dtype=float)
+        if t_up is not None and t_pr is not None and len(t_up) and len(t_pr):
+            t_up = np.asarray(t_up, dtype=float)
+            t_pr = np.asarray(t_pr, dtype=float)
+            n = len(V_body)
+            dt = np.nanmedian(np.diff(t_pr)) if len(t_pr) > 1 else np.inf
+            order = np.argsort(t_pr)
+            pos = np.clip(np.searchsorted(t_pr[order], t_up[:n]), 1, len(t_pr) - 1) if len(t_pr) > 1 \
+                else np.zeros(n, dtype=int)
+            if len(t_pr) > 1:
+                left, right = order[pos - 1], order[pos]
+                pick = np.where(np.abs(t_pr[left] - t_up[:n]) <= np.abs(t_pr[right] - t_up[:n]), left, right)
+            else:
+                pick = np.zeros(n, dtype=int)
+            ok = np.abs(t_pr[pick] - t_up[:n]) <= 0.5 * dt if np.isfinite(dt) else np.ones(n, bool)
+            L_aligned = np.where(ok, L_all[pick], np.nan)
+            if not ok.all():
+                logger.warning(f"{int((~ok).sum())} uptake frame(s) have no protrusion frame at the same time; "
+                               "their protrusion volume uses the cap only.")
+        else:
+            n = min(len(L_all), len(V_body))
+            if len(L_all) != len(V_body):
+                logger.warning(
+                    f"Frame-count mismatch between detection ({len(L_all)}) and "
+                    f"uptake ({len(V_body)}) CSVs without times; truncating to {n} by row order."
+                )
+            L_aligned = L_all[:n]
         V_body    = V_body[:n]
         if A_body is not None:
             A_body = np.asarray(A_body[:n], dtype=float)
