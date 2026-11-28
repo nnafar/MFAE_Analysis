@@ -349,7 +349,8 @@ def test_bulk_says_when_there_are_no_shared_controls(tmp_path, monkeypatch, capl
     out = tmp_path / "Output"
     (out / "Symmetric_Efield" / CZI).mkdir(parents=True)
     seen = []
-    monkeypatch.setattr(bulk_run, "run_setup", lambda d, extra: seen.append((d.name, [e.name for e in extra])))
+    monkeypatch.setattr(bulk_run, "run_setup",
+                        lambda d, extra, **k: seen.append((d.name, [e.name for e in extra])))
     monkeypatch.setattr(bulk_run, "_configure_logging", lambda: None)
     with caplog.at_level("INFO"):
         assert bulk_run.main(["--output-root", str(out)]) == 0

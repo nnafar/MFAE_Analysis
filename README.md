@@ -7,9 +7,12 @@ distribution and viscoelastic parameters. A second stage pools many experiments 
 condition-level statistics and figures.
 
 ```
-.czi file / .tif folder ──► run_experiment.py ──► Output/<setup>/<experiment>/     (one per experiment)
-                                                        │
-       Output/<setup>/Bulk_Analysis_results/ ◄── run_bulk_analysis.py   (pools the experiments)
+.czi file / .tif folder ──► run_experiment.py ──► Output/<setup>/<experiment>/          (one per experiment)
+                                                    │
+                                          run_bulk_analysis.py                      (pools the experiments)
+                                                    │
+                                                    ▼
+                                     Output/Bulk_Analysis_results/<setup>/
 ```
 
 You only ever run these two scripts. Everything else is the `mfae/` package they start.
@@ -585,10 +588,11 @@ It reads the experiment results, groups the cells by condition (from the experim
 writes one folder per run, named by date and time, with a `README.txt` that lists every file and
 what it shows.
 
-- **Each setup is analysed on its own, never pooled with another.** Every folder in `Output/` that
-  holds experiment results (e.g. `Symmetric_Efield/`, `Asymmetric_Efield/`) is one setup and gets
-  its own `Bulk_Analysis_results/` inside it; experiments directly in `Output/` count as one more
-  setup.
+- **All bulk results are in `Output/Bulk_Analysis_results/`, one folder per setup.** Every folder
+  in `Output/` that holds experiment results (e.g. `Symmetric_Efield/`, `Asymmetric_Efield/`) is
+  one setup, analysed on its own and never pooled with another. Its results go to
+  `Output/Bulk_Analysis_results/<setup>/<date_time>/`. Experiments directly in `Output/` (no setup
+  folder) go to `Bulk_Analysis_results/All_experiments/`.
 - **Aspiration-only controls are shared.** The aspiration-only (0 V) experiments in
   `Output/Aspiration/` are added as the control group to every setup's analysis, so each setup's
   pulse-vs-aspiration figures use them. `Aspiration/` also gets its own bulk analysis
@@ -597,7 +601,11 @@ what it shows.
   the log says so and each setup uses only its own 0 V experiments as controls.
 
 ```
-Output/<setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/
+Output/Bulk_Analysis_results/
+├── Asymmetric_Efield/<YYMMDD_HHMM>/   one run (the layout below)
+└── Symmetric_Efield/<YYMMDD_HHMM>/
+
+<setup>/<YYMMDD_HHMM>/
 ├── README.txt
 ├── 0_Tables/                  mechanics_results_all_traps.csv (one row per trap: fate, every fitted
 │                              parameter and fit-quality flag), attrition_per_experiment.csv (cells
@@ -619,6 +627,24 @@ Output/<setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/
 The treatment and pulse folders are made for the conditions in your data; folders a run writes
 nothing to are removed. Figures can be redrawn from `0_Tables/Figure_Data/` without rerunning
 (`mfae.bulk.figure_data.load_all(...)`).
+
+**File names say what a figure shows, then how it is grouped, then the cohort**, e.g.
+`Viscoelastic_parameters_before_pulse_by_fate.pdf`, `Protrusion_length_whole_recording_by_condition.pdf`,
+`Max_protrusion_length_per_trap_100V_1ms_intact.pdf`, `Fate_pie_LifeAct_1ms.pdf`. The folder gives the
+phase (before the pulse / at the pulse / whole recording) and the condition. Words used:
+
+| Word | Means |
+|---|---|
+| aspiration | aspiration only, no pulse |
+| viscoelastic | Kelvin-Voigt / Jeffreys / Burgers fits of the protrusion length L(t) |
+| model-free | fits of L(t) without a material model (linear, power law) |
+| by_condition / by_fate / by_treatment | cohorts overlaid or compared side by side |
+| per_trap / per_cell | one value or panel per trap position / per cell |
+| uptake_plateau | the fitted dye uptake amplitude |
+| uptake_at_100s | dye uptake measured 100 s after the pulse |
+
+Each run's `README.txt` describes every file. The names are set in one table, `RENAMES` in
+`mfae/bulk/layout.py`.
 
 ### Cell tags
 

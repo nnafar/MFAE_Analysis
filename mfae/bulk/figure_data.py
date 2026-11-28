@@ -36,7 +36,7 @@
 # Standalone afterwards:
 #
 #     import thesis_figure_data as tfd
-#     data = tfd.load_all("Bulk_Analysis_results/<YYMMDD_HHMM>/0_Tables/Figure_Data")
+#     data = tfd.load_all("Output/Bulk_Analysis_results/<setup>/<YYMMDD_HHMM>/0_Tables/Figure_Data")
 #     data["protrusion"]   # long-format DataFrame
 #     data["mechanics"]    # per-cell scalars
 # =============================================================================
@@ -58,13 +58,14 @@ DATA_DIRNAME = "Figure_Data"
 # One output file per channel. The keys double as the keys returned by
 # load_all(), so add a channel here and both directions stay in step.
 CHANNEL_FILES: Dict[str, str] = {
-    "protrusion": "Ch3_Data_Traces_Protrusion.csv",
-    "actin":      "Ch3_Data_Traces_Actin.csv",
-    "uptake":     "Ch3_Data_Traces_Uptake.csv",
+    "protrusion": "Traces_Protrusion.csv",
+    "actin":      "Traces_Actin.csv",
+    "uptake":     "Traces_Uptake.csv",
 }
-MECHANICS_FILE = "Ch3_Data_Mechanics.csv"
-ATTRITION_FILE = "Ch3_Data_Attrition.csv"
-MANIFEST_FILE  = "Ch3_Data_Manifest.csv"
+MECHANICS_FILE = "Mechanics.csv"
+ATTRITION_FILE = "Attrition.csv"
+MANIFEST_FILE  = "Manifest.csv"
+OLD_PREFIX = "Ch3_Data_"          # name prefix of bundles written before; load_all() still reads them
 
 # Identity columns written ahead of the data columns in every trace file.
 # Together these reproduce any cohort filter used in Chapter 3: treatment,
@@ -416,6 +417,8 @@ def load_all(data_dir: Path) -> Dict[str, pd.DataFrame]:
 
     for key, filename in named.items():
         path = data_dir / filename
+        if not path.exists() and (data_dir / (OLD_PREFIX + filename)).exists():
+            path = data_dir / (OLD_PREFIX + filename)        # older runs
         if path.exists():
             out[key] = pd.read_csv(path)
         else:

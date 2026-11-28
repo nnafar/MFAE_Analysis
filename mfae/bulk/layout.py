@@ -2,7 +2,7 @@
 """
 Folder layout of one bulk-analysis run (mfae/bulk/run.py).
 
-Bulk_Analysis_results/<YYMMDD_HHMM>/
+Output/Bulk_Analysis_results/<setup>/<YYMMDD_HHMM>/   (setup e.g. Asymmetric_Efield)
     README.txt                    what every folder and file holds
     0_Tables/                     the numbers: one row per trap, attrition, Figure_Data/
     1_Aspiration_Mechanics/       aspiration-only cells (no pulse): viscoelastic mechanics
@@ -57,51 +57,193 @@ TABLES = {
 FIGURE_DATA_NOTE = ("every value behind the figures (traces per channel, mechanics, attrition), "
                     "to redraw figures without rerunning: thesis_figure_data.load_all(<this folder>)")
 
+# --------------------------------------------------------------------------
+# File names
+# --------------------------------------------------------------------------
+# The plot code saves under its historical names (Thesis_..., MI_..., ...).
+# At the end of a run every file is renamed by the table below to a plain
+# name: what is shown, then how it is grouped, then the cohort. The folder
+# already says the phase (before the pulse / at the pulse / whole recording)
+# and the condition. Abbreviations are written out:
+#     ASP -> aspiration, EP -> pulsed, Visco -> viscoelastic,
+#     MI -> model-free (fits of L(t) without a material model: linear, power law),
+#     U100 -> uptake at 100 s after the pulse, A -> uptake plateau (fitted).
+# (regex on the file stem, replacement); first match wins. \1 etc. is the
+# cohort part of the old name, cleaned by _cohort().
+RENAMES = [
+    # 1_Aspiration_Mechanics
+    (r"^Thesis_ASP_Actin_(?:F0_Boxplots?|Baselines)$",   "Actin_baseline_by_treatment"),
+    (r"^Thesis_ASP_Actin_Trace_by_Condition$",           "Actin_over_time_by_treatment"),
+    (r"^Thesis_ASP_Actin_vs_E$",                         "Actin_vs_viscoelastic_parameters"),
+    (r"^Thesis_ASP_BodyVolume_vs_E$",                    "Body_volume_vs_stiffness_E"),
+    (r"^Thesis_ASP_ProtLength_vs_Mechanics$",            "Max_protrusion_length_vs_viscoelastic_parameters"),
+    (r"^Thesis_ASP_Trap_Dependency$",                    "Mechanics_by_trap_position"),
+    (r"^Thesis_ASP_Visco_Model_Selection_Frequency$",    "Viscoelastic_model_chosen_counts"),
+    (r"^MI_Model_Selection_Frequency$",                  "Model-free_model_chosen_counts"),
+    (r"^Thesis_ASP_Visco_Parameter_Boxplots$",           "Viscoelastic_parameters_by_treatment"),
+    (r"^Thesis_Combined_Protrusion_Dynamics_ASP$",       "Protrusion_length_over_time_by_treatment"),
+    (r"^(?:Thesis_)?ASP_BestFit_Panel_(.+)$",            "Viscoelastic_fit_per_cell_{1}"),
+    (r"^Thesis_Boxplot_(.+?)_ASP$",                      "Max_protrusion_length_per_trap_{1}"),
+    (r"^Thesis_Boxplot_(.+)$",                           "Max_protrusion_length_per_trap_{1}"),
+    # 2_Before_Pulse
+    (r"^Thesis_Combined_Protrusion_Dynamics_MI$",        "Protrusion_length_before_pulse_by_condition"),
+    (r"^Thesis_Combined_PrePulse_Trace_by_Fate$",        "Protrusion_length_before_pulse_by_fate"),
+    (r"^Thesis_PrePulse_Visco_Parameter_Boxplots$",      "Viscoelastic_parameters_before_pulse_by_condition"),
+    (r"^Thesis_Fate_PrePulse_Visco_Boxplots$",           "Viscoelastic_parameters_before_pulse_by_fate"),
+    (r"^Thesis_MI_Boxplot_(.+)$",                        "Max_protrusion_length_per_trap_{1}"),
+    (r"^Thesis_MI_PerTrap_Params_(.+)$",                 "Model-free_parameters_per_trap_before_pulse_{1}"),
+    (r"^Thesis_MI_Parameter_Boxplots$",                  "Model-free_parameters_before_pulse_by_condition"),
+    (r"^MI_Fits_Panel_(.+)$",                            "Model-free_fit_per_cell_before_pulse_{1}"),
+    (r"^Thesis_PrePulse_Mechanics_Correlations_(.+?)_U100$", "Uptake_at_100s_vs_viscoelastic_parameters_{1}"),
+    (r"^Thesis_PrePulse_Mechanics_Correlations_(.+)$",   "Uptake_plateau_vs_viscoelastic_parameters_{1}"),
+    # 3_At_Pulse
+    (r"^Thesis_Fate_Pie_(.+)$",                          "Fate_pie_{1}"),
+    (r"^Thesis_Fate_PerTrap_(.+)$",                      "Fate_per_trap_{1}"),
+    (r"^Thesis_Fate_Counts_by_Pulse$",                   "Fate_counts_by_pulse"),
+    (r"^Thesis_EP_Actin_Around_Pulse_(.+)_ByFate$",      "Actin_around_pulse_by_fate_{1}"),
+    (r"^Thesis_EP_Actin_Around_Pulse_(.+)$",             "Actin_around_pulse_{1}"),
+    (r"^Thesis_EP_Protrusion_Around_Pulse_(.+)$",        "Protrusion_length_around_pulse_{1}"),
+    (r"^Thesis_EP_Actin_PrePost_Paired_ByFate$",         "Actin_before_vs_after_pulse_by_fate"),
+    (r"^Thesis_EP_Actin_PrePost_Paired$",                "Actin_before_vs_after_pulse"),
+    (r"^Thesis_WT_MeanUptakeTrace$",                     "Uptake_over_time_by_condition"),
+    (r"^Thesis_Uptake_Mean_Trace_BodyProt_(.+)$",        "Uptake_over_time_body_and_protrusion_{1}"),
+    (r"^Thesis_Uptake_Mean_Trace_ByFitSubset_(.+)$",     "Uptake_over_time_by_fit_quality_{1}"),
+    (r"^Thesis_Uptake_Amplitude_Per_Trap_(.+)$",         "Uptake_plateau_per_trap_{1}"),
+    (r"^Thesis_Uptake_BestFit_Panel_(.+)$",              "Uptake_fit_per_cell_{1}"),
+    (r"^Thesis_Uptake_Kinetics_(.+?)_tau_only_(.+)$",    "Uptake_kinetics_table_{1}_{2}"),
+    (r"^Thesis_Uptake_Kinetics_(.+)$",                   "Uptake_kinetics_table_{1}"),
+    (r"^Thesis_Uptake_vs_ProtLength_(.+?)_U100$",        "Uptake_at_100s_vs_protrusion_length_{1}"),
+    (r"^Thesis_Uptake_vs_ProtLength_(.+)$",              "Uptake_plateau_vs_protrusion_length_{1}"),
+    (r"^Thesis_Uptake_Correlation_Sweep_(.+?)_U100_dilution_check$",
+                                                         "Uptake_at_100s_correlations_{1}_dilution_check"),
+    (r"^Thesis_Uptake_Correlation_Sweep_(.+?)_U100$",    "Uptake_at_100s_correlations_{1}"),
+    (r"^Thesis_Uptake_Correlation_Sweep_(.+?)_A$",       "Uptake_plateau_correlations_{1}"),
+    (r"^Thesis_Mechanics_vs_Uptake_(.+)$",               "Uptake_vs_mechanics_{1}"),
+    (r"^Thesis_Spatial_Mech_Uptake_3D_(.+)$",            "Mechanics_uptake_and_trap_position_3D_{1}"),
+    # 4_Whole_Trace
+    (r"^Thesis_Combined_WholeTrace_Trace_by_Fate$",      "Protrusion_length_whole_recording_by_fate"),
+    (r"^Thesis_EP_WholeTrace_by_Fate$",                  "Protrusion_length_whole_recording_by_pulse_and_fate"),
+    (r"^Thesis_Fate_WholeTrace_MI_Boxplots$",            "Model-free_parameters_whole_recording_by_fate"),
+    (r"^Thesis_EP_Fate_MI_Boxplots$",                    "Model-free_parameters_by_fate"),
+    (r"^Thesis_MI_WholeTrace_Parameter_Boxplots$",       "Model-free_parameters_whole_recording_by_condition"),
+    (r"^Thesis_MI_WholeTrace_Protrusion_Dynamics$",      "Protrusion_length_whole_recording_by_condition"),
+    (r"^Thesis_MI_WholeTrace_PerTrap_Params_(.+)$",      "Model-free_parameters_per_trap_whole_recording_{1}"),
+    (r"^MI_WholeTrace_Fits_Panel_(.+)$",                 "Model-free_fit_per_cell_whole_recording_{1}"),
+    (r"^Thesis_MI_Whole_Mechanics_Correlations_(.+?)_U100$", "Uptake_at_100s_vs_model-free_parameters_{1}"),
+    (r"^Thesis_MI_Whole_Mechanics_Correlations_(.+)$",   "Uptake_plateau_vs_model-free_parameters_{1}"),
+    # trap position, correlations
+    (r"^spatial_cell_size_(.+)$",                        "Cell_size_by_trap_position_{1}"),
+    (r"^spatial_heatmap_(.+)$",                          "Trap_position_heatmap_{1}"),
+    (r"^spatial_trap_gradient_(.+)$",                    "Trend_along_the_trap_row_{1}"),
+    (r"^spearman_parameter_pairplot(.*)$",               "Parameter_correlations{1}"),
+]
+_COMPILED = [(re.compile(p, re.IGNORECASE), r) for p, r in RENAMES]
+
+
+def _cohort(text: str) -> str:
+    """Cohort part of an old name, in plain words: 'EP-pre_100V_1ms_(intact)' -> '100V_1ms_intact'."""
+    t = str(text)
+    t = re.sub(r"(?i)(^|[_ ])EP-(?:pre|whole)(?=[_ ]|$)", r"\1", t)   # the folder says before / whole
+    t = re.sub(r"(?i)(^|_)ASP(?=_|$)", r"\1aspiration", t)
+    t = t.replace("(", "").replace(")", "")
+    t = re.sub(r"[^\w\-]+", "_", t)
+    return re.sub(r"_+", "_", t).strip("_")
+
+
+def plain_name(filename: str) -> str:
+    """New name of one output file (the extension is kept); unknown names are cleaned only."""
+    p = Path(filename)
+    stem = p.stem
+    for rx, repl in _COMPILED:
+        m = rx.match(stem)
+        if m:
+            parts = [_cohort(g) for g in m.groups()]
+            new = repl
+            for k, g in enumerate(parts, 1):
+                new = new.replace("{%d}" % k, g)
+            return re.sub(r"_+", "_", new).strip("_") + p.suffix
+    if stem.startswith("Thesis_"):                       # not in the table: drop the prefix at least
+        return _cohort(stem[len("Thesis_"):]) + p.suffix
+    return p.name
+
+
+def rename_outputs(root: Union[str, Path]) -> Dict[str, str]:
+    """Rename every figure/table of a run to its plain name; returns {old relative path: new name}."""
+    root = Path(root)
+    done: Dict[str, str] = {}
+    for f in sorted(p for p in root.rglob("*") if p.is_file()):
+        if f.name == "README.txt" or "Figure_Data" in f.parts:
+            continue
+        new = plain_name(f.name)
+        if new == f.name:
+            continue
+        target, k = f.with_name(new), 2
+        while target.exists():                           # two old names -> one new name: keep both
+            target = f.with_name(f"{Path(new).stem}_{k}{Path(new).suffix}")
+            k += 1
+        f.rename(target)
+        done[f.relative_to(root).as_posix()] = target.name
+    return done
+
+
 # File-name prefix -> what the figure shows (for README.txt). First match wins.
 PLOT_NOTES = [
-    ("Thesis_ASP_BestFit_Panel",          "viscoelastic best fit for every aspirated cell of one treatment"),
-    ("Thesis_Boxplot",                    "fitted parameters per trap for one condition"),
-    ("Thesis_Combined_Protrusion_Dynamics_ASP", "mean protrusion length over time, treatments overlaid"),
-    ("Thesis_Combined_Protrusion_Dynamics_MI",  "mean protrusion length before the pulse, cohorts overlaid"),
-    ("Thesis_ASP_Trap_Dependency",        "parameters against trap position (control)"),
-    ("Thesis_ASP_BodyVolume_vs_E",        "cell body volume against stiffness E (control)"),
-    ("Thesis_ASP_ProtLength_vs_Mechanics", "protrusion length against fitted parameters"),
-    ("Thesis_ASP_Actin_vs_E",             "actin intensity against stiffness E"),
-    ("Thesis_ASP_Actin",                  "actin baseline / F0 per treatment"),
-    ("Thesis_MI_Boxplot",                 "model-independent parameters for one cohort"),
-    ("Thesis_MI_PerTrap_Params",          "model-independent parameters per trap"),
-    ("Thesis_MI_Parameter_Boxplots",      "model-independent parameters, cohorts compared"),
-    ("Thesis_MI_WholeTrace_PerTrap",      "whole-trace parameters per trap"),
-    ("Thesis_MI_WholeTrace_Parameter",    "whole-trace parameters, cohorts compared"),
-    ("Thesis_MI_WholeTrace_Protrusion",   "mean protrusion length over the whole recording"),
-    ("Thesis_MI_Whole_Mechanics_Corr",    "correlations between whole-trace parameters"),
-    ("Thesis_PrePulse_Mechanics_Corr",    "correlations between pre-pulse parameters"),
-    ("Thesis_Fate_PrePulse_Visco",        "pre-pulse viscoelastic parameters, intact vs ruptured"),
-    ("Thesis_Fate_WholeTrace_MI",         "whole-trace parameters, intact vs ruptured"),
-    ("Thesis_Combined_PrePulse_Trace_by_Fate",   "protrusion length before the pulse, intact vs ruptured"),
-    ("Thesis_Combined_WholeTrace_Trace_by_Fate", "protrusion length over the recording, intact vs ruptured"),
-    ("Thesis_EP_WholeTrace_by_Fate",      "protrusion length over the recording, intact vs ruptured"),
-    ("Thesis_EP_Fate_MI_Boxplots",        "model-independent parameters, intact vs ruptured"),
-    ("Thesis_Fate_Pie",                   "intact vs ruptured cells for one treatment and pulse"),
-    ("Thesis_Fate_PerTrap",               "intact vs ruptured per trap position"),
-    ("Thesis_Fate_Counts_by_Pulse",       "intact / ruptured counts per pulse"),
-    ("Thesis_EP_Actin_Around_Pulse",      "actin intensity aligned to the pulse"),
-    ("Thesis_EP_Protrusion_Around_Pulse", "protrusion length aligned to the pulse"),
-    ("Thesis_EP_Actin_PrePost_Paired",    "actin before vs after the pulse, paired per cell"),
-    ("Thesis_WT_MeanUptakeTrace",         "mean dye uptake over time, aspiration vs each pulse"),
-    ("Thesis_Uptake_Mean_Trace",          "mean dye uptake over time (body / protrusion)"),
-    ("Thesis_Uptake_Amplitude_Per_Trap",  "dye uptake amplitude per trap position"),
-    ("Thesis_Uptake_BestFit_Panel",       "uptake fit for every cell"),
-    ("Thesis_Uptake_Kinetics",            "uptake time constants and amplitudes"),
-    ("Thesis_Uptake_vs_ProtLength",       "dye uptake against protrusion length"),
-    ("Thesis_Uptake_Correlation_Sweep",   "uptake correlated with each mechanical parameter"),
-    ("Thesis_Mechanics_vs_Uptake",        "mechanics against dye uptake"),
-    ("Thesis_Spatial_Mech_Uptake_3D",     "mechanics, uptake and trap position together"),
-    ("MI_WholeTrace_Fits_Panel",          "whole-trace fit for every cell of one condition"),
-    ("Ch3_Data_Traces",                   "time series of every cell (long format)"),
-    ("Ch3_Data_Mechanics",                "per-cell table used for the figures"),
-    ("Ch3_Data_Attrition",                "attrition table used for the figures"),
-    ("Ch3_Data_Manifest",                 "list of the figure-data files"),
+    ("Viscoelastic_fit_per_cell",         "viscoelastic best fit for every aspirated cell of one treatment"),
+    ("Max_protrusion_length_per_trap",    "maximum protrusion length per trap, one condition"),
+    ("Protrusion_length_over_time_by_treatment", "mean protrusion length over time, treatments overlaid"),
+    ("Protrusion_length_before_pulse_by_condition", "mean protrusion length before the pulse, cohorts overlaid"),
+    ("Protrusion_length_before_pulse_by_fate", "mean protrusion length before the pulse, intact vs ruptured"),
+    ("Protrusion_length_whole_recording_by_fate", "mean protrusion length over the recording, intact vs ruptured"),
+    ("Protrusion_length_whole_recording_by_pulse_and_fate",
+                                          "protrusion length over the recording per pulse, intact vs ruptured"),
+    ("Protrusion_length_whole_recording_by_condition", "mean protrusion length over the whole recording"),
+    ("Protrusion_length_around_pulse",    "protrusion length aligned to the pulse"),
+    ("Mechanics_by_trap_position",        "fitted parameters against trap position (control)"),
+    ("Body_volume_vs_stiffness_E",        "cell body volume against stiffness E (control)"),
+    ("Max_protrusion_length_vs_viscoelastic", "maximum protrusion length against fitted parameters"),
+    ("Actin_vs_viscoelastic",             "actin intensity against fitted parameters"),
+    ("Actin_baseline_by_treatment",       "actin baseline (F0) per treatment"),
+    ("Actin_over_time_by_treatment",      "actin intensity over time per treatment"),
+    ("Actin_around_pulse",                "actin intensity aligned to the pulse"),
+    ("Actin_before_vs_after_pulse",       "actin before vs after the pulse, paired per cell"),
+    ("Viscoelastic_model_chosen_counts",  "how often each viscoelastic model fitted best"),
+    ("Model-free_model_chosen_counts",    "how often each model-free fit (linear, power law) fitted best"),
+    ("Viscoelastic_parameters_by_treatment", "viscoelastic parameters, treatments compared"),
+    ("Viscoelastic_parameters_before_pulse_by_condition", "viscoelastic parameters before the pulse, cohorts compared"),
+    ("Viscoelastic_parameters_before_pulse_by_fate", "viscoelastic parameters before the pulse, intact vs ruptured"),
+    ("Model-free_parameters_per_trap",    "model-free fit parameters per trap"),
+    ("Model-free_parameters_before_pulse_by_condition", "model-free parameters before the pulse, cohorts compared"),
+    ("Model-free_parameters_whole_recording_by_condition", "model-free parameters of the whole recording, cohorts compared"),
+    ("Model-free_parameters_whole_recording_by_fate", "model-free parameters of the whole recording, intact vs ruptured"),
+    ("Model-free_parameters_by_fate",     "model-free parameters, intact vs ruptured"),
+    ("Model-free_fit_per_cell",           "model-free fit of L(t) for every cell of one condition"),
+    ("Uptake_plateau_vs_viscoelastic",    "dye uptake plateau against pre-pulse viscoelastic parameters"),
+    ("Uptake_at_100s_vs_viscoelastic",    "dye uptake at 100 s against pre-pulse viscoelastic parameters"),
+    ("Uptake_plateau_vs_model-free",      "dye uptake plateau against whole-recording model-free parameters"),
+    ("Uptake_at_100s_vs_model-free",      "dye uptake at 100 s against whole-recording model-free parameters"),
+    ("Uptake_plateau_vs_protrusion_length", "dye uptake plateau against protrusion length"),
+    ("Uptake_at_100s_vs_protrusion_length", "dye uptake at 100 s against protrusion length"),
+    ("Uptake_plateau_correlations",       "dye uptake plateau correlated with each parameter (table)"),
+    ("Uptake_at_100s_correlations",       "dye uptake at 100 s correlated with each parameter (table)"),
+    ("Uptake_over_time_by_condition",     "mean dye uptake over time, aspiration vs each pulse"),
+    ("Uptake_over_time_body_and_protrusion", "mean dye uptake over time, body and protrusion"),
+    ("Uptake_over_time_by_fit_quality",   "mean dye uptake over time, cells split by fit quality"),
+    ("Uptake_plateau_per_trap",           "dye uptake plateau per trap position"),
+    ("Uptake_fit_per_cell",               "dye uptake fit for every cell"),
+    ("Uptake_kinetics_table",             "uptake time constants and amplitudes (table)"),
+    ("Uptake_vs_mechanics",               "mechanics against dye uptake"),
+    ("Mechanics_uptake_and_trap_position_3D", "mechanics, uptake and trap position together"),
+    ("Fate_pie",                          "intact vs ruptured cells for one treatment and pulse"),
+    ("Fate_per_trap",                     "intact vs ruptured per trap position"),
+    ("Fate_counts_by_pulse",              "intact / ruptured counts per pulse (table)"),
+    ("Cell_size_by_trap_position",        "cell size against trap position"),
+    ("Trap_position_heatmap",             "parameter per trap position"),
+    ("Trend_along_the_trap_row",          "trend along the row of traps (field gradient check)"),
+    ("Parameter_correlations",            "pairwise correlations between parameters"),
+    ("Traces_",                           "time series of every cell (long format)"),
+    ("Mechanics.csv",                     "per-cell table used for the figures"),
+    ("Attrition.csv",                     "attrition table used for the figures"),
+    ("Manifest.csv",                      "list of values that could not be exported, with the reason"),
 ]
 
 
@@ -166,10 +308,11 @@ def _note(name: str) -> str:
     for fname, desc in TABLES.values():
         if name == fname:
             return desc
-    low = name.lower()
-    for prefix, desc in PLOT_NOTES:
-        if low.startswith(prefix.lower()):
-            return desc
+    for candidate in (name, plain_name(name)):          # old names are described too
+        low = candidate.lower()
+        for prefix, desc in PLOT_NOTES:
+            if low.startswith(prefix.lower()):
+                return desc
     return ""
 
 
@@ -197,7 +340,10 @@ def write_readme(results_dir: Union[str, Path], source: Union[str, Path, None] =
     lines += [
         "Start with 0_Tables/mechanics_results_all_traps.csv (one row per trap) and",
         "0_Tables/attrition_per_experiment.csv (which cells were analysed and why others were not).",
-        "ASP = aspiration only (no pulse); EP = electroporated. Pulse folders are named <voltage>_<duration>.",
+        "Aspiration = no pulse; pulsed = electroporated. Pulse folders are named <voltage>_<duration>.",
+        "Model-free = fits of the protrusion length L(t) without a material model (linear, power law);",
+        "viscoelastic = Kelvin-Voigt / Jeffreys / Burgers fits. Uptake plateau = fitted amplitude A;",
+        "uptake at 100 s = measured 100 s after the pulse.",
         "Each figure folder has single-condition sub-folders and an All_... folder with the comparisons.",
         "",
     ]

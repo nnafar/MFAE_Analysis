@@ -7,8 +7,8 @@ statistics and figures.
 
 Each setup folder in Output/ (e.g. Symmetric_Efield/, Asymmetric_Efield/) is
 analysed on its own and never pooled with another: results go to
-Output/<setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/ with a README.txt
-(layout in mfae/bulk/layout.py):
+Output/Bulk_Analysis_results/<setup>/<YYMMDD_HHMM>/ with a README.txt
+(layout and file names in mfae/bulk/layout.py):
     0_Tables/                 one row per trap, attrition, Figure_Data/
     1_Aspiration_Mechanics/   aspiration-only mechanics (<Treatment>/, All_treatments/)
     2_Before_Pulse/           pulsed vs aspiration-only before the pulse
@@ -37,6 +37,8 @@ from mfae.bulk import layout as bl
 from mfae.paths import DEFAULT_OUTPUT_ROOT
 
 DEFAULT_CONTROLS = "Aspiration"   # shared aspiration-only control folder, used when it exists
+RESULTS_FOLDER = "Bulk_Analysis_results"   # Output/Bulk_Analysis_results/<setup>/<YYMMDD_HHMM>/
+ALL_EXPERIMENTS = "All_experiments"        # setup name for experiments directly in Output/
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +99,8 @@ def _parse_args(argv=None):
         "--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT,
         help="Folder with the per-experiment results from run_experiment.py "
              f"(default: %(default)s). Each setup folder in it (e.g. Symmetric_Efield/, made by "
-             "batch runs) is analysed on its own, into <setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/; "
-             "experiments directly in it go to <output-root>/Bulk_Analysis_results/.",
+             "batch runs) is analysed on its own, into <output-root>/Bulk_Analysis_results/<setup>/"
+             "<YYMMDD_HHMM>/; experiments directly in it go to Bulk_Analysis_results/All_experiments/.",
     )
     parser.add_argument(
         "--controls", default=None, metavar="FOLDER",
@@ -127,7 +129,7 @@ def find_setups(output_root: Path) -> List[Path]:
 
     setups = [output_root] if holds_experiments(output_root) else []
     setups += [d for d in sorted(output_root.iterdir())
-               if d.is_dir() and d.name != "Bulk_Analysis_results"
+               if d.is_dir() and d.name != RESULTS_FOLDER
                and not bfh.BulkDataLoader.FOLDER_PATTERN.match(d.name) and holds_experiments(d)]
     return setups
 
@@ -168,20 +170,29 @@ def main(argv=None) -> int:
         extra = [controls] if controls is not None and setup_dir != controls else []
         logger.info(f"\n{'#' * 60}\nSETUP: {setup_dir.name}  ({setup_dir})"
                     + (f"\n  + controls from {controls.name}/" if extra else "") + f"\n{'#' * 60}")
-        run_setup(setup_dir, extra)
+        run_setup(setup_dir, extra, results_root=output_root_dir / RESULTS_FOLDER)
     return 0
 
 
-def run_setup(output_root_dir: Path, control_dirs: Optional[List[Path]] = None) -> Path:
+def run_setup(output_root_dir: Path, control_dirs: Optional[List[Path]] = None,
+              results_root: Optional[Path] = None) -> Path:
     """
     Bulk analysis of one setup: the experiments directly in `output_root_dir`,
     plus the aspiration-only experiments in `control_dirs` (shared controls).
+    Results: <results_root>/<setup name>/<YYMMDD_HHMM>/ (results_root defaults
+    to Bulk_Analysis_results/ next to the setup folder).
     """
+    output_root_dir = Path(output_root_dir)
+    if results_root is None:
+        results_root = output_root_dir.parent / RESULTS_FOLDER
+    results_root = Path(results_root)
+    # experiments directly in Output/ (no setup folder) get a name of their own
+    setup = ALL_EXPERIMENTS if output_root_dir.resolve() == results_root.parent.resolve() else output_root_dir.name
     # One folder per run, named by date and time, so runs never overwrite
     # each other. The folders are made once the conditions present are known
     # (see mfae/bulk/layout.py and the README.txt written at the end).
     run_stamp   = datetime.now().strftime("%y%m%d_%H%M")
-    results_dir = output_root_dir / "Bulk_Analysis_results" / run_stamp
+    results_dir = results_root / setup / run_stamp
     results_dir.mkdir(parents=True, exist_ok=True)
     # Working caches (pickled trap data); removed when the run ends.
     cache_root  = results_dir / "_cache"
@@ -190,6 +201,13 @@ def run_setup(output_root_dir: Path, control_dirs: Optional[List[Path]] = None) 
     finally:
         shutil.rmtree(cache_root, ignore_errors=True)
         if results_dir.is_dir():
+            try:
+                renamed = bl.rename_outputs(results_dir)
+                if renamed:
+                    logger.info(f"Named {len(renamed)} output file(s) by what they show "
+                                "(see README.txt; the table is in mfae/bulk/layout.py).")
+            except Exception as e:
+                logger.error(f"Renaming the output files failed: {e}")
             try:
                 bl.write_readme(results_dir, output_root_dir, controls=control_dirs)
             except Exception as e:
