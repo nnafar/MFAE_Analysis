@@ -15,9 +15,8 @@ condition-level statistics and figures.
 You only ever run these two scripts. Everything else is the `mfae/` package they start.
 
 **New here?** Read sections 1–4 in order: install, run your first analysis, go through the setup
-windows, check the results. The rest you can look up when you need it. Commands are shown as you
-type them in a terminal (`python run_experiment.py ...`); [How to run a command](#how-to-run-a-command)
-shows how to run the same line in Spyder.
+windows, check the results. The rest you can look up when you need it. Every command is given for a
+terminal and for Spyder (see [How to run a command](#how-to-run-a-command)).
 
 ## Contents
 
@@ -72,18 +71,25 @@ install it with your package manager (e.g. `sudo apt install python3-tk`).
 
 ### How to run a command
 
-Every command in this README is written the way you type it in a **terminal**, from the repository
-folder:
+Every command in this README is given in two forms. Use whichever fits how you work:
+
+Terminal (Windows, macOS, Linux; built-in terminal of VS Code, PyCharm, ...):
 
 ```bash
 python run_experiment.py config/config_asymmetric.yaml --batch --check
 ```
 
-`run_experiment.py` is the script; everything after it is passed to the script (the config file
-and options). The same line works on Windows, macOS and Linux, in any of these:
+Spyder (IPython console):
 
-**A terminal** (Command Prompt, PowerShell, Anaconda Prompt, or the Terminal app on macOS/Linux).
-Go to the repository folder and activate the environment first:
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir
+```
+
+Both do the same: run the script `run_experiment.py` with the config file and options after it.
+
+**Terminal** (Command Prompt, PowerShell, Anaconda Prompt, the Terminal app on macOS/Linux, or the
+built-in terminal of VS Code, PyCharm and other editors). Go to the repository folder and activate
+the environment once per terminal window:
 
 ```bash
 cd C:/GitHub/MFAE_Analysis
@@ -94,24 +100,15 @@ cd C:/GitHub/MFAE_Analysis
 ```
 
 (macOS/Linux: `source .venv/bin/activate`; with Anaconda, `conda activate <your environment>`.)
-Then type or paste the command.
+Then paste the terminal line.
 
-**Spyder's IPython console.** Replace `python run_experiment.py` with `%runfile`, the script's full
-path, and put everything else inside `--args "..."`:
+**Spyder.** Paste the Spyder line into the IPython console. Everything inside `--args "..."` is
+passed to the script; options always go **inside** the quotes, since anything after `--wdir` is
+read by Spyder, not by the script. `--wdir` runs it from the repository folder, so `config/...` is
+found. Change `C:/GitHub/MFAE_Analysis` if your copy is elsewhere.
 
-```
-%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir
-```
-
-`--wdir` runs it from the repository folder, so `config/...` is found. Options always go **inside**
-the quotes; anything after `--wdir` is read by Spyder, not by the script. Change
-`C:/GitHub/MFAE_Analysis` if your copy is elsewhere. The same pattern works for
-`run_bulk_analysis.py` and `tools/czi_info.py`; with no options, leave out `--args "..."`.
-
-**VS Code, PyCharm or another editor:** use its built-in terminal, as above.
-
-Typing `python run_experiment.py ...` into a Python console (Spyder's console, a Jupyter
-notebook, or after typing `python`) gives `SyntaxError: invalid syntax`; it is a terminal command.
+A terminal line typed into a Python console (Spyder's console, a Jupyter notebook, or after typing
+`python`) gives `SyntaxError: invalid syntax`; use the Spyder line there.
 
 <details>
 <summary>Other ways to run from Spyder (F5, <code>runfile(...)</code>)</summary>
@@ -165,8 +162,16 @@ after `--batch`: `--batch "E:/Data/MFAE/Aspiration"`.
 
 ### Step 3: check everything first
 
+Terminal (Windows, macOS, Linux; built-in terminal of VS Code, PyCharm, ...):
+
 ```bash
 python run_experiment.py config/config_asymmetric.yaml --batch --check
+```
+
+Spyder (IPython console):
+
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir
 ```
 
 This opens no windows and writes no results. It validates every setting and scans the images of
@@ -176,8 +181,16 @@ frame 10`) and where the pulse falls. Fix anything marked `PROBLEM` before conti
 
 ### Step 4: run the analysis
 
+Terminal (Windows, macOS, Linux; built-in terminal of VS Code, PyCharm, ...):
+
 ```bash
 python run_experiment.py config/config_asymmetric.yaml --batch
+```
+
+Spyder (IPython console):
+
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch" --wdir
 ```
 
 What happens:
@@ -203,7 +216,7 @@ up and analysed.
 
 ### Only some experiments
 
-| To | Add inside the quotes |
+| To | Add to the command (in Spyder: inside the quotes) |
 |---|---|
 | Only experiments whose name contains a text | `--only Experiment4` |
 | A folder that isn't listed in the config | `--batch "E:/Data/MFAE/Aspiration"` |
@@ -350,13 +363,13 @@ enough to cut data on. All CSVs therefore contain every frame; treat the markers
 
 | To | Run |
 |---|---|
-| Analyse again, keeping the saved trap setup | `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --redo` |
-| Redo the whole setup (boxes, entrances, thresholds) and analyse again | `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --redo --fresh` |
-| Redo the entrance and thresholds of single traps, then analyse again | `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --traps 7,12` |
-| Redo only the thresholds of one experiment (boxes and entrances kept) | `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --thresholds` |
-| Redo only the thresholds of single traps | `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --traps 7 --thresholds` |
-| Redo only the thresholds of every experiment | `python run_experiment.py config/config_asymmetric.yaml --batch --thresholds` |
-| Re-analyse everything | `python run_experiment.py config/config_asymmetric.yaml --batch --redo` |
+| Analyse again, keeping the saved trap setup | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --redo`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo" --wdir` |
+| Redo the whole setup (boxes, entrances, thresholds) and analyse again | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --redo --fresh`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo --fresh" --wdir` |
+| Redo the entrance and thresholds of single traps, then analyse again | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --traps 7,12`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7,12" --wdir` |
+| Redo only the thresholds of one experiment (boxes and entrances kept) | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --thresholds`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --thresholds" --wdir` |
+| Redo only the thresholds of single traps | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --traps 7 --thresholds`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7 --thresholds" --wdir` |
+| Redo only the thresholds of every experiment | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --thresholds`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --thresholds" --wdir` |
+| Re-analyse everything | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --redo`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --redo" --wdir` |
 
 - Without `--only`, `--redo`, `--fresh` and `--thresholds` apply to every experiment in the
   config's folders.
@@ -416,15 +429,23 @@ settings and re-run without repeating the setup.
 
 After the experiments are analysed:
 
+Terminal (Windows, macOS, Linux; built-in terminal of VS Code, PyCharm, ...):
+
 ```bash
 python run_bulk_analysis.py
 ```
 
+Spyder (IPython console):
+
+```
+%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --wdir
+```
+
 | To | Run |
 |---|---|
-| Statistics and figures per setup, aspiration experiments as controls | `python run_bulk_analysis.py` |
-| Same, without shared aspiration controls | `python run_bulk_analysis.py --controls none` |
-| Results stored somewhere other than `Output/` | `python run_bulk_analysis.py --output-root D:/MFAE_Output` |
+| Statistics and figures per setup, aspiration experiments as controls | Terminal: `python run_bulk_analysis.py`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --wdir` |
+| Same, without shared aspiration controls | Terminal: `python run_bulk_analysis.py --controls none`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --args "--controls none" --wdir` |
+| Results stored somewhere other than `Output/` | Terminal: `python run_bulk_analysis.py --output-root D:/MFAE_Output`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --args "--output-root D:/MFAE_Output" --wdir` |
 
 It reads the experiment results, groups the cells by condition (from the experiment names) and
 writes one folder per run, named by date and time, with a `README.txt` that lists every file and
@@ -514,7 +535,7 @@ skip that experiment.
 
 | Problem or message | What to do |
 |---|---|
-| `SyntaxError: invalid syntax` when running `python run_experiment.py ...` | It is a terminal command but was typed into a Python console. Run it in a terminal from the repository folder, or in Spyder use the `%runfile` form (see [How to run a command](#how-to-run-a-command)). |
+| `SyntaxError: invalid syntax` when running Terminal: `python run_experiment.py ...`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "..." --wdir` | It is a terminal command but was typed into a Python console. Run it in a terminal from the repository folder, or in Spyder use the `%runfile` form (see [How to run a command](#how-to-run-a-command)). |
 | Pressing F5 only prints the help text | No config was given; see [How to run a command](#how-to-run-a-command). |
 | `... has N problem(s): - section.key: ...` | The named setting is invalid; the message says why. |
 | `unknown setting (typo, or not supported ...)` | The key is misspelled or not a real setting. Compare with `config/pipeline/defaults.yaml`. |
@@ -545,13 +566,13 @@ symmetric microscope.
 
 | To | Run |
 |---|---|
-| Analyse all new experiments (asymmetric) | `python run_experiment.py config/config_asymmetric.yaml --batch` |
-| Analyse all new experiments (symmetric) | `python run_experiment.py config/config_symmetric.yaml --batch` |
-| Check everything first (no windows, writes nothing) | `python run_experiment.py config/config_asymmetric.yaml --batch --check` |
-| Analyse a folder that isn't listed in the config | `python run_experiment.py config/config_asymmetric.yaml --batch E:/Data/MFAE/Aspiration` |
-| Only experiments whose name contains a text | `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4` |
-| One experiment, by its folder (or `.czi` file) | `python run_experiment.py config/config_asymmetric.yaml --data-folder M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10` |
-| Analyse with the kymograph tip tracker (this run only) | `python run_experiment.py config/config_symmetric.yaml --batch --redo --tip-tracking kymograph` |
+| Analyse all new experiments (asymmetric) | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch" --wdir` |
+| Analyse all new experiments (symmetric) | Terminal: `python run_experiment.py config/config_symmetric.yaml --batch`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch" --wdir` |
+| Check everything first (no windows, writes nothing) | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --check`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir` |
+| Analyse a folder that isn't listed in the config | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch E:/Data/MFAE/Aspiration`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch E:/Data/MFAE/Aspiration" --wdir` |
+| Only experiments whose name contains a text | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4" --wdir` |
+| One experiment, by its folder (or `.czi` file) | Terminal: `python run_experiment.py config/config_asymmetric.yaml --data-folder M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --data-folder M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10" --wdir` |
+| Analyse with the kymograph tip tracker (this run only) | Terminal: `python run_experiment.py config/config_symmetric.yaml --batch --redo --tip-tracking kymograph`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch --redo --tip-tracking kymograph" --wdir` |
 
 **Redo:** see [Redoing an analysis](#5-redoing-an-analysis). **Pool:** see
 [Pooling experiments](#6-pooling-experiments-bulk-analysis).
@@ -560,10 +581,10 @@ symmetric microscope.
 
 | To | Run |
 |---|---|
-| Show every setting a run uses, and where it comes from | `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --show-config` |
-| New config for data recorded with other settings | `python run_experiment.py --init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10` |
-| See how a `.czi` file is organised (channels, frames) | `python tools/czi_info.py D:/MFAE/261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi` |
-| List all options | `python run_experiment.py --help` |
+| Show every setting a run uses, and where it comes from | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4 --show-config`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --show-config" --wdir` |
+| New config for data recorded with other settings | Terminal: `python run_experiment.py --init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10" --wdir` |
+| See how a `.czi` file is organised (channels, frames) | Terminal: `python tools/czi_info.py D:/MFAE/261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/tools/czi_info.py --args "D:/MFAE/261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi" --wdir` |
+| List all options | Terminal: `python run_experiment.py --help`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--help" --wdir` |
 
 ### 9.2 Command-line options
 
@@ -618,8 +639,16 @@ user setting or contains a pipeline setting (a typo also ends up here), or if
 **A new config, for data recorded with other settings** (another objective, pressure or channel
 order):
 
+Terminal (Windows, macOS, Linux; built-in terminal of VS Code, PyCharm, ...):
+
 ```bash
 python run_experiment.py --init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10
+```
+
+Spyder (IPython console):
+
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10" --wdir
 ```
 
 This copies `config/pipeline/template_tiff.yaml` (or `template_czi.yaml` when `--data-folder` is a
