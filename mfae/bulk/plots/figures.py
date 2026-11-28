@@ -3240,7 +3240,7 @@ def plot_thesis_fate_prepulse_visco_boxplots(mechanics_df: pd.DataFrame, output_
                 & df['PrePulse_E_Pa'].notna()
                 & (df['PrePulse_Visco_R2_Flag'] == True)].copy()
 
-    keep_asp = (df['Condition_Type'] == 'ASP') & (df['Treatment'] == 'WT')
+    keep_asp = (df['Condition_Type'] == 'ASP') & (df['Treatment'] == bp.base_treatment(mechanics_df))
     keep_ep  = (df['Condition_Type'] == 'EP') & df['Fate_Status'].isin(['intact', 'ruptured_post'])
     df = df[keep_asp | keep_ep].copy()
 
@@ -3620,8 +3620,7 @@ def plot_thesis_combined_prepulse_trace_by_fate(grouped_data: Dict,
     # -----------------------------------------------------------------
     visco_pass = mechanics_df.loc[mechanics_df['PrePulse_Visco_R2_Flag'] == True]
  
-    treatments = mechanics_df['Treatment'].dropna().unique().tolist()
-    base_treatment = 'WT' if 'WT' in treatments else (treatments[0] if treatments else 'WT')
+    base_treatment = bp.base_treatment(mechanics_df)
  
     asp_mask = ((visco_pass['Condition_Type'] == 'ASP')
                 & (visco_pass['Treatment'] == base_treatment))
@@ -3849,7 +3848,7 @@ def plot_thesis_combined_wholetrace_trace_by_fate(grouped_data: Dict,
     mi_pass = mechanics_df.loc[mechanics_df['MI_Whole_R2_Flag'] == True]
 
     asp_mask = ((mi_pass['Condition_Type'] == 'ASP')
-                & (mi_pass['Treatment'] == 'WT')
+                & (mi_pass['Treatment'] == bp.base_treatment(mechanics_df))
                 & (mi_pass['Fate_Status'] == 'intact'))
     asp_pairs = set(zip(mi_pass.loc[asp_mask, 'Experiment_Folder'],
                         mi_pass.loc[asp_mask, 'Trap_ID']))
@@ -4584,10 +4583,12 @@ def plot_thesis_mean_uptake_trace_wt(grouped_data: Dict,
         logger.warning("Mean uptake trace skipped: empty mechanics_df.")
         return
 
-    # Restrict to WT (per Nikki's request); include ASP intact and EP
-    # analysis-cohort (intact / ruptured_post) cells.
+    # Restrict to the setup's main treatment (WT, or e.g. LifeAct on the
+    # symmetric setup); include ASP intact and EP analysis-cohort
+    # (intact / ruptured_post) cells.
+    treatment = bp.base_treatment(mechanics_df)
     ok = mechanics_df.loc[
-        (mechanics_df['Treatment'] == 'WT')
+        (mechanics_df['Treatment'] == treatment)
         & (
             ((mechanics_df['Condition_Type'] == 'ASP')
              & (mechanics_df['Fate_Status'] == 'intact'))
@@ -4597,15 +4598,14 @@ def plot_thesis_mean_uptake_trace_wt(grouped_data: Dict,
     ]
     accepted = set(zip(ok['Experiment_Folder'], ok['Trap_ID']))
     if not accepted:
-        logger.warning("Mean uptake trace skipped: no WT cells accepted.")
+        logger.warning(f"Mean uptake trace skipped: no {treatment} cells accepted.")
         return
 
-    # (condition_key) -> list of (t_from_entry, I(t)) per region
-    conditions = ('ASP', 'EP_100us', 'EP_5ms')
-    per_cond_traces: Dict[str, Dict[str, list]] = {
-        c: {'Body': [], 'Prot': [], 'Total': []} for c in conditions
-    }
-    per_cond_pulse: Dict[str, list] = {c: [] for c in conditions}
+    # (condition_key) -> list of (t_from_entry, I(t)) per region. One
+    # condition per pulse present (voltage and duration), plus ASP.
+    per_cond_traces: Dict[str, Dict[str, list]] = {}
+    per_cond_pulse: Dict[str, list] = {}
+    cond_meta: Dict[str, tuple] = {}
     max_t_seen = 0.0
 
     region_col = {
@@ -4619,24 +4619,23 @@ def plot_thesis_mean_uptake_trace_wt(grouped_data: Dict,
             continue
         for trap in traps:
             meta = trap.metadata
-            if meta.treatment != 'WT':
+            if meta.treatment != treatment:
                 continue
             key = (meta.full_path.name, trap.trap_id)
             if key not in accepted:
                 continue
 
-            # Bucket
+            # Bucket: ASP, or one bucket per pulse (voltage, duration)
             if meta.condition_type == 'ASP':
                 cond_key = 'ASP'
             elif meta.condition_type == 'EP':
-                if meta.duration_label == '100us':
-                    cond_key = 'EP_100us'
-                elif meta.duration_label == '5ms':
-                    cond_key = 'EP_5ms'
-                else:
-                    continue
+                cond_key = f"EP_{int(meta.voltage)}V_{meta.duration_label}"
+                cond_meta[cond_key] = (int(meta.voltage), str(meta.duration_label),
+                                       float(getattr(meta, 'duration', 0.0) or 0.0))
             else:
                 continue
+            per_cond_traces.setdefault(cond_key, {'Body': [], 'Prot': [], 'Total': []})
+            per_cond_pulse.setdefault(cond_key, [])
 
             ud = getattr(trap, 'uptake_data', {}) or {}
             if 'Time_s' not in ud:
@@ -4703,21 +4702,22 @@ def plot_thesis_mean_uptake_trace_wt(grouped_data: Dict,
             return None, None, n_start
         return mean_y[mask], sd_y[mask], n_start
 
-    cond_colour = {
-        'ASP'     : utils.MFA_COLORS['light_grey'],
-        'EP_100us': utils.MFA_COLORS['medium_blue'],
-        'EP_5ms'  : utils.MFA_COLORS['dark_blue'],
-    }
-    cond_edge = {
-        'ASP'     : '0.4',
-        'EP_100us': utils.MFA_COLORS['medium_blue'],
-        'EP_5ms'  : utils.MFA_COLORS['dark_blue'],
-    }
-    cond_label = {
-        'ASP'     : 'ASP (no pulse)',
-        'EP_100us': 'EP 100 µs',
-        'EP_5ms'  : 'EP 5 ms',
-    }
+    # ASP first, then pulses by duration and voltage; the 100 us / 5 ms
+    # colours stay as before, other pulses take the next colours of a ramp.
+    ep_keys = sorted(cond_meta, key=lambda k: (cond_meta[k][2], cond_meta[k][0]))
+    conditions = (['ASP'] if 'ASP' in per_cond_traces else []) + ep_keys
+    known = {'100us': utils.MFA_COLORS['medium_blue'], '5ms': utils.MFA_COLORS['dark_blue']}
+    ramp = ['#3a93c3', '#1065ab', '#0a2e5a', '#8ec4de', '#4a7bad', '#5da5d5']
+    dur_disp = {'100us': '100 µs', '5ms': '5 ms', '1ms': '1 ms'}
+    cond_colour = {'ASP': utils.MFA_COLORS['light_grey']}
+    cond_edge = {'ASP': '0.4'}
+    cond_label = {'ASP': 'ASP (no pulse)'}
+    others = iter(ramp)
+    for k in ep_keys:
+        v, d, _ = cond_meta[k]
+        c = known.get(d) or next(others, '#555555')
+        cond_colour[k] = cond_edge[k] = c
+        cond_label[k] = f"EP {v} V, {dur_disp.get(d, d)}"
 
     fig, axes = plt.subplots(1, 3, figsize=(11.5, 3.4), sharex=True)
 
@@ -4778,9 +4778,9 @@ def plot_thesis_mean_uptake_trace_wt(grouped_data: Dict,
     axes[0].legend(frameon=False, fontsize=8, loc='upper left')
 
     plt.tight_layout()
-    utils.save_plot_pdf(output_dir / "Thesis_WT_MeanUptakeTrace.pdf")
+    utils.save_plot_pdf(output_dir / f"Thesis_{treatment}_MeanUptakeTrace.pdf")
     plt.close()
-    logger.info("Mean WT uptake trace written (ASP / 100us / 5ms).")
+    logger.info(f"Mean {treatment} uptake trace written ({', '.join(cond_label[c] for c in conditions)}).")
 
 
 def run_thesis_claim2_uptake_actin_plots(grouped_data: Dict,

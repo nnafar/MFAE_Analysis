@@ -96,3 +96,19 @@ def test_figure_data_of_older_runs_still_loads(tmp_path):
     pd.DataFrame({'b': [2]}).to_csv(tmp_path / "Traces_Protrusion.csv", index=False)
     data = fd.load_all(tmp_path)
     assert list(data['mechanics'].columns) == ['a'] and list(data['protrusion'].columns) == ['b']
+
+
+def test_the_main_treatment_is_that_of_the_pulsed_cells():
+    """Symmetric setup: LifeAct cells are pulsed; figures for 'the' treatment were fixed to WT
+    (empty, and named _WT), also when the shared aspiration controls are WT."""
+    import pandas as pd
+    from mfae.bulk.plots import common
+    sym = pd.DataFrame({'Treatment': ['LifeAct'] * 5 + ['WT'] * 8,
+                        'Condition_Type': ['EP'] * 5 + ['ASP'] * 8})
+    assert common.base_treatment(sym) == 'LifeAct'
+    assert common.treatments_with_pulse(sym) == ('LifeAct',)
+    asym = pd.DataFrame({'Treatment': ['WT'] * 4 + ['CytD'] * 4, 'Condition_Type': ['EP'] * 6 + ['ASP'] * 2})
+    assert common.base_treatment(asym) == 'WT' and common.treatments_with_pulse(asym) == ('WT', 'CytD')
+    asp_only = pd.DataFrame({'Treatment': ['CytD', 'WT'], 'Condition_Type': ['ASP', 'ASP']})
+    assert common.base_treatment(asp_only) == 'WT'
+    assert bl.plain_name("Thesis_LifeAct_MeanUptakeTrace.pdf") == "Uptake_over_time_by_condition_LifeAct.pdf"

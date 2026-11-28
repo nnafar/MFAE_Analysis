@@ -105,7 +105,7 @@ RENAMES = [
     (r"^Thesis_EP_Protrusion_Around_Pulse_(.+)$",        "Protrusion_length_around_pulse_{1}"),
     (r"^Thesis_EP_Actin_PrePost_Paired_ByFate$",         "Actin_before_vs_after_pulse_by_fate"),
     (r"^Thesis_EP_Actin_PrePost_Paired$",                "Actin_before_vs_after_pulse"),
-    (r"^Thesis_WT_MeanUptakeTrace$",                     "Uptake_over_time_by_condition"),
+    (r"^Thesis_(.+?)_MeanUptakeTrace$",                  "Uptake_over_time_by_condition_{1}"),
     (r"^Thesis_Uptake_Mean_Trace_BodyProt_(.+)$",        "Uptake_over_time_body_and_protrusion_{1}"),
     (r"^Thesis_Uptake_Mean_Trace_ByFitSubset_(.+)$",     "Uptake_over_time_by_fit_quality_{1}"),
     (r"^Thesis_Uptake_Amplitude_Per_Trap_(.+)$",         "Uptake_plateau_per_trap_{1}"),

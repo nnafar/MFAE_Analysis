@@ -94,6 +94,41 @@ TREATMENT_RAMPS: Dict[str, List[str]] = {
 _EXTRA_RAMP_BASES: List[str] = ["#1b7837", "#762a83", "#e08214", "#01665e", "#8c510a", "#c51b7d"]
 
 
+def base_treatment(mechanics_df) -> str:
+    """
+    The setup's main treatment, used where a figure shows one treatment or
+    takes its aspiration-only controls from one: the treatment of most pulsed
+    cells (e.g. LifeAct on the symmetric setup, even when shared aspiration
+    controls are WT); without pulsed cells, WT if present, else the most
+    common treatment.
+    """
+    try:
+        t = mechanics_df['Treatment'].dropna().astype(str)
+        ep = mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP', 'Treatment'].dropna().astype(str)
+    except (KeyError, TypeError, AttributeError):
+        return "WT"
+    if not ep.empty:
+        counts = ep.value_counts()
+        top = counts[counts == counts.max()].index
+        return "WT" if "WT" in top else sorted(top)[0]
+    if t.empty or (t == "WT").any():
+        return "WT"
+    return t.value_counts().idxmax()
+
+
+def treatments_with_pulse(mechanics_df) -> tuple:
+    """Treatments with pulsed (EP) cells, the main treatment first."""
+    try:
+        ep = mechanics_df.loc[mechanics_df['Condition_Type'] == 'EP', 'Treatment'].dropna().astype(str)
+    except (KeyError, TypeError, AttributeError):
+        return ("WT",)
+    found = sorted(set(ep))
+    if not found:
+        return (base_treatment(mechanics_df),)
+    base = base_treatment(mechanics_df)
+    return tuple([base] + [x for x in found if x != base] if base in found else found)
+
+
 def treatment_ramp(treatment: str) -> List[str]:
     """Date ramp for a treatment not in TREATMENT_RAMPS (six shades of one colour)."""
     if treatment in TREATMENT_RAMPS:

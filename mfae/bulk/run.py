@@ -29,7 +29,8 @@ import pandas as pd
 from mfae.bulk import loader as bfh
 from mfae.bulk import figure_data as tfd
 from mfae.bulk import mechanics as bm
-from mfae.bulk.plots import figures as tp  
+from mfae.bulk.plots import figures as tp
+from mfae.bulk.plots import common as bp
 from mfae.bulk.plots.uptake import register_uptake_plots
 from mfae.bulk import utils
 from mfae.bulk import layout as bl
@@ -543,7 +544,8 @@ def _run(output_root_dir: Path, results_dir: Path, cache_root: Path,
 
     _try("Uptake plots (mean trace, per-trap A, correlations)",
          register_uptake_plots,
-         all_grouped_data, mechanics_df, whole_trace_combined_dir)
+         all_grouped_data, mechanics_df, whole_trace_combined_dir,
+         bp.treatments_with_pulse(mechanics_df))   # e.g. ('WT',) or ('LifeAct',)
 
     # ------------------------------------------------------------------
     # Whole-trace MI plots (4_Whole_Trace/All_conditions/).
