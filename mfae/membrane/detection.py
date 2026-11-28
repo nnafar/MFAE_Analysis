@@ -2166,10 +2166,18 @@ class LineDetectionMFA:
             if 1 < b - a <= 4:                # fill gaps of up to 3 frames
                 active[a:b] = True
         ip = self.params.get('image_processing', {})
+        # The bands are the SNR image (membrane enhancement on): the mask
+        # threshold in the same units, so the tip agrees with the mask edge
+        # wherever the mask sees the tip.
+        floor = None
+        thr = self.results.get('threshold_prot')
+        if utils.membrane_enhancement_enabled(self.params) and thr:
+            floor = utils.threshold_to_snr(float(thr), self.params)
         tip_x, clear = kymo_tip.track_tip(
             K, width, active,
             level_fraction=float(ip.get('tip_level_fraction', 0.25)),
-            jump_cost=float(ip.get('tip_jump_cost', 3.0)))
+            jump_cost=float(ip.get('tip_jump_cost', 3.0)),
+            level_floor=floor)
         out, edge, clear_out = list(lengths_px), list(tip_at_edge), [True] * n
         for i in range(n):
             if np.isfinite(tip_x[i]):

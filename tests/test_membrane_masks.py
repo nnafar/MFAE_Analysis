@@ -1020,3 +1020,30 @@ def test_kymograph_tip_on_a_protrusion_filling_most_of_the_channel():
     K = np.array([prof + rng.normal(0, 1.0, Wd) for _ in range(n)])
     tips, _ = track_tip(K, Wd, np.ones(n, bool))
     assert np.all(np.abs(tips - tip) <= 2), np.round(tips, 1)
+
+
+def test_kymograph_tip_meets_the_mask_threshold_on_a_dim_end_next_to_a_bright_base():
+    """Exp 2 trap 9: the protrusion end is ~45 SNR, the base at the entrance ~200.
+    25 % of the base was never reached near the tip, so the tip stayed at the outer
+    foot of the edge (whole pixels, ~1 px ahead of the mask). With the mask
+    threshold as the level it sits where the mask edge is, to sub-pixel."""
+    from scipy.ndimage import gaussian_filter1d
+    from mfae.membrane.kymo_tip import track_tip
+    rng = np.random.default_rng(9)
+    n, Wd, tip = 50, 80, 56.0
+    x = np.arange(Wd, dtype=float)
+    prof = np.where(x >= tip, 45.0, 2.0)
+    prof[x >= 66] = 200.0                                  # bright spot at the entrance
+    prof = gaussian_filter1d(prof, 1.5)                    # soft edge
+    thr = 35.0                                             # mask threshold (SNR)
+    edge = float(np.interp(thr, prof[52:59], x[52:59]))    # where the mask edge is
+    K = np.array([prof + rng.normal(0, 0.7, Wd) for _ in range(n)])
+    old, _ = track_tip(K, Wd, np.ones(n, bool))
+    new, _ = track_tip(K, Wd, np.ones(n, bool), level_floor=thr)
+    assert np.median(np.abs(new - edge)) < 0.4
+    assert np.median(np.abs(new - edge)) < np.median(np.abs(old - edge))
+    # a dim far end below the mask threshold keeps the tracked edge
+    far = np.where(x >= 30, 8.0, 0.0); far[x >= 60] = 60.0
+    Kf = np.array([far + rng.normal(0, 0.7, Wd) for _ in range(n)])
+    tf, _ = track_tip(Kf, Wd, np.ones(n, bool), level_floor=20.0)
+    assert np.all(np.abs(tf - 30) <= 2)

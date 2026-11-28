@@ -509,7 +509,9 @@ are followed however fast they move. Where a faint far end drops below the thres
 shorter, but the tracked length does not. When a cell is there (entry, exit, a new cell arriving) is still
 decided from the masks, exactly as with the mask-based tip; the tracker only moves the tip inside
 the analysed cell, tracked over that cell's frames alone. Areas and shape still come from the masks; the trace CSV
-also has the mask-based length (`Protrusion_Length_mask_um`) for comparison. Set
+also has the mask-based length (`Protrusion_Length_mask_um`) for comparison. Where the protrusion end
+is clearly above the mask threshold (at least 1.5x), the tracked tip is placed where the centre-line
+profile drops to that threshold, so it sits on the mask edge; a fainter far end keeps the tracked edge. Set
 `tip_tracking: mask` under `image_processing` in `config/pipeline/defaults.yaml` to go back to the
 mask-based tip; `tip_jump_cost` sets how strongly jumps are resisted.
 

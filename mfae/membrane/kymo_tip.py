@@ -119,7 +119,8 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
               level_fraction: float = 0.25, min_contrast: float = 3.0,
               time_sigma: float = 0.0, jump_cost: float = 3.0,
               base_px: int = 12, ahead_weight: float = 10,
-              jump_cap_px: int = 10, haze_fraction: float = 0.05
+              jump_cap_px: int = 10, haze_fraction: float = 0.05,
+              level_floor: Optional[float] = None
               ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Tip x per frame from the kymograph K (frames x columns, columns 0..pipette_x-1
@@ -142,6 +143,16 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
     hides the real edge nor makes an edge of its own (Exp 2 traps 3, 4, 8, 10:
     the early tip sat on the outer edge of the haze, far ahead of the cell).
     A dim far end (20-40 % of the contrast in the tests) still counts.
+    level_floor: the protrusion mask's own threshold in K units (SNR), if
+    known. The tip is then placed where the profile drops to the higher of
+    that and the level_fraction level, measured against the protrusion just
+    inside the tip (not the base, which can be several times brighter), so
+    the tracked tip agrees with the mask wherever the mask clearly sees the
+    tip (tip signal at least 1.5x the threshold). A far end near or below the
+    threshold (the faint ends the tracker is for) is refined as without it. Without it, the level is level_fraction of the base
+    contrast, searched within 4 px (Exp 2 trap 9: with a bright base that
+    level was never reached near the tip; the tip stayed at the outer foot of
+    the edge, ~1 px ahead of the mask, in whole pixels).
     time_sigma: optional Gaussian smoothing over frames (0 = off; smoothing
     leaks a moving tip into neighbouring frames, so it is off by default).
 
@@ -248,7 +259,8 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
             path[k - t] = x
             x = int(back[k - t][x]) if k > t else x
         for k, xk in zip(range(t, t1), path):
-            tip[k] = _refine(K[k], bg[k], obj[k], xk, f)
+            tip[k] = (_refine(K[k], bg[k], obj[k], xk, f) if level_floor is None
+                      else _refine_to_mask_level(K[k], bg[k], obj[k], xk, f, float(level_floor)))
             # a clear edge: protrusion signal just inside it (6-px mean at least
             # min_contrast noise units) and a step down to the channel
             significant[k] = (inner_snr[k, xk] >= min_contrast) and (step_snr[k, xk] >= 1.5)
@@ -270,6 +282,41 @@ def _refine(profile: np.ndarray, bg: float, obj: float, x: int, f: float, reach:
             d = abs(pos - x)
             if best_d is None or d < best_d:
                 best, best_d = pos, d              # same convention as the mask-based tip
+    return float(best)
+
+
+def _refine_to_mask_level(profile: np.ndarray, bg: float, obj: float, x: int, f: float,
+                          floor: float, reach_out: int = 4, reach_in: int = 10) -> float:
+    """
+    Sub-pixel tip on the edge rising from x into the protrusion: the crossing
+    nearest to x of max(bg + f*(top-bg), floor), where top is the protrusion
+    level just inside the tip (max of the next reach_in px, at most the base
+    level obj) and floor the mask threshold. x itself when the edge never
+    reaches that level. Only when the tip's signal is at least 1.5x the mask
+    threshold (above background); otherwise as _refine.
+    """
+    n = len(profile)
+    if not (np.isfinite(bg) and np.isfinite(obj)) or obj <= bg or not 0 <= x < n:
+        return float(x)
+    seg = profile[x:min(n, x + reach_in + 1)]
+    seg = seg[np.isfinite(seg)]
+    if seg.size == 0:
+        return float(x)
+    top = min(float(obj), float(seg.max()))
+    if floor <= bg or (top - bg) < 1.5 * (floor - bg):
+        # the tip's own signal is not clearly above the mask threshold (a far
+        # end near or below it): crossings of the threshold would land
+        # anywhere in its noise, so the base-level refinement is used
+        return _refine(profile, bg, obj, x, f)
+    level = max(bg + f * (top - bg), floor)
+    best, best_d = float(x), None
+    for j in range(max(1, x - reach_out), min(n - 1, x + reach_in) + 1):
+        a, b = profile[j - 1], profile[j]          # outside (left) -> inside (right)
+        if np.isfinite(a) and np.isfinite(b) and a < level <= b:
+            pos = j - 1 + (level - a) / (b - a) if b != a else j - 0.5
+            d = abs(pos - x)
+            if best_d is None or d < best_d:
+                best, best_d = pos, d
     return float(best)
 
 
