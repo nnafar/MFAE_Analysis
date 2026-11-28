@@ -447,12 +447,15 @@ is undone by pressing it again). `P`, `L`, `M`, `S`, `I` stand alone and replace
 | Key | Does |
 |---|---|
 | `Enter` | Accept the tag (an untagged trap becomes OK) and go to the next trap |
-| `→` | Next trap without tagging (skip) |
-| `←` or `Backspace` | Previous trap |
+| `N` or `→` | Next trap without tagging (skip) |
+| `Backspace` or `←` | Previous trap |
 | `Space` | Pause / play |
 | `,` `.` | One frame back / forward |
 | `[` `]` | Slower / faster |
 | `Q` or `Esc` | Quit (everything is already saved) |
+
+The arrow keys depend on how your OpenCV draws its windows; `N` and `Backspace` always work. If an
+arrow key does nothing, the window shows the code it sent; pass that number on so it can be added.
 
 Add `--traps 3,6` to review only some traps. Without `--only`, every analysed experiment in
 `Output/` is reviewed.

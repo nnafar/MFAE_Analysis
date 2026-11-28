@@ -15,7 +15,7 @@ change is saved at once, Enter moves on:
     M / S / I  detection failed (mask / shape / irregular)
     Press a key again to remove that part; C or Delete clears the tag.
     Enter  accept and go to the next trap (no tag yet: tagged OK)
-    ->  next trap without tagging        <- or Backspace  previous trap
+    N or ->  next trap without tagging   Backspace or <-  previous trap
     Space  pause / play     , .  one frame back / forward     [ ]  slower / faster
     Q / Esc  quit (every tag is already saved)
 """
@@ -40,12 +40,20 @@ RUPTURE_KEYS = {'r': 'R', 'b': 'R0'}
 ALONE_KEYS = {'p': 'PI', 'l': 'after', 'm': 'MASK', 's': 'SHAPE', 'i': 'IRREGULAR'}
 HELP = ("Tag: R ruptured  B ruptured before pulse  D dead on arrival (R+D, B+D combine)  P PI+  L late  "
         "M mask  S shape  I irregular  C clear",
-        "Enter accept + next (untagged = OK)   -> skip   <- back   Space pause   , . frame   [ ] speed   Q quit")
-# Special keys as cv2.waitKeyEx reports them (Windows, Linux/GTK, macOS)
-KEYS_RIGHT = {2555904, 65363, 63235}
-KEYS_LEFT = {2424832, 65361, 63234}
-KEYS_DELETE = {3014656, 65535, 63272}
-KEYS_BACKSPACE = {8, 127}
+        "Enter accept + next (untagged = OK)   N or -> skip   Backspace or <- back   Space pause   "
+        ", . frame   [ ] speed   Q quit")
+# Special keys as cv2.waitKeyEx reports them. The code depends on how OpenCV
+# draws its windows: Windows (win32), Qt (e.g. Anaconda's OpenCV), Linux/GTK
+# (which may add modifier bits, handled by masking), macOS. Unknown codes are
+# shown in the window, so a new one can be added here.
+KEYS_RIGHT = {2555904, 16777236, 65363, 63235}
+KEYS_LEFT = {2424832, 16777234, 65361, 63234}
+KEYS_DELETE = {3014656, 16777223, 65535, 63272}
+KEYS_BACKSPACE = {8, 127, 16777219}
+
+
+def _is(key: int, codes) -> bool:
+    return key in codes or (key & 0xFFFFFF) in codes or (key & 0xFFFF) in codes
 
 
 def compose(current: str, key: str) -> str:
@@ -182,16 +190,17 @@ class Review:
         """
         if key < 0:
             return ''
-        if key in KEYS_RIGHT:
+        low = key & 0xFFFF
+        k = chr(low).lower() if 0 < low < 128 and not _is(key, KEYS_BACKSPACE | KEYS_DELETE) else ''
+        if _is(key, KEYS_RIGHT) or k == 'n':
             moved = self.move(+1)
             return 'quit' if self.done else ('next' if moved else '')
-        if key in KEYS_LEFT or key in KEYS_BACKSPACE:
+        if _is(key, KEYS_LEFT) or _is(key, KEYS_BACKSPACE):
             return 'next' if self.move(-1) else ''
-        if key in KEYS_DELETE:
+        if _is(key, KEYS_DELETE):
             self.tag('')
             return ''
-        k = chr(key).lower() if 0 <= key < 128 else ''
-        if key == 27 or k == 'q':
+        if low == 27 or k == 'q':
             self.done = True
             return 'quit'
         if k in RUPTURE_KEYS or k in ALONE_KEYS or k == 'd':
@@ -200,7 +209,7 @@ class Review:
         if k == 'c':
             self.tag('')
             return ''
-        if key in (13, 10):                       # Enter: accept (untagged -> OK) and go on
+        if low in (13, 10):                       # Enter: accept (untagged -> OK) and go on
             if not self.row().get('Tag') or self.row().get('Check'):
                 if not self.tag(self.row().get('Tag') or 'OK'):
                     return ''
@@ -216,6 +225,8 @@ class Review:
             return 'slower'
         if k == ']':
             return 'faster'
+        self.say(f"Key code {key} does nothing here. If that was an arrow key, use N / Backspace "
+                 "and tell the developers this number.", 5)
         return ''
 
 
@@ -263,11 +274,11 @@ def _banner(rv: Review, width: int, paused: bool, speed: float) -> np.ndarray:
         info.append("PAUSED")
     if abs(speed - 1.0) > 1e-6:
         info.append(f"speed x{speed:g}")
-    cv2.putText(strip, " | ".join(info)[:110], (8, 64) if not (rv.message and time.monotonic() < rv.message_until)
-                else (420, 64), _FONT, 0.45,
-                (80, 200, 255) if r.get('Check') else (200, 200, 200), 1, cv2.LINE_AA)
-    if rv.message and time.monotonic() < rv.message_until:
-        cv2.putText(strip, rv.message[:60], (8, 64), _FONT, 0.45, (120, 220, 255), 1, cv2.LINE_AA)
+    if rv.message and time.monotonic() < rv.message_until:       # a message uses the whole line
+        cv2.putText(strip, rv.message[:118], (8, 64), _FONT, 0.45, (120, 220, 255), 1, cv2.LINE_AA)
+    else:
+        cv2.putText(strip, " | ".join(info)[:118], (8, 64), _FONT, 0.45,
+                    (80, 200, 255) if r.get('Check') else (200, 200, 200), 1, cv2.LINE_AA)
     return strip
 
 

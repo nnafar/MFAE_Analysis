@@ -206,3 +206,25 @@ def test_bulk_analysis_reads_tags_from_the_table_first(tmp_path, caplog):
     counts = loader.attrition_records[0].bucket_counts
     assert counts['ruptured_pre_pulse'] == 1 and counts['detection_failure'] == 1
     assert "unknown tag 'banana'" in caplog.text and 'CHECK: x' in caplog.text
+
+
+def test_review_navigation_works_with_every_opencv_window_backend(tmp_path):
+    """Arrow keys arrive with different codes per OpenCV build (Windows, Qt as in
+    Anaconda, Linux/GTK with NumLock bits, macOS); N and Backspace always work, and an
+    unknown key shows its code."""
+    from mfae import review
+    exp = _experiment(tmp_path)
+    rv = review.Review(review.build_items([exp]))
+    for right, left in ((2555904, 2424832),              # Windows
+                        (16777236, 16777234),            # Qt
+                        (0x10FF53, 0x10FF51),            # GTK, NumLock on
+                        (63235, 63234),                  # macOS
+                        (ord('n'), 8),                   # N / Backspace
+                        (ord('N'), 16777219)):           # Qt Backspace
+        assert rv.handle_key(right) == 'next' and rv.item.trap == 3, right
+        assert rv.handle_key(left) == 'next' and rv.item.trap == 1, left
+    rv.handle_key(ord('r'))
+    assert rv.handle_key(16777223) == '' and annotations.tags(exp)[1]['Tag'] == ''   # Qt Delete
+    assert rv.handle_key(0x100000 | ord('d')) == '' and annotations.tags(exp)[1]['Tag'] == 'DOA'  # GTK letter
+    assert rv.handle_key(1234567) == '' and 'Key code 1234567' in rv.message
+    assert annotations.tags(exp)[1]['Tag'] == 'DOA'                    # nothing changed
