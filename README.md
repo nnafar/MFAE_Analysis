@@ -1,93 +1,47 @@
 # MFAE Analysis
 
 Image-analysis pipeline for **microfluidic aspiration (MFA)** and **electroporation (EP)**
-experiments. For every trap in a time-lapse `.tif` sequence it tracks the length and shape of the
+experiments. For every trap in a time-lapse recording it tracks the length and shape of the
 aspirated cell protrusion, detects membrane rupture, and (optionally) quantifies dye uptake, actin
 distribution and viscoelastic parameters. A second stage pools many experiments into
 condition-level statistics and figures.
 
 ```
-.czi file / .tif folder ──► run_experiment.py ──► Output/<experiment_id>/      (one run per experiment)
+.czi file / .tif folder ──► run_experiment.py ──► Output/<setup>/<experiment>/     (one per experiment)
                                                         │
-              Output/Bulk_Analysis_results/ ◄── run_bulk_analysis.py   (pools every experiment in Output/)
+       Output/<setup>/Bulk_Analysis_results/ ◄── run_bulk_analysis.py   (pools the experiments)
 ```
 
-You only ever run these two scripts. Everything else is the `mfae/` package they start:
+You only ever run these two scripts. Everything else is the `mfae/` package they start.
+
+**New here?** Read sections 1–4 in order: install, run your first analysis, go through the setup
+windows, check the results. The rest you can look up when you need it.
+
+## Contents
+
+1. [Installation](#1-installation)
+2. [Your first analysis](#2-your-first-analysis)
+3. [The setup windows](#3-the-setup-windows)
+4. [Checking the results](#4-checking-the-results)
+5. [Redoing an analysis](#5-redoing-an-analysis)
+6. [Pooling experiments (bulk analysis)](#6-pooling-experiments-bulk-analysis)
+7. [Naming experiments](#7-naming-experiments)
+8. [Troubleshooting](#8-troubleshooting)
+9. [Reference](#9-reference): all commands, options, configs and settings, `.czi` files, how the
+   masks and the length are measured
+10. [For developers](#10-for-developers)
 
 ```
-run_experiment.py        analyse one experiment
+run_experiment.py        analyse experiments
 run_bulk_analysis.py     pool many experiments
 config/                  your configs: config_asymmetric.yaml, config_symmetric.yaml
   pipeline/              files you don't edit: defaults.yaml (pipeline settings),
                          template_tiff.yaml / template_czi.yaml (copied for a new setup)
-mfae/                    the analysis code (see "For developers")
+mfae/                    the analysis code
 tools/                   small helpers (czi_info.py, plot_cell_status_overview.py)
 docs/                    experiment naming rule
 tests/                   automated tests (synthetic data)
 ```
-
----
-
-## Command cheat sheet
-
-Copy a line into Spyder's IPython console. Everything inside `--args "..."` is passed to the
-script; `--wdir` runs it from the repository folder so `config/...` is found. Change
-`C:/GitHub/MFAE_Analysis` if your copy is elsewhere. (In a terminal, type
-`python run_experiment.py` followed by what is inside the quotes.)
-
-Use `config/config_asymmetric.yaml` for the asymmetric microscope (.tif: asymmetric E-field and
-aspiration) and `config/config_symmetric.yaml` for the symmetric microscope (.czi). The examples
-use the asymmetric one; swap the config name for symmetric data.
-
-**Analyse**
-
-| To | Run |
-|---|---|
-| Analyse all new experiments (asymmetric) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch" --wdir` |
-| Analyse all new experiments (symmetric) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch" --wdir` |
-| Check everything first (no windows, writes nothing) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir` |
-| Analyse a folder that isn't listed in the config | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch E:/Data/MFAE/Aspiration" --wdir` |
-| Only experiments whose name contains a text | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4" --wdir` |
-| One experiment, by its folder (or `.czi` file) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --data-folder M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10" --wdir` |
-
-Experiments that already have results are skipped. A batch first opens the setup windows for every
-new experiment, then analyses them all without further questions.
-
-**Redo**
-
-| To | Run |
-|---|---|
-| Analyse again, keeping the saved trap setup | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo" --wdir` |
-| Redo the whole setup (boxes, entrances, thresholds) and analyse again | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo --fresh" --wdir` |
-| Redo the setup of single traps only, then analyse again | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7,12" --wdir` |
-| Redo only the thresholds of every trap, all experiments (boxes and entrances kept) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --thresholds" --wdir` |
-| Redo only the thresholds of one experiment | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --thresholds" --wdir` |
-| Redo only the thresholds of single traps | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7 --thresholds" --wdir` |
-| Re-analyse everything | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --redo" --wdir` |
-
-Without `--only`, `--redo`, `--fresh` and `--thresholds` apply to every experiment in the config's
-folders. `--traps` needs exactly one experiment, so always pair it with `--only`. `--traps` and
-`--thresholds` re-analyse by themselves; no `--redo` needed.
-
-**Pool experiments (bulk analysis)**
-
-| To | Run |
-|---|---|
-| Statistics and figures per setup, aspiration experiments as controls | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --wdir` |
-| Same, without shared aspiration controls | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --args "--controls none" --wdir` |
-| Results stored somewhere other than `Output/` | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --args "--output-root D:/MFAE_Output" --wdir` |
-
-**Settings, new setups, help**
-
-| To | Run |
-|---|---|
-| Show every setting a run uses, and where it comes from | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --show-config" --wdir` |
-| New config for data recorded with other settings (copies a template into `config/`; a `.czi` file picks the CZI template) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10" --wdir` |
-| See how a `.czi` file is organised (channels, frames) | `%runfile C:/GitHub/MFAE_Analysis/tools/czi_info.py --args "D:/MFAE/261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi" --wdir` |
-| Analyse with the kymograph tip tracker (this run only) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch --redo --tip-tracking kymograph" --wdir` |
-| List all options | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--help" --wdir` |
-
-Options go **inside** the quotes; anything after `--wdir` is read by Spyder, not by the script.
 
 ---
 
@@ -107,132 +61,68 @@ Activate the environment (Windows: `.venv\Scripts\activate`, macOS/Linux: `sourc
 pip install -r requirements.txt
 ```
 
-The interactive windows use OpenCV and Tkinter. Tkinter ships with Python on Windows and macOS;
-on Linux install it with your package manager (e.g. `sudo apt install python3-tk`).
+The setup windows use OpenCV and Tkinter. Tkinter ships with Python on Windows and macOS; on Linux
+install it with your package manager (e.g. `sudo apt install python3-tk`).
 
-## 2. Quick start (one experiment)
+---
 
-All config files live in the `config/` folder. There is **one config per microscope**:
+## 2. Your first analysis
 
-| Config | For |
-|---|---|
-| `config/config_asymmetric.yaml` | Asymmetric microscope: exported `.tif` folders (asymmetric E-field and aspiration controls) |
-| `config/config_symmetric.yaml` | Symmetric microscope: Zeiss `.czi` files (symmetric E-field) |
+### How to run a command
 
-These two cover the lab's data as they are: list your data folders in them and run them with
-`--batch` (see [Many experiments at once](#many-experiments-at-once-batch)). Pulsed or
-aspiration-only, and the pulse frame, are read from each experiment's name, so the same config
-serves every condition. Only make a new config for data recorded with different settings (another
-objective, pressure or channel order). `config/pipeline/` holds the files you don't edit: the
-pipeline settings (`defaults.yaml`, the same for everyone) and two templates (`template_tiff.yaml`,
-`template_czi.yaml`) that a new config is copied from.
+The examples use Spyder's IPython console. Copy a line in and press Enter:
 
-**Step 1 – a config file.** For the lab's data, use `config/config_asymmetric.yaml` or `config/config_symmetric.yaml` with `--data-folder` and skip to step 2. For data recorded with other settings, create your own config from a template, with the data folder filled in:
-
-```bash
-python run_experiment.py --init-config config/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10"
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir
 ```
 
-This copies `config/pipeline/template_tiff.yaml`, or `config/pipeline/template_czi.yaml` when
-`--data-folder` is a `.czi` file, into `config/`. The experiment name defaults to the folder's (or file's) name,
-and `experiment_type` is set from its voltage. To start from one of your own configs instead,
-add `--from config/<your config>.yaml`. You can also copy a template into `config/` by hand and fill in
-`data_folder` and `experiment_id`.
+- Everything inside `--args "..."` is passed to the script. Options always go **inside** the
+  quotes; anything after `--wdir` is read by Spyder, not by the script.
+- `--wdir` runs it from the repository folder, so `config/...` is found.
+- Change `C:/GitHub/MFAE_Analysis` if your copy is elsewhere.
+- In a terminal (e.g. Anaconda Prompt, in the repository folder) type `python run_experiment.py`
+  followed by what is inside the quotes. Typing that into a Python console instead gives
+  `SyntaxError: invalid syntax`.
 
-A user config holds everything about one experiment, and nothing else:
+<details>
+<summary>Other ways to run from Spyder (F5, <code>runfile(...)</code>)</summary>
 
-| Section | Settings |
-|---|---|
-| Experiment type | `experiment_type: ep` (electroporation) or `asp` (aspiration only) |
-| Experiment | data folder, experiment name, microscope scale, pressure, frame interval, max traps |
-| Analyses (True / False) | dye uptake, actin, rupture detection, length smoothing, outlier rejection, viscoelastic fitting, kymographs; plus the channel names |
-| Interactive setup | which frame is shown during setup, starting trap-box size |
-| Computer | number of CPU cores |
-
-Every one of these must be present (copy from the matching template in `config/pipeline/` if one is missing). Open the
-file and check the values, in particular `scale_factor` (µm per pixel for your objective and
-binning) and the channel settings.
-
-**The pulse is read from the experiment name** (see [Naming experiment folders](#5-naming-experiment-folders)):
-`…-100V-1ms-frame10` means a 100 V, 1 ms pulse at file number 10. Any voltage or duration works; you
-never type them into the config. `experiment_type` must agree with the name (`asp` needs `0V`).
-
-**Step 2 – check the setup** (opens no windows, writes no results):
-
-```bash
-python run_experiment.py config/my_experiment.yaml --check
-```
-
-This validates every setting and scans the images with the same code the analysis uses. It reports
-how many frames each channel has, the frame interval, where the pulse falls, and whether the folder
-name will be recognised by the bulk analysis. Fix anything marked `PROBLEM` before continuing.
-
-**Step 3 – run the analysis:**
-
-```bash
-python run_experiment.py config/my_experiment.yaml
-```
-
-Results are written to `Output/<experiment_id>/`.
-
-### Running from Spyder
-
-The commands above are for a terminal. In Spyder, the pipeline needs to be told **which config
-file to use**: pressing Run (F5) on `run_experiment.py` without one only prints the help text.
-Add the config file to the file's run configuration once:
+Pressing Run (F5) on `run_experiment.py` without a config only prints the help text. To use F5,
+add the arguments to the file's run configuration once:
 
 1. Open `run_experiment.py` in Spyder.
 2. **Run → Configuration per file…** (Ctrl+F6).
-3. Tick **Command line options** and enter the path to your config, e.g.
-   `config/my_experiment.yaml`. Add options after it as needed, e.g.
-   `config/my_experiment.yaml --check` or `config/my_experiment.yaml --fresh`.
-4. Under **Working directory**, choose **The directory of the file being executed**, so that
-   `config/...` is found.
-5. Click **OK**, then press **F5**.
+3. Tick **Command line options** and enter what would go inside the quotes, e.g.
+   `config/config_asymmetric.yaml --batch`.
+4. Under **Working directory**, choose **The directory of the file being executed**.
+5. Click **OK**, then press **F5**. Spyder remembers this per file.
 
-Spyder remembers this per file, so later runs only need F5. To analyse another experiment,
-change the config path in the same dialog (and remove `--check` once the check passes).
-
-Alternatively, type the same in the IPython console with `runfile`; `args` is everything that
-would follow `python run_experiment.py` in a terminal:
-
-```python
-runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/my_experiment.yaml --check', wdir='C:/GitHub/MFAE_Analysis')
-```
-
-Typing `python run_experiment.py ...` in the console gives `SyntaxError: invalid syntax`.
-
-### Many experiments at once (batch)
-
-Put the folders you want to analyse in a config, under `data_folder`, and run it with `--batch`.
-Every experiment in those folders is found (at any depth): each `.czi` file for a CZI config, each
-folder of `.tif` images for a TIFF config. Each listed folder gets its own results folder.
-
-| Config | Folders | Results |
-|---|---|---|
-| `config/config_asymmetric.yaml` | `MFAE\Asymmetric_Efield` (all conditions), `MFAE\Aspiration` | `Output/Asymmetric_Efield/`, `Output/Aspiration/` |
-| `config/config_symmetric.yaml` | `MFAE\Symmetric_Efield` | `Output/Symmetric_Efield/` |
-
-In Spyder, one line per microscope:
+The older function form works too; `args` is everything that would follow
+`python run_experiment.py`:
 
 ```python
 runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmetric.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
-runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_symmetric.yaml --batch', wdir='C:/GitHub/MFAE_Analysis')
 ```
+</details>
 
-A folder that is not in the list can be given after `--batch`, e.g.
-`config/config_asymmetric.yaml --batch "E:/Data/MFAE/Aspiration"`.
+### Step 1: pick the config for your microscope
 
-**One experiment** with the same config: give it with `--data-folder` instead of `--batch`. Its
-results go to the same place the batch would put them (and the batch later skips it):
+There is **one config per microscope**, in the `config/` folder:
 
-```python
-runfile('C:/GitHub/MFAE_Analysis/run_experiment.py', args='config/config_asymmetric.yaml --data-folder "M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10"', wdir='C:/GitHub/MFAE_Analysis')
-```
+| Config | For | Data folders in it | Results |
+|---|---|---|---|
+| `config/config_asymmetric.yaml` | Asymmetric microscope: exported `.tif` folders (asymmetric E-field and aspiration controls) | `MFAE\Asymmetric_Efield` (all conditions), `MFAE\Aspiration` | `Output/Asymmetric_Efield/`, `Output/Aspiration/` |
+| `config/config_symmetric.yaml` | Symmetric microscope: Zeiss `.czi` files (symmetric E-field) | `MFAE\Symmetric_Efield` | `Output/Symmetric_Efield/` |
 
-For a .czi experiment, `--data-folder` is the .czi file itself.
+The same config serves every condition: pulsed or aspiration-only, and the pulse voltage, duration
+and frame, are read from each experiment's name (see [Naming experiments](#7-naming-experiments)).
+The examples below use the asymmetric config; swap the name for symmetric data. You only need a new
+config for data recorded with different settings (another objective, pressure or channel order),
+see [Configs and settings](#93-configs-and-settings).
 
-To add a folder, add a line under `data_folder` in the config:
+### Step 2: tell it where your data is
+
+The folders to analyse are listed under `data_folder` in the config. To add one, add a line:
 
 ```yaml
   data_folder:
@@ -241,133 +131,67 @@ To add a folder, add a line under `data_folder` in the config:
     - 'E:\Data\MFAE\Aspiration'
 ```
 
-(or give folders on the command line: `--batch "M:/.../5ms_100V" "M:/.../10ms_100V"`).
+Every experiment in those folders is found, at any depth: each `.czi` file for a CZI config, each
+folder of `.tif` images for a TIFF config. You can also give folders on the command line instead,
+after `--batch`: `--batch "E:/Data/MFAE/Aspiration"`.
+
+### Step 3: check everything first
+
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir
+```
+
+This opens no windows and writes no results. It validates every setting and scans the images of
+every experiment with the same code the analysis uses, and reports for each: the number of frames
+per channel, the frame interval, what it read from the name (e.g. `1100 Pa, 100 V, 5ms pulse at
+frame 10`) and where the pulse falls. Fix anything marked `PROBLEM` before continuing.
+
+### Step 4: run the analysis
+
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch" --wdir
+```
 
 What happens:
 
-1. **Setup of every experiment, one after another** (trap boxes, entrances, thresholds). Saved
-   setups are reused, so experiments set up earlier don't ask again. Esc stops the batch; the
-   setups done so far are kept.
-2. **Analysis of all of them, without interaction**: leave it running (e.g. overnight).
-3. A summary (done / skipped / failed per experiment) is printed and saved as
+1. **Setup of every new experiment, one after another**: you draw the trap boxes, mark the
+   entrances and pick thresholds (see [The setup windows](#3-the-setup-windows)). Esc stops the
+   batch; the setups done so far are kept.
+2. **Analysis of all of them, without further questions.** You can leave it running (e.g. overnight).
+3. **A summary** (done / skipped / failed per experiment) is printed and saved as
    `Output/<setup>/batch_summary_<date>_<time>.txt`. A failure in one experiment doesn't stop the rest.
 
-The pulse and the experiment type (0 V = aspiration only) are read from each experiment's name;
-names that don't follow the [naming rule](#5-naming-experiment-folders) are listed and skipped.
-
-**Where results go.** `Output/<setup>/<experiment>/`, the setup being the folder's name
+Results go to `Output/<setup>/<experiment>/`. The setup is the listed folder's name
 (`Symmetric_Efield`, `Aspiration`) or, for a condition folder such as `5ms_100V`, the setup folder
-that holds it (`Asymmetric_Efield`). So the 5 ms and 100 µs configs both fill
-`Output/Asymmetric_Efield/`, setups are never mixed, and the bulk analysis analyses each setup on
-its own (with the aspiration experiments as controls, see [Bulk analysis](#6-bulk-analysis-many-experiments)).
-`--setup NAME` sets the results folder name yourself.
+that holds it (`Asymmetric_Efield`). So setups are never mixed, and the bulk analysis treats each
+on its own. `--setup NAME` sets the results folder name yourself.
 
-**Adding data later:** run the same line again. Experiments that already have results are skipped;
-only new ones are set up and analysed. `--redo` analyses everything again (reusing the saved
-setups; add `--fresh` to redo the setups too). `--batch --check` checks every experiment without
-opening windows.
+Experiment names that don't follow the [naming rule](#7-naming-experiments) are listed and skipped.
 
-**Redo single traps:** `--batch --only Experiment4 --traps 7` opens the pipette and threshold
-windows for trap 7 of that experiment only (several: `--traps 7,12`). The other traps keep their
-saved setup, and the experiment is analysed again. The trap box itself is kept; to change a box
-or add a trap, use `--fresh`.
+### Adding data later
 
-### Command-line options
+Run the same line again. Experiments that already have results are skipped; only new ones are set
+up and analysed.
 
-| Option | What it does |
+### Only some experiments
+
+| To | Add inside the quotes |
 |---|---|
-| `--check` | Validate config and images, then exit |
-| `--fresh` | Ignore the saved trap setup and redo the interactive steps |
-| `--traps N[,N...]` | Redo the pipette/threshold setup of only these traps, keep the rest |
-| `--thresholds` | Redo only the threshold windows (all saved traps, or `--traps`); boxes and entrances kept |
-| `--tip-tracking mask\|kymograph` | How the protrusion tip is found, for this run only (the log line `Protrusion tip: ...` shows which was used) |
-| `--only TEXT` | With `--batch`: only experiments whose name contains TEXT |
-| `--data-folder PATH` | Use this image folder instead of the one in the config |
-| `--experiment-id NAME` | Name of the results folder (default: the data folder's name) |
-| `--output-dir PATH` | Write results somewhere other than `Output/` |
-| `--show-config` | Print every setting the run would use, and which file set it |
-| `--debug` | Show detailed log messages |
-| `--init-config FILE` | Create a new config from a template in `config/pipeline/` (or `--from OTHER.yaml`) |
+| Only experiments whose name contains a text | `--only Experiment4` |
+| A folder that isn't listed in the config | `--batch "E:/Data/MFAE/Aspiration"` |
+| One experiment by its folder (or `.czi` file), instead of `--batch` | `--data-folder "M:/.../260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"` |
 
-Because `--data-folder` overrides the config, one config can be reused for a whole series of
-experiments recorded with the same settings:
+With `--data-folder`, results go to the same place the batch would put them, and a later batch skips
+that experiment. For a `.czi` experiment, `--data-folder` is the `.czi` file itself.
 
-```bash
-python run_experiment.py config/my_5ms_series.yaml --data-folder "D:/MFAE/260129_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10"
-```
+---
 
-### How settings work
+## 3. The setup windows
 
-Settings live in two files that **never share a setting**, so either can be rewritten without
-affecting the other:
+For each new experiment a series of windows guides you through the trap geometry. Each window shows
+its own key hints.
 
-| File | Contains | Who edits it |
-|---|---|---|
-| Your user configs in `config/` (`config_asymmetric.yaml`, `config_symmetric.yaml`, and any made from the templates) | Exactly the user settings listed above. | You, per experiment |
-| `config/pipeline/defaults.yaml` | Pipeline settings: image processing, detection thresholds, fitting, figures. | Developers only |
-
-The pipeline refuses to start if a user config is missing a user setting or contains a pipeline
-setting (a typo also ends up here), or if `config/pipeline/defaults.yaml` contains a user setting. The list of
-user settings is `USER_KEYS` in `mfae/config/loader.py`.
-
-- **To see exactly what a run will use:** `python run_experiment.py my.yaml --show-config`. Every
-  value that doesn't come from `config/pipeline/defaults.yaml` is marked with where it came from.
-- **Every run saves its complete settings** to `Output/<experiment_id>/Run_Info/effective_config.yaml`. That
-  file is a *full config* (it lists every setting and has no `experiment_type`), so you can rerun an
-  old analysis with exactly the same settings even after the defaults have changed. Old full-length
-  config files work the same way.
-
-### Using .czi files directly
-
-The pipeline can read a Zeiss `.czi` file instead of exported TIFFs. Start from the CZI template (or use `config/config_symmetric.yaml` directly):
-
-```bash
-python run_experiment.py --init-config config/my_experiment.yaml --data-folder "D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10.czi"
-```
-
-When `--data-folder` is a `.czi` file, `config/pipeline/template_czi.yaml` is copied automatically, and the
-experiment name defaults to the file name without `.czi`, so name the file by the naming rule.
-A CZI config differs from a TIFF one in two places:
-
-```yaml
-paths:
-  image_format: czi          # tiff for a folder of exported .tif files
-  data_folder: 'D:\MFAE'    # the .czi file, or its folder (file named after experiment_id)
-
-dye_uptake_parameters:
-  membrane_channel_number: 2 # channel numbers as Fiji shows them (dye first)
-  dye_channel_number: 1
-actin_parameters:
-  channel_number: 2
-```
-
-Channels are chosen by number because the order in the CZI file (dye = 1, membrane = 2) is not the
-order of the exported TIFFs (`C1` = membrane). TIFF configs use the name patterns instead; each
-format's settings are refused in the other, so a TIFF config can't be applied to a CZI by mistake.
-
-Frame numbers count from 1, as in Zen and Fiji, so `frame10` is the 10th frame. Frame times are
-read from the file when it stores them; otherwise `frame_interval` is used. `--check` shows which,
-the channel names, and the file's pixel size next to `scale_factor`. Only single-position,
-single-plane time-lapses are supported. To see how a CZI file is organised without running the
-pipeline, use `python tools/czi_info.py "D:/MFAE/<experiment>.czi"`.
-
-## 3. The interactive setup
-
-On the first run a series of windows guides you through the trap geometry. Each window shows its
-own key hints; the common keys are:
-
-| Key | Action |
-|---|---|
-| `Enter` | Confirm this step |
-| `B` (or `Backspace`) | Entrance and threshold windows: go back one window: body threshold → protrusion threshold → entrance → the previous trap. Each window opens at the value you chose before, so `Enter` keeps it |
-| `R` | Entrance and threshold windows: start again at the first trap (trap boxes kept, earlier values pre-filled). In the rotation / trap-box windows: restart the setup from the beginning |
-| `Esc` | Stop the analysis |
-| `W` `A` `S` `D` | Adjust (rotation / ROI position / pipette position / threshold – depends on the step) |
-| `F` | Threshold windows only: change the faint-cell smoothing (see below) |
-| `J` / `L` | Decrease / increase display contrast (does not affect the analysis) |
-| `I` / `K` | Decrease / increase display brightness (does not affect the analysis) |
-
-The steps are:
+**The steps:**
 
 1. **Rotate** the image so the channels are horizontal (`W`/`S` ±10°, `A`/`D` ±0.1°).
 2. **Draw the ROI** around the first trap (drag with the mouse, fine-tune with `WASD`).
@@ -377,60 +201,24 @@ The steps are:
 6. **Per trap:** confirm the pipette line, then pick two thresholds: one for the **protrusion**
    (inside the channel, between the two guide lines) and one for the **cell body** (right of the
    pipette line). Drag the line in the histogram or use `W`/`S` ±10, `A`/`D` ±1 until the red mask
-   follows the cell. The preview shows the mask the analysis will use (the analysis additionally takes the median over
-   neighbouring frames, so its masks are a little steadier).
+   follows the cell. The preview shows the mask the analysis will use (the analysis additionally
+   takes the median over neighbouring frames, so its masks are a little steadier).
 
-Your choices are saved to `Output/<experiment_id>/Run_Info/session_cache.json`, so a re-run skips the setup
-and goes straight to the analysis (see [The saved setup](#the-saved-setup-session_cachejson)).
+**Keys:**
 
-### The saved setup (session_cache.json)
-
-When the interactive setup is finished, everything you chose in it is written to
-`Output/<experiment_id>/Run_Info/session_cache.json` (results from older versions kept it directly in
-the experiment folder; it is still found there and moved). The next run of the same experiment (same results
-folder) finds the file, skips the setup windows and goes straight to the analysis.
-
-```json
-{
-  "experiment_id": "261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304",
-  "threshold_scale": "membrane SNR, 255 = 40 sigma",
-  "rotation_angle": 0.7,
-  "trap_configs": [
-    {"trap_index": 0, "roi_coords": [240, 291, 112, 246], "pip": 76.0,
-     "thr_prot": 64.0, "thr_body": 70.0, "smooth": 3.0}
-  ],
-  "source_files": ["..."]
-}
-```
-
-| Field | Meaning |
+| Key | Action |
 |---|---|
-| `rotation_angle` | Image rotation [degrees] |
-| `trap_index` | Trap number minus one (`0` = Trap 1) |
-| `roi_coords` | Trap box `[top, bottom, left, right]` in pixels of the rotated image |
-| `pip` | Pipette entrance, in pixels from the left edge of the trap box |
-| `thr_prot`, `thr_body` | Protrusion and cell-body thresholds (0–255) |
-| `smooth` | Faint-cell smoothing along the channel [px] (the `F` key) |
-| `threshold_scale` | What the thresholds are measured in (see below) |
-| `source_files` | The image files the setup was made on |
+| `Enter` | Confirm this step |
+| `B` (or `Backspace`) | Entrance and threshold windows: go back one window (body threshold → protrusion threshold → entrance → the previous trap). Each window opens at the value you chose before, so `Enter` keeps it |
+| `R` | Entrance and threshold windows: start again at the first trap (trap boxes kept, earlier values pre-filled). Rotation / trap-box windows: restart the setup from the beginning |
+| `Esc` | Stop the analysis |
+| `W` `A` `S` `D` | Adjust (rotation / ROI position / pipette position / threshold, depending on the step) |
+| `F` | Threshold windows only: change the faint-cell smoothing (see below) |
+| `J` / `L` | Decrease / increase display contrast (does not affect the analysis) |
+| `I` / `K` | Decrease / increase display brightness (does not affect the analysis) |
 
-Only these interactive choices are stored. Every other setting is read from your config and
-`config/pipeline/defaults.yaml` on each run, so you can change e.g. `scale_factor` or rupture settings
-and re-run without repeating the setup.
-
-- **Redo the setup:** run with `--fresh` (or delete the file). The new setup overwrites it.
-  To redo only some traps, use `--traps 7,12`. To redo only the thresholds (keeping every box and
-  entrance), use `--thresholds`, for all experiments at once or with `--only` / `--traps`.
-- **Edit by hand:** the file is plain text. You can change a threshold, the pipette position or
-  the smoothing of one trap, or delete a trap's entry to leave it out. Keep the JSON valid
-  (commas, brackets).
-- **Thresholds and settings must match.** A threshold is only meaningful on the scale it was
-  picked on. If `threshold_scale` doesn't match the current mask settings (`membrane_enhancement`,
-  `membrane_snr_full_scale`), the file is ignored, a warning says why, and the setup runs again.
-  Caches from before the contrast enhancement have no `threshold_scale` and count as the old
-  CLAHE method, so they also trigger a new setup.
-- **Changed data folder:** if the images differ from `source_files`, the log warns but the setup
-  is still reused; check the results, or use `--fresh`.
+Your choices are saved, so a re-run skips the setup and goes straight to the analysis (see
+[The saved setup](#the-saved-setup-session_cachejson)).
 
 ### Choosing the threshold
 
@@ -454,85 +242,15 @@ a level chosen from how bright its cell is (1 px for bright cells, up to 5 px fo
 more smoothing helps faint cells but slightly rounds the tip of bright ones. The level is saved per
 trap together with the thresholds.
 
-### How the masks are made
+---
 
-The membrane channel is used only to build two masks per frame: the **protrusion** and the
-**cell body**. Because no intensity is measured from it, it is enhanced to make the cell outline
-clear and consistent from frame to frame:
-
-1. Each frame is replaced by the pixel-wise median of itself and its two neighbours, so noise at
-   the threshold doesn't make the tip jitter or a faint protrusion flicker in and out
-   (`membrane_temporal_window`, 1 = off). The image is then smoothed (1 px across the channel;
-   along the channel by the per-trap level above).
-2. In every frame, the background level and its noise are measured from the background peak of
-   the histogram.
-3. Each pixel becomes "noise units above background", so one threshold means the same thing in
-   every frame, regardless of bleaching, exposure, or a very bright protrusion tip.
-4. If the protrusion mask runs on to the edge of the box through faint signal ahead of the tip
-   (out-of-focus light or debris in the channel), it is cut where the signal along the channel
-   stays below 40 % of the protrusion's own level (`protrusion_leak_fraction`). Otherwise single
-   frames read the full box length. Masks that end inside the box are never cut. The tip is then
-   placed on the protrusion's centre-line profile, where the intensity drops to 25 % of the way
-   from the channel background ahead of the tip to the protrusion just inside it
-   (`tip_level_fraction`; lower follows dimmer tips). If the profile is still above that level
-   15 px beyond the mask edge (signal in the channel, not the tip), or the contrast is too low,
-   the mask edge is used instead (`max_tip_refinement_px`).
-5. A pixel must also be at least 30 % as bright (above background) as the brightest signal across
-   the channel in its column (`membrane_relative_level`, 0 = off). Around a bright cell the
-   out-of-focus halo is well above the noise but only 10-20 % of the cell's brightness, so without
-   this the masks are wider and blobbier than the cell. Only 2 px either side along the channel
-   count, so the dim shaft next to a bright spot in the protrusion is kept.
-6. After thresholding, background enclosed by the cell is filled in (membrane stains are brightest
-   at the rim, which would otherwise give ring-shaped masks), and small specks are removed.
-7. The body is the largest blob at the entrance (specks there are ignored). With a faint cell the
-   medium next to the trap, or a passing cell, can join the body in single frames; a body mask more
-   than 1.3x as large as the body in the frames around it keeps only the part within 3 px of that
-   body (`body_temporal_check`, `False` = off).
-
-**Dye and actin intensities are always measured on the raw pixels.** They only borrow the masks;
-this also holds when actin is imaged in the same channel as the membrane.
-
-The settings are in `config/pipeline/defaults.yaml` under `image_processing` (`membrane_enhancement`,
-`membrane_denoise_sigma`, `membrane_denoise_sigma_along`, `membrane_temporal_window`, `membrane_snr_full_scale`,
-`membrane_fill_holes`, `membrane_max_hole_fraction`, `membrane_relative_level`). Set `membrane_enhancement: False` to return
-to the older CLAHE-based segmentation; thresholds picked in one mode are not comparable with the
-other.
-
-**Tip tracking on the kymograph.** The protrusion length is not read from each frame's mask on
-its own. The membrane profile along the channel centre line is followed through time, as you would
-read the edge on the kymograph: in every frame each position gets a score for looking like the
-protrusion's outer edge (protrusion signal on the entrance side, nothing left on the channel side,
-judged in noise units so a faint far end counts and an internal step next to it does not), and
-the tip path through all frames is the one with the best total score, with a penalty for jumping
-between frames. A wrong edge in single frames or short runs can't pull the path away; bright edges
-are followed however fast they move. Where a faint far end drops below the threshold the mask gets
-shorter, but the tracked length does not. When a cell is there (entry, exit, a new cell arriving) is still
-decided from the masks, exactly as with the mask-based tip; the tracker only moves the tip inside
-the analysed cell, tracked over that cell's frames alone. Areas and shape still come from the masks; the trace CSV
-also has the mask-based length (`Protrusion_Length_mask_um`) for comparison. Where the protrusion end
-is clearly above the mask threshold (at least 1.5x), the tracked tip is placed where the centre-line
-profile drops to that threshold, so it sits on the mask edge; a fainter far end keeps the tracked edge. Set
-`tip_tracking: mask` under `image_processing` in `config/pipeline/defaults.yaml` to go back to the
-mask-based tip; `tip_jump_cost` sets how strongly jumps are resisted.
-
-**Length spikes (faint cells).** With a faint cell the tip can jump for a frame or two onto faint
-signal ahead of it, or lose the faint far end of the protrusion. Each frame's length is compared
-with the median of the 7 frames around it; a frame that is at least 2 µm and 3 robust standard
-deviations away is replaced by that median. Runs of up to 3 frames count as spikes; anything that
-lasts longer (slip, a new cell, real growth) is kept, at its exact frame. This runs before entry
-and exit detection, so a spike can no longer end tracking. The trace CSV keeps the measured value
-(`Protrusion_Length_raw_um`) and marks the replaced frames (`Spike_Removed`). Settings:
-`spike_filter_window` (0 = off), `spike_filter_min_jump_um`, `spike_filter_n_mad` under
-`rupture_detection` in `config/pipeline/defaults.yaml`. If a faint cell still flickers in longer
-runs, raise `membrane_temporal_window` (masks from the median of more frames) to 5.
-
-## 4. Output
+## 4. Checking the results
 
 Each experiment gets one folder. It contains a `README.txt` that lists every file in it, says what
-it shows, and explains the main columns, so you can hand the folder to someone else.
+it shows and explains the main columns, so you can hand the folder to someone else.
 
 ```
-Output/<experiment_id>/
+Output/<setup>/<experiment>/
 ├── README.txt                         what every folder and file holds (start here)
 ├── 0_Overview/
 │   ├── trap_map.png                   which trap is which
@@ -560,94 +278,139 @@ Output/<experiment_id>/
 └── Run_Info/                          effective_config.yaml, session_cache.json, analysis.log
 ```
 
-Frame numbers in `trap_summary.csv` and the movies count from 1 (as in Fiji); the `Frame` column
-of the Data CSVs counts from 0. The masks in all three movies are the same LineDetection masks the
-numbers were measured in. All folder and file names are defined in `mfae/files/output_layout.py`.
+**Start with the figures and the tracking movies.** Each plot type is one multipanel PDF with every
+trap as a panel; panels share their axes and, for kymographs, one colour scale, so traps can be
+compared at a glance. If a trap's length trace looks wrong, its tracking movie shows why: whether
+the mask lost the tip, picked up debris, or the cell left the trap.
 
-Each plot type is one multipanel PDF with every trap as a panel. Panels share their axes and,
-for kymographs, one colour scale, so traps can be compared at a glance. To also get one PDF per
-trap (e.g. for a slide), set `plotting_parameters.save_individual_trap_plots: True` in
-`config/pipeline/defaults.yaml`; the number of panels per row is `plotting_parameters.multipanel_columns`
-(both are pipeline settings).
+The tracking movies show the membrane image with the protrusion (magenta) and body (cyan) masks,
+the pipette entrance, the tracked tip (yellow), the rupture-monitoring box (red) and the length
+trace with a cursor. The status line shows the frame, time, length and tracking state (pre-entry /
+tracking / exited / entry not confirmed), plus PULSE and RUPTURED when they apply. They are MJPG
+`.avi` files; VLC plays them on any system. The masks in all three movies (tracking, dye, actin)
+are the same masks the numbers were measured in.
 
-The tracking movies (`workflow_settings.save_tracking_movies`, on by default) show the membrane
-image with the protrusion (magenta) and body (cyan) masks, the pipette entrance, the tracked tip,
-the rupture-monitoring box and the length trace with a cursor, so the tracking can be followed
-frame by frame. They are MJPG `.avi` files; VLC plays them on any system. The status line shows
-the frame, time, length and tracking state (pre-entry / tracking / exited / entry not confirmed),
-plus PULSE and RUPTURED when they apply. Frame rate and size are set by
-`workflow_settings.tracking_movie_fps` and `tracking_movie_width_px`.
-
-Watching a trap's movie is the quickest way to check its measurement: if the length trace looks
-wrong, the movie shows whether the mask lost the tip, picked up debris, or the cell left the trap.
-
-The bulk analysis reads this layout and the older ones (`Protrusion Length Detection/...`,
-`Dye Uptake/Uptake traces/`, ..., and the flat one), with the old file names
-(`trap_XX_detection_full.csv`, `Trap_XX_Uptake_Data.csv`, ...).
+**Frame numbers** in `trap_summary.csv` and the movies count from 1 (as in Fiji); the `Frame`
+column of the Data CSVs counts from 0.
 
 **Several cells in one trap.** A trap often holds more than one cell during a recording: a cell
-passes through the channel and the next one arrives. Each trap is therefore split into cells, and
-a cell ends when
+passes through the channel and the next one arrives. Each trap is therefore split into cells. A
+cell ends when
 
 - its protrusion tip stays at the left edge of the trap box for 3 frames (`left ROI`; the true
-  length is unknown from then on, `rupture_detection.exit_at_roi_edge_frames`),
+  length is unknown from then on),
 - the protrusion collapses for 3 frames (`slip`), or
 - the length falls below half its recent level and stays there, i.e. the cell passed through and
-  a new, shorter protrusion appears (`cell change`, `rupture_detection.cell_change_drop_ratio`).
+  a new, shorter protrusion appears (`cell change`).
 
-After a cell ends, the next entry is searched from there. **The analysed cell is the one in the
-trap at the pulse**, since that is the one that was electroporated; for aspiration-only runs it is
-the longest-tracked cell. If the trap is empty at the pulse, the last cell before it is kept and the
-log warns that it was not pulsed. All measurements (length, areas, rupture, dye uptake, actin)
-cover only the analysed cell, from its own entry to its exit; other frames are empty (NaN). The log
-lists every cell found, e.g. `Trap 4 held 2 cells (cell 1: frames 2-150 (cell change); cell 2:
-frames 151-504). Analysing cell 2 (in the trap at the pulse).` The per-trap CSV has a `Cell`
-column (which cell was in the trap in each frame), `Tracked` (the analysed cell's frames) and
-`Exit_Reason`, and the tracking movie labels the other cells as "not analysed". If many cells leave
-through the left edge, draw a wider trap box.
+**The analysed cell is the one in the trap at the pulse**, since that is the one that was
+electroporated; for aspiration-only runs it is the longest-tracked cell. If the trap is empty at
+the pulse, the last cell before it is kept and the log warns that it was not pulsed. All
+measurements (length, areas, rupture, dye uptake, actin) cover only the analysed cell, from its own
+entry to its exit; other frames are empty (NaN). The log lists every cell found, e.g.
+`Trap 4 held 2 cells (cell 1: frames 2-150 (cell change); cell 2: frames 151-504). Analysing cell 2
+(in the trap at the pulse).` The trace CSV has a `Cell` column (which cell was in the trap in each
+frame), `Tracked` (the analysed cell's frames) and `Exit_Reason`, and the tracking movie labels
+the other cells as "not analysed". If many cells leave through the left edge, draw a wider trap box.
 
-Rupture markers on the plots come from the automatic rupture detection, which is not reliable
+**Rupture markers** on the plots come from the automatic rupture detection, which is not reliable
 enough to cut data on. All CSVs therefore contain every frame; treat the markers as hints.
 
-## 5. Naming experiment folders
+---
 
-The pulse settings of a run and the condition groups of the bulk analysis are both read from the
-experiment name, so every `experiment_id` must follow this pattern (details in
-[`docs/experiment_naming.txt`](docs/experiment_naming.txt)):
+## 5. Redoing an analysis
+
+| To | Run |
+|---|---|
+| Analyse again, keeping the saved trap setup | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo" --wdir` |
+| Redo the whole setup (boxes, entrances, thresholds) and analyse again | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --redo --fresh" --wdir` |
+| Redo the entrance and thresholds of single traps, then analyse again | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7,12" --wdir` |
+| Redo only the thresholds of one experiment (boxes and entrances kept) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --thresholds" --wdir` |
+| Redo only the thresholds of single traps | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --traps 7 --thresholds" --wdir` |
+| Redo only the thresholds of every experiment | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --thresholds" --wdir` |
+| Re-analyse everything | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --redo" --wdir` |
+
+- Without `--only`, `--redo`, `--fresh` and `--thresholds` apply to every experiment in the
+  config's folders.
+- `--traps` needs exactly one experiment, so always pair it with `--only`. It keeps the trap box;
+  to change a box or add a trap, use `--fresh`.
+- `--traps` and `--thresholds` re-analyse by themselves; no `--redo` needed.
+
+### The saved setup (session_cache.json)
+
+Everything you chose in the setup windows is written to
+`Output/<setup>/<experiment>/Run_Info/session_cache.json`. The next run of the same experiment
+finds the file, skips the setup windows and goes straight to the analysis. (Results from older
+versions kept it directly in the experiment folder; it is still found there and moved.)
+
+```json
+{
+  "experiment_id": "261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304",
+  "threshold_scale": "membrane SNR, 255 = 40 sigma",
+  "rotation_angle": 0.7,
+  "trap_configs": [
+    {"trap_index": 0, "roi_coords": [240, 291, 112, 246], "pip": 76.0,
+     "thr_prot": 64.0, "thr_body": 70.0, "smooth": 3.0}
+  ],
+  "source_files": ["..."]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `rotation_angle` | Image rotation [degrees] |
+| `trap_index` | Trap number minus one (`0` = Trap 1) |
+| `roi_coords` | Trap box `[top, bottom, left, right]` in pixels of the rotated image |
+| `pip` | Pipette entrance, in pixels from the left edge of the trap box |
+| `thr_prot`, `thr_body` | Protrusion and cell-body thresholds (0–255) |
+| `smooth` | Faint-cell smoothing along the channel [px] (the `F` key) |
+| `threshold_scale` | What the thresholds are measured in (see below) |
+| `source_files` | The image files the setup was made on |
+
+Only these choices are stored. Every other setting is read from your config and
+`config/pipeline/defaults.yaml` on each run, so you can change e.g. `scale_factor` or rupture
+settings and re-run without repeating the setup.
+
+- **Edit by hand:** the file is plain text. You can change a threshold, the pipette position or
+  the smoothing of one trap, or delete a trap's entry to leave it out. Keep the JSON valid
+  (commas, brackets). Deleting the file is the same as `--fresh`.
+- **Thresholds and settings must match.** A threshold is only meaningful on the scale it was
+  picked on. If `threshold_scale` doesn't match the current mask settings (`membrane_enhancement`,
+  `membrane_snr_full_scale`), the file is ignored, a warning says why, and the setup runs again.
+  Caches from before the contrast enhancement have no `threshold_scale` and count as the old
+  CLAHE method, so they also trigger a new setup.
+- **Changed data folder:** if the images differ from `source_files`, the log warns but the setup
+  is still reused; check the results, or use `--fresh`.
+
+---
+
+## 6. Pooling experiments (bulk analysis)
+
+After the experiments are analysed:
 
 ```
-YYMMDD_CellType_Treatment_Chip_Experiment-<P>Pa-<V>V-<D><ms|us|s>-frame<N>
-260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10      electroporated
-260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0       aspiration only
+%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --wdir
 ```
 
-`--check` shows what it read from the name (e.g. `1100 Pa, 100 V, 5ms pulse at frame 10`) and warns
-when a name does not match the rule or its pressure differs from `constant_pressure`. If a name
-can't follow the rule, set `dye_uptake_parameters.has_pulse` and `pulse_frame` in your config
-instead; the bulk analysis will skip that experiment.
+| To | Run |
+|---|---|
+| Statistics and figures per setup, aspiration experiments as controls | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --wdir` |
+| Same, without shared aspiration controls | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --args "--controls none" --wdir` |
+| Results stored somewhere other than `Output/` | `%runfile C:/GitHub/MFAE_Analysis/run_bulk_analysis.py --args "--output-root D:/MFAE_Output" --wdir` |
 
-## 6. Bulk analysis (many experiments)
+It reads the experiment results, groups the cells by condition (from the experiment names) and
+writes one folder per run, named by date and time, with a `README.txt` that lists every file and
+what it shows.
 
-After running `run_experiment.py` on each experiment:
-
-```bash
-python run_bulk_analysis.py
-```
-
-It reads the experiment results in `Output/` (use `--output-root PATH` if they live elsewhere),
-groups the cells by condition (from the experiment names) and writes one folder per run, named by
-date and time, with a `README.txt` that lists every file and what it shows.
-
-**Each setup is analysed on its own, never pooled with another.** Every folder in `Output/` that
-holds experiment results (e.g. `Symmetric_Efield/`, `Asymmetric_Efield/` from batch runs) is one
-setup and gets its own `Bulk_Analysis_results/` inside it; experiments directly in `Output/` count
-as one more setup.
-
-**Aspiration-only controls are shared.** The experiments in `Output/Aspiration/` (no pulse, so no
-field geometry) are added as the control group to every setup's analysis, so each setup's
-pulse-vs-aspiration figures use them. Only aspiration-only (0 V) runs are taken from that folder.
-`Aspiration/` also gets its own bulk analysis (aspiration-only mechanics). Use
-`--controls FOLDER` for a different control folder, or `--controls none` for no shared controls.
+- **Each setup is analysed on its own, never pooled with another.** Every folder in `Output/` that
+  holds experiment results (e.g. `Symmetric_Efield/`, `Asymmetric_Efield/`) is one setup and gets
+  its own `Bulk_Analysis_results/` inside it; experiments directly in `Output/` count as one more
+  setup.
+- **Aspiration-only controls are shared.** The aspiration-only (0 V) experiments in
+  `Output/Aspiration/` are added as the control group to every setup's analysis, so each setup's
+  pulse-vs-aspiration figures use them. `Aspiration/` also gets its own bulk analysis
+  (aspiration-only mechanics). Use `--controls FOLDER` for a different control folder, or
+  `--controls none` for no shared controls.
 
 ```
 Output/<setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/
@@ -671,40 +434,294 @@ Output/<setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/
 
 The treatment and pulse folders are made for the conditions in your data; folders a run writes
 nothing to are removed. Figures can be redrawn from `0_Tables/Figure_Data/` without rerunning
-(`mfae.bulk.figure_data.load_all(...)`). The layout is defined in `mfae/bulk/layout.py`.
+(`mfae.bulk.figure_data.load_all(...)`).
 
-In Spyder: `runfile('C:/GitHub/MFAE_Analysis/run_bulk_analysis.py', wdir='C:/GitHub/MFAE_Analysis')`.
+### Marking cells by hand
 
-**Marking cells by hand.** Add a tag to a trap's `Data/Traces/Trap_XX_protrusion_trace.csv` file name
-(e.g. `Trap_03_protrusion_trace_R.csv`) to tell the bulk analysis what happened to that cell:
-`_R` ruptured after the pulse (still analysed); `_R0` ruptured before the pulse, `_DOA` / `_PI`
-not viable, `_after` / `_POST` arrived after the pulse, `_MASK` / `_SHAPE` / `_IRREGULAR` detection
-failed (these are excluded and only counted in the attrition table). A re-analysis keeps the tag
-(it writes into the tagged file). Older names (`Trap_XX_protrusion_and_shape_<TAG>.csv`,
+Add a tag to a trap's `Data/Traces/Trap_XX_protrusion_trace.csv` file name (e.g.
+`Trap_03_protrusion_trace_R.csv`) to tell the bulk analysis what happened to that cell:
+
+| Tag | Meaning | Analysed? |
+|---|---|---|
+| `_R` | Ruptured after the pulse | Yes |
+| `_R0` | Ruptured before the pulse | No |
+| `_DOA`, `_PI` | Not viable | No |
+| `_after`, `_POST` | Arrived after the pulse | No |
+| `_MASK`, `_SHAPE`, `_IRREGULAR` | Detection failed | No |
+
+Excluded cells are only counted in the attrition table. A re-analysis keeps the tag (it writes
+into the tagged file). Older names (`Trap_XX_protrusion_and_shape_<TAG>.csv`,
 `trap_XX_detection_full_<TAG>.csv`) work the same way; a re-analysis moves them into `Data/Traces/`
 with the new name and the tag kept.
 
-## 7. Troubleshooting
+The bulk analysis also reads older result layouts (`Protrusion Length Detection/...`,
+`Dye Uptake/Uptake traces/`, ..., and the flat one) with their old file names
+(`trap_XX_detection_full.csv`, `Trap_XX_Uptake_Data.csv`, ...).
 
-| Message | What to do |
+---
+
+## 7. Naming experiments
+
+The pulse settings of a run and the condition groups of the bulk analysis are both read from the
+experiment name (the folder name, or the `.czi` file name), so every experiment must follow this
+pattern (details in [`docs/experiment_naming.txt`](docs/experiment_naming.txt)):
+
+```
+YYMMDD_CellType_Treatment_Chip_Experiment-<P>Pa-<V>V-<D><ms|us|s>-frame<N>
+260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10      electroporated
+260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0       aspiration only
+```
+
+`…-100V-1ms-frame10` means a 100 V, 1 ms pulse at file number 10. Any voltage or duration works;
+you never type them into the config. `0V` means aspiration only.
+
+`--check` shows what it read from the name and warns when a name does not match the rule or its
+pressure differs from `constant_pressure`. If a name can't follow the rule, set
+`dye_uptake_parameters.has_pulse` and `pulse_frame` in your config instead; the bulk analysis will
+skip that experiment.
+
+---
+
+## 8. Troubleshooting
+
+| Problem or message | What to do |
 |---|---|
+| `SyntaxError: invalid syntax` when running `python run_experiment.py ...` | The command was typed into a Python console. In Spyder use `%runfile ...` (see [How to run a command](#how-to-run-a-command)); otherwise run it in a terminal from the repository folder. |
+| Pressing F5 only prints the help text | No config was given; see [How to run a command](#how-to-run-a-command). |
 | `... has N problem(s): - section.key: ...` | The named setting is invalid; the message says why. |
 | `unknown setting (typo, or not supported ...)` | The key is misspelled or not a real setting. Compare with `config/pipeline/defaults.yaml`. |
 | `Config key '...' is ignored: ...` | The setting exists in older configs but has no effect; you can delete it. |
 | `is not valid YAML` | Usually inconsistent indentation or an unclosed quote. Windows paths are safest in single quotes. |
 | `No .tif files found` | Check `paths.data_folder`. |
 | `Dye analysis is enabled but no file names contain 'C2'` | Set `dye_channel_pattern` to the text that identifies your dye images. |
-| The setup windows don't appear on a re-run | A saved setup is being reused; add `--fresh`. |
+| The setup windows don't appear on a re-run | A saved setup is being reused; add `--fresh` (or `--traps` / `--thresholds` for parts of it). |
 | Windows are too small on a high-resolution screen | Raise `workflow_settings.window_scale_factor` (e.g. 1.5) in `config/pipeline/defaults.yaml`. |
 | The computer becomes sluggish | Lower `workflow_settings.n_workers` in your config. |
 | A faint cell is barely captured in the threshold window | Press `F` for more smoothing, then lower the threshold (stay above ~3 sigma). |
 | The mask includes background noise | Raise the threshold, or press `F` to reduce smoothing if it is high. |
 | The protrusion mask reaches the left edge of the box | The protrusion is longer than the trap box, so its true length can't be measured; tracking stops after 3 frames at the edge. Draw a wider ROI (`--fresh`). |
-| `SyntaxError: invalid syntax` when running `python run_experiment.py ...` | The command was typed into a Python console. In Spyder use `runfile(...)` (see [Running from Spyder](#running-from-spyder)); otherwise run it in a terminal (Anaconda Prompt) from the repository folder. |
 | `Entry not confirmed for this trap` in the log | No valid protrusion was found for 3 frames in a row, so rupture detection is off for that trap. Watch its tracking movie. If the protrusion is tracked fine but longer than 0.9 × `channel_length_um` (36 µm by default), check `scale_factor`: `--check` shows the file's pixel size next to it. |
+| A faint cell's length still flickers | Raise `membrane_temporal_window` (masks from the median of more frames) in `config/pipeline/defaults.yaml`, or try `--tip-tracking kymograph`. |
 | A tracking movie won't play | Open it in VLC, which plays MJPG `.avi` files on any system. |
 
-## 8. For developers
+---
+
+## 9. Reference
+
+### 9.1 All commands
+
+The asymmetric config is used as the example; swap in `config/config_symmetric.yaml` for the
+symmetric microscope.
+
+**Analyse**
+
+| To | Run |
+|---|---|
+| Analyse all new experiments (asymmetric) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch" --wdir` |
+| Analyse all new experiments (symmetric) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch" --wdir` |
+| Check everything first (no windows, writes nothing) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --check" --wdir` |
+| Analyse a folder that isn't listed in the config | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch E:/Data/MFAE/Aspiration" --wdir` |
+| Only experiments whose name contains a text | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4" --wdir` |
+| One experiment, by its folder (or `.czi` file) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --data-folder M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10" --wdir` |
+| Analyse with the kymograph tip tracker (this run only) | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch --redo --tip-tracking kymograph" --wdir` |
+
+**Redo:** see [Redoing an analysis](#5-redoing-an-analysis). **Pool:** see
+[Pooling experiments](#6-pooling-experiments-bulk-analysis).
+
+**Settings, new setups, help**
+
+| To | Run |
+|---|---|
+| Show every setting a run uses, and where it comes from | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4 --show-config" --wdir` |
+| New config for data recorded with other settings | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10" --wdir` |
+| See how a `.czi` file is organised (channels, frames) | `%runfile C:/GitHub/MFAE_Analysis/tools/czi_info.py --args "D:/MFAE/261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi" --wdir` |
+| List all options | `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--help" --wdir` |
+
+### 9.2 Command-line options
+
+| Option | What it does |
+|---|---|
+| `--batch [FOLDER ...]` | Analyse every experiment in the config's folders (or the folders given) |
+| `--check` | Validate config and images, then exit |
+| `--only TEXT` | With `--batch`: only experiments whose name contains TEXT |
+| `--redo` | With `--batch`: also analyse experiments that already have results |
+| `--fresh` | Ignore the saved trap setup and redo the setup windows |
+| `--traps N[,N...]` | Redo the pipette/threshold setup of only these traps, keep the rest |
+| `--thresholds` | Redo only the threshold windows (all saved traps, or `--traps`); boxes and entrances kept |
+| `--tip-tracking mask\|kymograph` | How the protrusion tip is found, for this run only (the log line `Protrusion tip: ...` shows which was used) |
+| `--data-folder PATH` | Use this image folder (or `.czi` file) instead of the one in the config |
+| `--experiment-id NAME` | Name of the results folder (default: the data folder's name) |
+| `--setup NAME` | With `--batch`: name of the setup results folder |
+| `--output-dir PATH` | Write results somewhere other than `Output/` |
+| `--show-config` | Print every setting the run would use, and which file set it |
+| `--init-config FILE` | Create a new config from a template in `config/pipeline/` (or `--from OTHER.yaml`) |
+| `--debug` | Show detailed log messages |
+
+### 9.3 Configs and settings
+
+Settings live in two kinds of file that **never share a setting**:
+
+| File | Contains | Who edits it |
+|---|---|---|
+| Your configs in `config/` (`config_asymmetric.yaml`, `config_symmetric.yaml`, and any made from the templates) | The user settings below | You |
+| `config/pipeline/defaults.yaml` | Pipeline settings: image processing, detection, fitting, figures. The same for everyone | Developers only |
+
+A user config holds these sections, and nothing else:
+
+| Section | Settings |
+|---|---|
+| Experiment type | `experiment_type: ep` (electroporation) or `asp` (aspiration only); must agree with the name (`asp` needs `0V`) |
+| Experiment | data folder(s), experiment name, microscope scale (`scale_factor`, µm per pixel), pressure, frame interval, max traps |
+| Analyses (True / False) | dye uptake, actin, rupture detection, length smoothing, outlier rejection, viscoelastic fitting, kymographs; plus the channel names |
+| Interactive setup | which frame is shown during setup, starting trap-box size |
+| Computer | number of CPU cores |
+
+Every one of these must be present. The pipeline refuses to start if a user config is missing a
+user setting or contains a pipeline setting (a typo also ends up here), or if
+`config/pipeline/defaults.yaml` contains a user setting.
+
+- **To see exactly what a run will use**, add `--show-config`. Every value that doesn't come from
+  `config/pipeline/defaults.yaml` is marked with where it came from.
+- **Every run saves its complete settings** to `Run_Info/effective_config.yaml`. That file is a
+  *full config* (it lists every setting and has no `experiment_type`), so you can rerun an old
+  analysis with exactly the same settings even after the defaults have changed. Old full-length
+  config files work the same way.
+
+**A new config, for data recorded with other settings** (another objective, pressure or channel
+order):
+
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--init-config config/my_setup.yaml --data-folder D:/MFAE/260128_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-1ms-frame10" --wdir
+```
+
+This copies `config/pipeline/template_tiff.yaml` (or `template_czi.yaml` when `--data-folder` is a
+`.czi` file) into `config/`, with the data folder filled in. The experiment name defaults to the
+folder's (or file's) name, and `experiment_type` is set from its voltage. To start from one of your
+own configs instead, add `--from config/<your config>.yaml`. Then open the file and check the
+values, in particular `scale_factor` and the channel settings. Because `--data-folder` overrides
+the config, one config can serve a whole series of experiments recorded with the same settings.
+
+### 9.4 .czi files
+
+The pipeline reads Zeiss `.czi` files directly (`config/config_symmetric.yaml`, or a config made
+from `template_czi.yaml`). The experiment name is the file name without `.czi`, so name the file by
+the [naming rule](#7-naming-experiments). A CZI config differs from a TIFF one in two places:
+
+```yaml
+paths:
+  image_format: czi          # tiff for a folder of exported .tif files
+  data_folder: 'D:\MFAE'    # the .czi file, or its folder
+
+dye_uptake_parameters:
+  membrane_channel_number: 2 # channel numbers as Fiji shows them (dye first)
+  dye_channel_number: 1
+actin_parameters:
+  channel_number: 2
+```
+
+Channels are chosen by number because the order in the CZI file (dye = 1, membrane = 2) is not the
+order of the exported TIFFs (`C1` = membrane). TIFF configs use name patterns instead; each
+format's settings are refused in the other, so a TIFF config can't be applied to a CZI by mistake.
+
+Frame numbers count from 1, as in Zen and Fiji, so `frame10` is the 10th frame. Frame times are
+read from the file when it stores them; otherwise `frame_interval` is used. `--check` shows which,
+the channel names, and the file's pixel size next to `scale_factor`. Only single-position,
+single-plane time-lapses are supported. To see how a CZI file is organised, use `tools/czi_info.py`
+(see [All commands](#91-all-commands)).
+
+### 9.5 How the masks and the length are measured
+
+All settings named here are in `config/pipeline/defaults.yaml` under `image_processing`, unless
+stated otherwise.
+
+#### How the masks are made
+
+The membrane channel is used only to build two masks per frame: the **protrusion** and the
+**cell body**. Because no intensity is measured from it, it is enhanced to make the cell outline
+clear and consistent from frame to frame:
+
+1. Each frame is replaced by the pixel-wise median of itself and its neighbours, so noise at the
+   threshold doesn't make the tip jitter or a faint protrusion flicker in and out
+   (`membrane_temporal_window`, 1 = off). The image is then smoothed (1 px across the channel;
+   along the channel by the per-trap faint-cell level).
+2. In every frame, the background level and its noise are measured from the background peak of
+   the histogram.
+3. Each pixel becomes "noise units above background", so one threshold means the same thing in
+   every frame, regardless of bleaching, exposure, or a very bright protrusion tip.
+4. A pixel must also be at least 30 % as bright (above background) as the brightest signal across
+   the channel in its column (`membrane_relative_level`, 0 = off). Around a bright cell the
+   out-of-focus halo is well above the noise but only 10–20 % of the cell's brightness, so without
+   this the masks are wider and blobbier than the cell. Only 2 px either side along the channel
+   count, so the dim shaft next to a bright spot in the protrusion is kept.
+5. After thresholding, background enclosed by the cell is filled in (membrane stains are brightest
+   at the rim, which would otherwise give ring-shaped masks), and small specks are removed.
+6. If the protrusion mask runs on to the edge of the box through faint signal ahead of the tip
+   (out-of-focus light or debris in the channel), it is cut where the signal along the channel
+   stays below 40 % of the protrusion's own level (`protrusion_leak_fraction`). Masks that end
+   inside the box are never cut.
+7. The body is the largest blob at the entrance (specks there are ignored). With a faint cell the
+   medium next to the trap, or a passing cell, can join the body in single frames; a body mask more
+   than 1.3× as large as the body in the frames around it keeps only the part within 3 px of that
+   body (`body_temporal_check`, `False` = off).
+
+**Dye and actin intensities are always measured on the raw pixels.** They only borrow the masks;
+this also holds when actin is imaged in the same channel as the membrane.
+
+The enhancement settings are `membrane_enhancement`, `membrane_denoise_sigma`,
+`membrane_denoise_sigma_along`, `membrane_temporal_window`, `membrane_snr_full_scale`,
+`membrane_fill_holes`, `membrane_max_hole_fraction` and `membrane_relative_level`. Set
+`membrane_enhancement: False` to return to the older CLAHE-based segmentation; thresholds picked in
+one mode are not comparable with the other.
+
+#### Where the tip is (protrusion length)
+
+There are two ways to find the tip, set by `tip_tracking` (or `--tip-tracking` for one run). In
+both, *when* a cell is there (entry, exit, a new cell arriving) is decided from the masks, and
+areas and shape come from the masks.
+
+**`mask` (default): from each frame's mask.** The tip is placed on the protrusion's centre-line
+profile, where the intensity drops to 25 % of the way from the channel background ahead of the tip
+to the protrusion just inside it (`tip_level_fraction`; lower follows dimmer tips). If the profile
+is still above that level 15 px beyond the mask edge (signal in the channel, not the tip), or the
+contrast is too low, the mask edge is used instead (`max_tip_refinement_px`).
+
+**`kymograph`: followed through time.** The membrane profile along the channel centre line is
+followed through time, as you would read the edge on the kymograph. In every frame each position
+gets a score for looking like the protrusion's outer edge (protrusion signal on the entrance side,
+nothing left on the channel side, judged in noise units so a faint far end counts and an internal
+step next to it does not), and the tip path through all frames is the one with the best total
+score, with a penalty for jumping between frames (`tip_jump_cost`). A wrong edge in single frames
+or short runs can't pull the path away; bright edges are followed however fast they move. Where a
+faint far end drops below the threshold the mask gets shorter, but the tracked length does not.
+Where the protrusion end is clearly above the mask threshold (at least 1.5×), the tip is placed
+where the centre-line profile drops to that threshold, so it sits on the mask edge. The tracker
+only moves the tip inside the analysed cell, tracked over that cell's frames alone. The trace CSV
+also has the mask-based length (`Protrusion_Length_mask_um`) for comparison.
+
+**Length spikes (faint cells).** With a faint cell the tip can jump for a frame or two onto faint
+signal ahead of it, or lose the faint far end of the protrusion. Each frame's length is compared
+with the median of the 7 frames around it; a frame that is at least 2 µm and 3 robust standard
+deviations away is replaced by that median. Runs of up to 3 frames count as spikes; anything that
+lasts longer (slip, a new cell, real growth) is kept, at its exact frame. This runs before entry
+and exit detection, so a spike can't end tracking. The trace CSV keeps the measured value
+(`Protrusion_Length_raw_um`) and marks the replaced frames (`Spike_Removed`). Settings, under
+`rupture_detection`: `spike_filter_window` (0 = off), `spike_filter_min_jump_um`,
+`spike_filter_n_mad`.
+
+**When a cell ends** (see [Several cells in one trap](#4-checking-the-results)): the settings are
+`rupture_detection.exit_at_roi_edge_frames` (tip at the box edge) and
+`rupture_detection.cell_change_drop_ratio` (length drop that means a new cell).
+
+#### Figures and movies
+
+- One PDF per trap in addition to the multipanel PDFs: `plotting_parameters.save_individual_trap_plots: True`;
+  panels per row: `plotting_parameters.multipanel_columns`.
+- Tracking movies: `workflow_settings.save_tracking_movies` (on by default), frame rate and size
+  `workflow_settings.tracking_movie_fps` and `tracking_movie_width_px`.
+
+---
+
+## 10. For developers
 
 ```bash
 pip install -r requirements-dev.txt
@@ -728,12 +745,13 @@ adds the same two commands, `mfae-experiment` and `mfae-bulk`, usable from any f
 | `mfae/batch.py` | `--batch`: find every experiment under a setup folder, setups first, then analyses |
 | `mfae/paths.py` | Project, `config/` and default `Output/` folders |
 | `mfae/config/schema.py` | Config validation (pydantic); every allowed setting is defined here |
-| `mfae/config/loader.py` | Combining `config/pipeline/defaults.yaml` with a user config |
+| `mfae/config/loader.py` | Combining `config/pipeline/defaults.yaml` with a user config (`USER_KEYS` lists the user settings) |
 | `mfae/config/naming.py` | The experiment-name rule (pulse settings, bulk condition groups) |
 | `mfae/files/readers.py` | Finding images (.tif / .czi), channel matching, timestamps |
 | `mfae/files/output_layout.py` | Folder layout and file names of the results (bulk readers use it too) |
 | `mfae/imaging/trap_rois.py` | Interactive rotation, ROI and trap selection, cropping |
 | `mfae/membrane/detection.py` | Masks, protrusion length, cells per trap, entry/exit and rupture detection, threshold windows |
+| `mfae/membrane/kymo_tip.py` | Tip tracking on the kymograph (`tip_tracking: kymograph`) |
 | `mfae/membrane/kymograph.py`, `tracking_movie.py` | Membrane kymographs and per-trap tracking movies |
 | `mfae/quantification/dye_uptake.py`, `actin.py` | Dye and actin channels, measured in the membrane masks |
 | `mfae/mechanics/models.py`, `fitting.py` | Channel geometry and flow, viscoelastic models, fitting |
@@ -743,9 +761,11 @@ adds the same two commands, `mfae-experiment` and `mfae-bulk`, usable from any f
 
 Import modules by their package path (`from mfae.membrane import detection`); the scripts and
 tests put the project folder on the path. To change where results are written, edit
-`mfae/files/output_layout.py` only; the pipeline and the bulk analysis both read it.
+`mfae/files/output_layout.py` only; the pipeline and the bulk analysis both read it. The bulk
+result layout is defined in `mfae/bulk/layout.py`.
 
-When you add a config setting, define it in `mfae/config/schema.py` (unknown keys are rejected, so typos
-can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value and an
-explanation, in `config/pipeline/defaults.yaml`; a user setting goes in `USER_KEYS` in `mfae/config/loader.py`
-and in every user config: the two templates in `config/pipeline/` and `config/config_asymmetric.yaml`, `config/config_symmetric.yaml`.
+When you add a config setting, define it in `mfae/config/schema.py` (unknown keys are rejected, so
+typos can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value
+and an explanation, in `config/pipeline/defaults.yaml`; a user setting goes in `USER_KEYS` in
+`mfae/config/loader.py` and in every user config: the two templates in `config/pipeline/` and
+`config/config_asymmetric.yaml`, `config/config_symmetric.yaml`.
