@@ -57,7 +57,7 @@ from mfae.membrane.kymograph import create_kymograph_for_trap
 from mfae.quantification.dye_uptake import DyeUptakeAnalyzer
 from mfae.quantification.actin import ActinAnalyzer
 from mfae.membrane.tracking_movie import save_tracking_movie
-from mfae.files import output_layout, trap_export
+from mfae.files import annotations, output_layout, trap_export
 from mfae.config.schema import MFAConfig
 from mfae.config import loader as config_loader
 from mfae.plotting import figures
@@ -133,6 +133,9 @@ def trap_summary_row(trap_index: int, det_res: Optional[Dict[str, Any]], time_da
         'Protrusion_at_pulse_um': round(at_pulse, 3) if at_pulse is not None else None,
         'Max_protrusion_um':    round(float(finite.max()), 3) if finite.size else None,
         'Rupture_detected':     bool(det_res.get('rupture_detected')),
+        'Rupture_frame':        (frame(det_res.get('rupture_frame_index'))
+                                 if det_res.get('rupture_detected') else None),
+        'Rupture_reason':       det_res.get('rupture_reason') if det_res.get('rupture_detected') else None,
         'Dye_analysed':         bool(dye_done),
         'Actin_analysed':       bool(actin_done),
     })
@@ -1317,6 +1320,12 @@ class MFAAnalysis:
             path.parent.mkdir(parents=True, exist_ok=True)
             pd.DataFrame(rows).to_csv(path, index=False)
             logger.info(f"Trap summary saved: {path.relative_to(self.results_dir)}")
+            # Run_Info/cell_annotations.csv: your tags, kept; analysed cell and hints updated
+            ann = annotations.update_from_summary(self.results_dir, rows)
+            if ann is not None:
+                n_tags = sum(1 for r in annotations.read(self.results_dir) if r.get('Tag'))
+                logger.info(f"Cell tags: {ann.relative_to(self.results_dir)} ({n_tags} tagged; "
+                            "tag while reviewing the movies with --review)")
 
         # All traps' per-trap plots, one multipanel PDF per plot type.
         multipanel.plot_trap_multipanels(

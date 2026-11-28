@@ -92,6 +92,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "image_processing.tip_tracking in config/pipeline/defaults.yaml). "
                              "mask = each frame's own mask; kymograph = followed through time "
                              "on the centre-line profile.")
+    parser.add_argument("--review", action="store_true",
+                        help="Review the tracking movies of analysed experiments and tag each trap's cell "
+                             "(R, DOA, MASK, ...); tags go to Run_Info/cell_annotations.csv. Needs no config "
+                             "or raw data: use --only TEXT to pick experiments, --traps to pick traps.")
     parser.add_argument("--export-traps", type=_export_traps, default=None, metavar="N[,N...]|all",
                         help="Developer export, for this run only: write these traps' frames (rotated, "
                              "cropped, lossless) and setup to Run_Info/Trap_images/Trap_XX_images.npz, "
@@ -388,6 +392,24 @@ def check_setup(config: MFAConfig, output_root: Optional[Path] = None) -> bool:
     return True
 
 
+def run_review(args) -> int:
+    """--review: tag the cells of analysed experiments while watching their tracking movies."""
+    from mfae import review
+    root = Path(args.output_dir or default_output_root())
+    only = args.only or (default_experiment_id(Path(args.data_folder)) if args.data_folder else None)
+    experiments = review.find_experiments(root, only)
+    if not experiments:
+        logger.error(f"No analysed experiment{' matching ' + repr(only) if only else ''} with tracking "
+                     f"movies in {root}. Analyse it first, or give --output-dir / --only.")
+        return 1
+    if args.config_path is not None:
+        logger.info("--review reads only the results; the config is not used.")
+    if not only and len(experiments) > 1:
+        logger.info(f"Reviewing all {len(experiments)} analysed experiments in {root} "
+                    "(use --only TEXT to pick some).")
+    return review.run(experiments, traps=args.traps)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Command-line entry point. Returns a process exit code (0 = success)."""
     parser = build_arg_parser()
@@ -397,6 +419,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.init_config is not None:
         return 0 if init_config(args.init_config, args.copy_from,
                                 args.data_folder, args.experiment_id) else 1
+
+    if args.review:
+        return run_review(args)
 
     if args.config_path is None:
         parser.print_help()

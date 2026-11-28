@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Tuple
 # The folder naming rule and the results layout are shared with the
 # per-experiment analysis, so the two can never disagree.
 from mfae.config.naming import FOLDER_PATTERN
-from mfae.files import output_layout
+from mfae.files import annotations, output_layout
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def _compute_reff(width_um: float, height_um: float) -> float:
 # "_POST").
 ANALYSIS_TAG_MAP: Dict[str, str] = {
     ''       : 'intact',
+    '_OK'    : 'intact',          # reviewed, nothing wrong (cell_annotations.csv)
     '_R'     : 'ruptured_post',
 }
 
@@ -390,6 +391,9 @@ class BulkDataLoader:
              for f in dir_full.glob(pat)}
         ) if dir_full.exists() else []
 
+        # Tags: Run_Info/cell_annotations.csv first (set with --review or in a
+        # spreadsheet); the older tag in the file name only when the table has none.
+        table = annotations.tags(meta.full_path)
         for f_file in all_full_candidates:
             stem = f_file.stem
             # Strip the fixed prefix so _parse_fate_tag only sees the trailing
@@ -404,6 +408,19 @@ class BulkDataLoader:
                 continue
 
             trailing = stem[prefix_match.end():]  # '' or '_TAG'
+            id_early = re.search(r"trap_(\d+)_", f_file.name, re.IGNORECASE)
+            row = table.get(int(id_early.group(1))) if id_early else None
+            if row is not None and row.get('Tag'):
+                tag = annotations.normalise_tag(row['Tag'])
+                if tag is None:
+                    logger.warning(f"  {meta.full_path.name} trap {row.get('Trap')}: unknown tag "
+                                   f"'{row['Tag']}' in {annotations.FILE_NAME}; counted as detection failure")
+                    bucket_counts['detection_failure'] += 1
+                    continue
+                trailing = '_' + tag
+            if row is not None and row.get('Check'):
+                logger.warning(f"  {meta.full_path.name} trap {row.get('Trap')}: {row['Check']} "
+                               f"(in {annotations.FILE_NAME}); the tag is used as it is")
             kind, key = _parse_fate_tag(trailing)
 
             if kind == 'exclusion':

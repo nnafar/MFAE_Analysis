@@ -357,7 +357,8 @@ Output/<setup>/<experiment>/
 │   └── Movies/                        Trap_XX_actin_zones.avi, Trap_XX_actin_cortex.avi
 ├── 4_Mechanics/                       Flow_conditions.csv/.pdf (wall shear stress, flow rate),
 │                                      Viscoelastic_fits.csv             (if fitting is on)
-└── Run_Info/                          effective_config.yaml, session_cache.json, analysis.log
+└── Run_Info/                          effective_config.yaml, session_cache.json, analysis.log,
+                                       cell_annotations.csv (your tags, see below)
 ```
 
 **Start with the figures and the tracking movies.** Each plot type is one multipanel PDF with every
@@ -397,6 +398,70 @@ the other cells as "not analysed". If many cells leave through the left edge, dr
 
 **Rupture markers** on the plots come from the automatic rupture detection, which is not reliable
 enough to cut data on. All CSVs therefore contain every frame; treat the markers as hints.
+
+### Tagging the cells (review)
+
+The pipeline can't reliably tell a ruptured, dead or badly segmented cell from a good one, so you
+decide, while watching the tracking movies. Your tags go into `Run_Info/cell_annotations.csv` of
+the experiment, one row per trap. The bulk analysis reads them from there, and **a re-analysis
+keeps them**.
+
+**Review the movies and tag with one key per trap.** No config and no raw data are needed, only the
+results:
+
+Terminal (Windows, macOS, Linux; built-in terminal of VS Code, PyCharm, ...):
+
+```bash
+python run_experiment.py --review --only LifeAct_Chip1_Experiment5
+```
+
+Spyder (IPython console):
+
+```
+%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--review --only LifeAct_Chip1_Experiment5" --wdir
+```
+
+A window plays each trap's tracking movie (from just before the analysed cell arrives, on a loop), starting at the first trap without a tag. Above the movie
+it shows the trap, the analysed cell and its frames, the current tag and the pipeline's hint. Each
+key press is saved immediately, so you can stop at any time and continue later.
+
+| Key | Tag | Meaning | In the bulk analysis |
+|---|---|---|---|
+| `O` | OK | Reviewed, nothing wrong | Analysed |
+| `R` | R | Ruptured after the pulse | Analysed (as ruptured) |
+| `0` | R0 | Ruptured before the pulse | Excluded |
+| `D` | DOA | Not viable (dead on arrival) | Excluded |
+| `P` | PI | Not viable (PI positive) | Excluded |
+| `A` | after | Arrived after the pulse | Excluded |
+| `M` / `S` / `I` | MASK / SHAPE / IRREGULAR | Detection failed | Excluded |
+| `C` | (clear) | Remove the tag | Analysed (untagged) |
+
+A tag key saves and moves on to the next trap. Other keys: `Enter`/`N` next trap (tag unchanged),
+`B` previous trap, `Space` pause, `,` `.` one frame back/forward, `[` `]` slower/faster, `Q` or
+`Esc` quit. Add `--traps 3,6` to review only some traps. Without `--only`, every analysed
+experiment in `Output/` is reviewed.
+
+**Or edit the table in a spreadsheet.** `cell_annotations.csv` opens in Excel:
+
+| Trap | Analysed_cell | First_frame | Last_frame | Tag | Note | Pipeline_hint | Check |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | 67 | 600 | OK | | | |
+| 3 | 2 | 265 | 314 | R | PI after pulse | rupture? frame 302 (Intensity Step); 3 cells in trap | |
+| 6 | 2 | 53 | 600 | MASK | wall lines | | |
+
+- **You fill in** `Tag` (the tags above, also `R_DOA` and `R0_DOA`; case doesn't matter) and
+  `Note`. An empty `Tag` means not reviewed, and counts as intact. You can add columns of your own;
+  they are kept.
+- **The pipeline fills in** which cell was analysed, so you know which cell you are judging (the
+  same numbers as in the movie), plus `Pipeline_hint`: what it suspects (automatic rupture, entry
+  not confirmed, no cell at the pulse, several cells in the trap). The hint is never used as a tag.
+- **When the experiment is analysed again**, your tags and notes are kept, and the cell and hint
+  columns are updated. If a different cell is analysed in a trap than the one you tagged,
+  `Check` says `CHECK: analysed cell changed (tag was set for frames ...)` and the log warns. Look at
+  the trap again (`--review --traps N`), which clears the message, or delete the text yourself.
+- **Close the file in Excel** before analysing or reviewing: Windows locks open files. If it is
+  open, the log says so and your tags stay as they were.
+
 
 ---
 
@@ -527,23 +592,18 @@ The treatment and pulse folders are made for the conditions in your data; folder
 nothing to are removed. Figures can be redrawn from `0_Tables/Figure_Data/` without rerunning
 (`mfae.bulk.figure_data.load_all(...)`).
 
-### Marking cells by hand
+### Cell tags
 
-Add a tag to a trap's `Data/Traces/Trap_XX_protrusion_trace.csv` file name (e.g.
-`Trap_03_protrusion_trace_R.csv`) to tell the bulk analysis what happened to that cell:
+The bulk analysis takes what happened to each cell (ruptured, not viable, detection failed, ...)
+from your tags in each experiment's `Run_Info/cell_annotations.csv`; see
+[Tagging the cells](#tagging-the-cells-review). Excluded cells are only counted in the attrition
+table (`0_Tables/attrition_per_experiment.csv`). An unknown tag is reported and counted as a
+detection failure; a row marked `CHECK: analysed cell changed` is reported and its tag used as it is.
 
-| Tag | Meaning | Analysed? |
-|---|---|---|
-| `_R` | Ruptured after the pulse | Yes |
-| `_R0` | Ruptured before the pulse | No |
-| `_DOA`, `_PI` | Not viable | No |
-| `_after`, `_POST` | Arrived after the pulse | No |
-| `_MASK`, `_SHAPE`, `_IRREGULAR` | Detection failed | No |
-
-Excluded cells are only counted in the attrition table. A re-analysis keeps the tag (it writes
-into the tagged file). Older names (`Trap_XX_protrusion_and_shape_<TAG>.csv`,
-`trap_XX_detection_full_<TAG>.csv`) work the same way; a re-analysis moves them into `Data/Traces/`
-with the new name and the tag kept.
+Tags written into file names the earlier way (`Trap_03_protrusion_trace_R.csv`, and older
+`Trap_XX_protrusion_and_shape_<TAG>.csv`, `trap_XX_detection_full_<TAG>.csv`) still work: they
+are copied into the table at the next analysis or review, and used when the table has no tag for
+that trap.
 
 The bulk analysis also reads older result layouts (`Protrusion Length Detection/...`,
 `Dye Uptake/Uptake traces/`, ..., and the flat one) with their old file names
@@ -615,6 +675,7 @@ symmetric microscope.
 | Only experiments whose name contains a text | Terminal: `python run_experiment.py config/config_asymmetric.yaml --batch --only Experiment4`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --batch --only Experiment4" --wdir` |
 | One experiment, by its folder (or `.czi` file) | Terminal: `python run_experiment.py config/config_asymmetric.yaml --data-folder M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_asymmetric.yaml --data-folder M:/tnw/bn/gk/NN/2_Data-Analysis/MFAE/Asymmetric_Efield/5ms_100V/260114_MDAMB231_WT_Chip1_Experiment4-1100Pa-100V-5ms-frame10" --wdir` |
 | Analyse with the kymograph tip tracker (this run only) | Terminal: `python run_experiment.py config/config_symmetric.yaml --batch --redo --tip-tracking kymograph`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "config/config_symmetric.yaml --batch --redo --tip-tracking kymograph" --wdir` |
+| Review the movies and tag the cells (no config or raw data needed) | Terminal: `python run_experiment.py --review --only Experiment4`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/run_experiment.py --args "--review --only Experiment4" --wdir` |
 
 **Redo:** see [Redoing an analysis](#5-redoing-an-analysis). **Pool:** see
 [Pooling experiments](#6-pooling-experiments-bulk-analysis).
@@ -646,6 +707,7 @@ symmetric microscope.
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
 | `--show-config` | Print every setting the run would use, and which file set it |
 | `--init-config FILE` | Create a new config from a template in `config/pipeline/` (or `--from OTHER.yaml`) |
+| `--review` | Watch the tracking movies and tag each trap's cell; with `--only TEXT`, `--traps N[,N...]` (see [Tagging the cells](#tagging-the-cells-review)) |
 | `--export-traps N[,N...]\|all` | Developer export for this run: these traps' images to `Run_Info/Trap_images/` (see [For developers](#10-for-developers)) |
 | `--debug` | Show detailed log messages |
 
@@ -850,6 +912,7 @@ adds the same two commands, `mfae-experiment` and `mfae-bulk`, usable from any f
 | `mfae/files/readers.py` | Finding images (.tif / .czi), channel matching, timestamps |
 | `mfae/files/output_layout.py` | Folder layout and file names of the results (bulk readers use it too) |
 | `mfae/files/trap_export.py` | Developer export of trap images (`--export-traps`) |
+| `mfae/files/annotations.py`, `mfae/review.py` | Cell tags (`Run_Info/cell_annotations.csv`) and the `--review` window |
 | `mfae/imaging/trap_rois.py` | Interactive rotation, ROI and trap selection, cropping |
 | `mfae/membrane/detection.py` | Masks, protrusion length, cells per trap, entry/exit and rupture detection, threshold windows |
 | `mfae/membrane/kymo_tip.py` | Tip tracking on the kymograph (`tip_tracking: kymograph`) |

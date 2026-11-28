@@ -157,6 +157,9 @@ EXPERIMENT_FILES = {
     'session_cache':       ('run_info', "session_cache.json",
                             "trap boxes, entrances and thresholds from the interactive setup"),
     'log':                 ('run_info', "analysis.log", "full log of the run"),
+    'annotations':         ('run_info', "cell_annotations.csv",
+                            "your tags per trap (R, DOA, MASK, ...); kept when re-analysed; set them "
+                            "with --review or in a spreadsheet"),
 }
 
 FOLDER_DESCRIPTIONS = {
