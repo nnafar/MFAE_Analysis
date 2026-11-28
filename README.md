@@ -145,20 +145,61 @@ The examples below use the asymmetric config; swap the name for symmetric data. 
 config for data recorded with different settings (another objective, pressure or channel order),
 see [Configs and settings](#93-configs-and-settings).
 
-### Step 2: tell it where your data is
+### Step 2: organise your data folders and list them
 
-The folders to analyse are listed under `data_folder` in the config. To add one, add a line:
+**Put each setup in its own folder.** A *setup* is one kind of experiment whose results are
+compared with each other: one microscope and field geometry. Each setup folder gets its own
+results folder and its own bulk analysis, and setups are never pooled. The lab's layout:
+
+```
+MFAE/
+├── Asymmetric_Efield/          one setup (asymmetric microscope)
+│   ├── 5ms_100V/               condition folders: optional, any number
+│   │   ├── 260114_MDAMB231_WT_Chip1_Experiment3-1100Pa-100V-5ms-frame10/
+│   │   └── ...
+│   └── 100us_100V/
+├── Symmetric_Efield/           another setup (symmetric microscope, .czi files)
+│   └── 261119_MDAMB231_LifeAct_Chip1_Experiment2-1100Pa-100V-1ms-frame304.czi
+└── Aspiration/                 aspiration-only (0 V) controls, shared by every setup (optional)
+    └── 260326_MDAMB231_WT_Chip2_Experiment283-1100Pa-0V-0ms-frame0/
+```
+
+The rules:
+
+- **The setup folder's name is only a label**: it becomes the results folder
+  (`Output/Asymmetric_Efield/`). Call it what you like. The pipeline doesn't read "symmetric" or
+  "asymmetric" from it, and nothing in the analysis depends on it.
+- **`Aspiration` is the one name with a meaning.** The bulk analysis adds the 0 V experiments in
+  `Output/Aspiration/` as controls to every setup. If your controls are in a folder with another
+  name, tell the bulk analysis with `--controls <name>` (see
+  [Pooling experiments](#6-pooling-experiments-bulk-analysis)).
+- **What is pulsed and what is a control comes from each experiment's name** (`0V` = aspiration
+  only), not from the folder (see [Naming experiments](#7-naming-experiments)).
+  Aspiration-only experiments can also sit inside a setup folder; they are that setup's controls.
+- **Condition folders** inside a setup folder are optional and can have any name, as long as you
+  list the **setup** folder. If you list a condition folder on its own instead, name it by its
+  pulse (`5ms_100V`, or `100V_5ms`, `5 ms 100 V`) so its results still go to its setup. A folder
+  that mentions a pulse but has other text too (e.g. `5ms_100V_new`) becomes a setup of its own;
+  the run warns about that.
+
+**Only one setup?** That works the same. Put your experiments in one folder (with or without
+condition folders), list it, and the bulk analysis analyses that one setup. Without an
+`Aspiration` folder, it says so in the log and uses the 0 V experiments inside the setup as
+controls, if there are any.
+
+**List the folders** under `data_folder` in the config, one line each:
 
 ```yaml
   data_folder:
     - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Asymmetric_Efield'
     - 'M:\tnw\bn\gk\NN\2_Data-Analysis\MFAE\Aspiration'
-    - 'E:\Data\MFAE\Aspiration'
 ```
 
 Every experiment in those folders is found, at any depth: each `.czi` file for a CZI config, each
 folder of `.tif` images for a TIFF config. You can also give folders on the command line instead,
-after `--batch`: `--batch "E:/Data/MFAE/Aspiration"`.
+after `--batch`: `--batch "E:/Data/MFAE/Aspiration"`. A symmetric `.czi` file placed in an
+asymmetric setup folder would be pooled with the asymmetric data. Nothing checks this, so keep each
+setup's data in its own folder.
 
 ### Step 3: check everything first
 
@@ -459,7 +500,8 @@ what it shows.
   `Output/Aspiration/` are added as the control group to every setup's analysis, so each setup's
   pulse-vs-aspiration figures use them. `Aspiration/` also gets its own bulk analysis
   (aspiration-only mechanics). Use `--controls FOLDER` for a different control folder, or
-  `--controls none` for no shared controls.
+  `--controls none` for no shared controls. Without such a folder (e.g. you only run one setup),
+  the log says so and each setup uses only its own 0 V experiments as controls.
 
 ```
 Output/<setup>/Bulk_Analysis_results/<YYMMDD_HHMM>/

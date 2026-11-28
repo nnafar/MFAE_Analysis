@@ -13,8 +13,8 @@ Batch runs: analyse every experiment in the folders you choose, with one config.
   names that follow the experiment-naming rule are taken; the pulse and
   ep / asp (0 V = aspiration only) come from each name.
 * Results go to Output/<setup>/<experiment>/. <setup> is the folder's name
-  (Symmetric_Efield, Aspiration) or, for a condition folder such as 5ms_100V,
-  the setup folder holding it (Asymmetric_Efield); --setup NAME sets it. So
+  (Symmetric_Efield, Aspiration) or, for a condition folder such as 5ms_100V
+  (or 100V_5ms), the setup folder holding it (Asymmetric_Efield); --setup NAME sets it. So
   different setups are never mixed, and configs for parts of one setup
   still fill the same setup folder.
 * Pass 1 does the interactive setup of every experiment, one after another
@@ -89,18 +89,34 @@ def is_analysed(results_dir: Path) -> bool:
     return output_layout.experiment_file(output_layout.build(results_dir), 'trap_summary').exists()
 
 
-CONDITION_FOLDER = re.compile(r"^\d+(?:\.\d+)?(?:us|ms|s)_\d+V$", re.IGNORECASE)
+_DUR = r"\d+(?:\.\d+)?\s*(?:us|µs|ms|s)"
+_VOLT = r"\d+(?:\.\d+)?\s*V"
+# A pulse-condition folder inside a setup folder: duration and voltage in
+# either order, joined by _, - or a space (5ms_100V, 100V_5ms, 100us-100V, 5 ms 100 V).
+CONDITION_FOLDER = re.compile(rf"^(?:{_DUR}[_\- ]*{_VOLT}|{_VOLT}[_\- ]*{_DUR})$", re.IGNORECASE)
+# Looks like it names a pulse (a voltage or a duration), whatever the rest says.
+_PULSE_LIKE = re.compile(rf"(?:^|[^A-Za-z0-9]){_DUR}(?:$|[^A-Za-z0-9])|(?:^|[^A-Za-z0-9]){_VOLT}(?:$|[^A-Za-z0-9])",
+                         re.IGNORECASE)
 
 
 def setup_name(folder: Path) -> str:
     """
     Results sub-folder (setup) of a batch folder: the folder's own name
     (Symmetric_Efield, Aspiration), or, for a condition folder such as
-    5ms_100V or 100us_100V, the name of the setup folder that holds it.
+    5ms_100V, 100V_5ms or 100us_100V, the name of the setup folder that holds it.
+    A folder whose name mentions a pulse but is not a plain condition name
+    (e.g. 5ms_100V_new) is used as its own setup, with a warning: its
+    experiments would not be compared with the rest of the setup.
     """
     folder = Path(folder)
     if CONDITION_FOLDER.match(folder.name) and folder.parent.name:
         return folder.parent.name
+    if _PULSE_LIKE.search(folder.name) and not experiment_naming.parse_experiment_name(folder.name):
+        logger.warning(
+            f"Folder '{folder.name}' looks like a pulse-condition folder but is not named like one "
+            f"(e.g. 5ms_100V), so it becomes its own setup, Output/{folder.name}/, and is analysed "
+            f"apart from the rest of '{folder.parent.name}'. List the setup folder "
+            f"('{folder.parent}') instead, rename the folder, or give --setup NAME.")
     return folder.name
 
 

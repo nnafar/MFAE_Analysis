@@ -36,6 +36,8 @@ from mfae.bulk import layout as bl
 
 from mfae.paths import DEFAULT_OUTPUT_ROOT
 
+DEFAULT_CONTROLS = "Aspiration"   # shared aspiration-only control folder, used when it exists
+
 logger = logging.getLogger(__name__)
 
 
@@ -99,9 +101,10 @@ def _parse_args(argv=None):
              "experiments directly in it go to <output-root>/Bulk_Analysis_results/.",
     )
     parser.add_argument(
-        "--controls", default="Aspiration", metavar="FOLDER",
+        "--controls", default=None, metavar="FOLDER",
         help="Folder in the output root with the aspiration-only experiments that serve as the "
-             "no-pulse controls of every setup (default: %(default)s). 'none' = no shared controls.",
+             f"no-pulse controls of every setup (default: {DEFAULT_CONTROLS}, if it exists). "
+             "'none' = no shared controls.",
     )
     return parser.parse_args(argv)
 
@@ -140,8 +143,9 @@ def main(argv=None) -> int:
         return 1
     setups = find_setups(output_root_dir)
     controls = None
-    if str(args.controls).lower() != "none":
-        controls = next((d for d in setups if d.name == args.controls), None)
+    wanted = args.controls if args.controls is not None else DEFAULT_CONTROLS
+    if str(wanted).lower() != "none":
+        controls = next((d for d in setups if d.name == wanted), None)
     if not setups:
         logger.error(f"No experiment results found in {output_root_dir} or its sub-folders. "
                      "Run run_experiment.py on your experiments first, or pass --output-root.")
@@ -151,6 +155,15 @@ def main(argv=None) -> int:
                     + ", ".join(d.name for d in setups))
     if controls is not None:
         logger.info(f"Aspiration-only controls for every setup: {controls}")
+    elif str(wanted).lower() != "none":
+        others = ", ".join(d.name for d in setups) or "-"
+        msg = (f"No shared control folder '{wanted}' in {output_root_dir} (setups found: {others}). "
+               "Each setup uses only its own aspiration-only (0 V) experiments as controls. "
+               "If your controls are in a folder with another name, pass --controls <name>.")
+        if args.controls is not None:
+            logger.warning(msg)            # a folder was named explicitly but is not there
+        else:
+            logger.info(msg)
     for setup_dir in setups:
         extra = [controls] if controls is not None and setup_dir != controls else []
         logger.info(f"\n{'#' * 60}\nSETUP: {setup_dir.name}  ({setup_dir})"

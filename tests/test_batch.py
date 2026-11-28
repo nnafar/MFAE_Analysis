@@ -321,3 +321,39 @@ def test_tip_tracking_option_reaches_the_analysis(tmp_path, monkeypatch):
     assert batch.run_batch(args) == 0
     assert seen and set(seen) == {"kymograph"}
     assert cli.build_arg_parser().parse_args(["x.yaml", "--tip-tracking", "mask"]).tip_tracking == "mask"
+
+
+def test_condition_folders_in_either_order_and_a_warning_for_odd_names(caplog):
+    for name in ("100V_5ms", "5 ms 100 V", "100us-100V", "1.5ms_50V"):
+        assert batch.setup_name(Path("MFAE/Asymmetric_Efield") / name) == "Asymmetric_Efield", name
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        assert batch.setup_name(Path("MFAE/Asymmetric_Efield/5ms_100V_new")) == "5ms_100V_new"
+    assert "looks like a pulse-condition folder" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        batch.setup_name(Path("MFAE/Symmetric_Efield"))
+        batch.setup_name(Path("MFAE") / PULSED)            # an experiment folder listed on its own
+    assert caplog.text == ""
+
+
+def test_bulk_says_when_there_are_no_shared_controls(tmp_path, monkeypatch, caplog):
+    from mfae.bulk import run as bulk_run
+    out = tmp_path / "Output"
+    (out / "Symmetric_Efield" / CZI).mkdir(parents=True)
+    seen = []
+    monkeypatch.setattr(bulk_run, "run_setup", lambda d, extra: seen.append((d.name, [e.name for e in extra])))
+    monkeypatch.setattr(bulk_run, "_configure_logging", lambda: None)
+    with caplog.at_level("INFO"):
+        assert bulk_run.main(["--output-root", str(out)]) == 0
+    assert seen == [("Symmetric_Efield", [])]
+    assert "No shared control folder 'Aspiration'" in caplog.text
+    caplog.clear()
+    (out / "Controls" / ASP).mkdir(parents=True)
+    seen.clear()
+    with caplog.at_level("WARNING"):
+        assert bulk_run.main(["--output-root", str(out), "--controls", "Ctrl"]) == 0
+    assert "No shared control folder 'Ctrl'" in caplog.text
+    seen.clear()
+    assert bulk_run.main(["--output-root", str(out), "--controls", "Controls"]) == 0
+    assert ("Symmetric_Efield", ["Controls"]) in seen
