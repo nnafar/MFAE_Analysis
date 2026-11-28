@@ -14,11 +14,14 @@ trap's membrane channel is about 4 MB.
 
 Usage (on the computer with the data, after the experiment has been analysed):
 
-    python tools/export_trap_stacks.py "Output/<setup>/<experiment>" --traps 1,5,6
+    python tools/export_trap_stacks.py Experiment5 --traps 1,5,6
 
 Spyder:
 
-    %runfile C:/GitHub/MFAE_Analysis/tools/export_trap_stacks.py --args "Output/<setup>/<experiment> --traps 1,5,6" --wdir
+    %runfile C:/GitHub/MFAE_Analysis/tools/export_trap_stacks.py --args "Experiment5 --traps 1,5,6" --wdir
+
+The first argument is the experiment's name, or a unique part of it (found in
+Output/), or the path of its results folder.
 
 Options: --channels membrane dye (default: membrane only), --data-folder PATH
 if the raw data has moved since the analysis, --out FILE (default:
@@ -36,9 +39,36 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+def _find_results(arg: str):
+    """The results folder from a path (relative to here or to the project) or a name to search for."""
+    from mfae.paths import DEFAULT_OUTPUT_ROOT
+    if "<" in arg or ">" in arg:
+        print(f"'{arg}' still contains a placeholder: replace <...> with your experiment's name, "
+              "e.g. --args \"Experiment5 --traps 1,5,6\".")
+        return None
+    for cand in (Path(arg), ROOT / arg, DEFAULT_OUTPUT_ROOT / arg):
+        if (cand / "Run_Info").is_dir() or (cand / "session_cache.json").exists():
+            return cand.resolve()
+    # a name: search Output/ for analysed experiments whose folder name contains it
+    hits = sorted({p.parent.parent for p in DEFAULT_OUTPUT_ROOT.glob("**/Run_Info/session_cache.json")
+                   if Path(arg).name.lower() in p.parent.parent.name.lower()})
+    if len(hits) == 1:
+        print(f"Using {hits[0]}")
+        return hits[0]
+    if not hits:
+        print(f"No analysed experiment matching '{arg}' in {DEFAULT_OUTPUT_ROOT} (looked for a folder "
+              "with Run_Info/session_cache.json). Give the results folder or the experiment name.")
+    else:
+        print(f"'{arg}' matches {len(hits)} experiments; give more of the name:\n  "
+              + "\n  ".join(str(h) for h in hits))
+    return None
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Export trap images (lossless) of an analysed experiment.")
-    parser.add_argument("results", type=Path, help="The experiment's results folder (Output/<setup>/<experiment>).")
+    parser.add_argument("results", type=str,
+                        help="The experiment's results folder (Output/<setup>/<experiment>), or just the "
+                             "experiment name (or a unique part of it, e.g. Experiment5) to find it in Output/.")
     parser.add_argument("--traps", required=True,
                         help="Trap numbers as in the movies and plots, e.g. 1,5,6.")
     parser.add_argument("--channels", nargs="+", default=["membrane"], choices=["membrane", "dye"])
@@ -52,7 +82,9 @@ def main(argv=None) -> int:
     from mfae.files import output_layout
     from mfae.files.readers import make_file_reader
 
-    results = args.results.resolve()
+    results = _find_results(args.results)
+    if results is None:
+        return 1
     layout = output_layout.build(results)
     cfg_path = output_layout.experiment_file(layout, 'effective_config')
     cache_path = cfg_path.parent / "session_cache.json"
