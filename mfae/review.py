@@ -11,6 +11,7 @@ Keys (shown in the window):
     R  ruptured after the pulse      0  ruptured before the pulse (R0)
     D  not viable (DOA)              P  not viable (PI)
     X  ruptured after the pulse and not viable (R_DOA)
+    Z  ruptured before the pulse and not viable (R0_DOA)
     A  arrived after the pulse       M / S / I  detection failed (MASK / SHAPE / IRREGULAR)
     O  reviewed, nothing wrong (OK)  C  clear the tag
     A tag key saves and goes to the next trap.
@@ -33,9 +34,9 @@ from mfae.files import annotations, output_layout
 
 logger = logging.getLogger(__name__)
 
-KEY_TAGS = {'r': 'R', '0': 'R0', 'd': 'DOA', 'x': 'R_DOA', 'p': 'PI', 'a': 'after', 'm': 'MASK',
+KEY_TAGS = {'r': 'R', '0': 'R0', 'd': 'DOA', 'x': 'R_DOA', 'z': 'R0_DOA', 'p': 'PI', 'a': 'after', 'm': 'MASK',
             's': 'SHAPE', 'i': 'IRREGULAR', 'o': 'OK'}
-HELP = ("R rupt  0 R0  D DOA  X R+DOA  P PI  A after  M mask  S shape  I irregular  O ok  C clear | "
+HELP = ("R rupt  0 R0  D DOA  X R+DOA  Z R0+DOA  P PI  A after  M mask  S shape  I irregular  O ok  C clear | "
         "Enter next  B back  Space pause  ,/. step  [/] speed  Q quit")
 WINDOW = "MFAE review"
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
