@@ -283,8 +283,10 @@ its own key hints.
 6. **Per trap:** confirm the pipette line, then pick two thresholds: one for the **protrusion**
    (inside the channel, between the two guide lines) and one for the **cell body** (right of the
    pipette line). Drag the line in the histogram or use `W`/`S` ±10, `A`/`D` ±1 until the red mask
-   follows the cell. The preview shows the mask the analysis will use (the analysis additionally
-   takes the median over neighbouring frames, so its masks are a little steadier).
+   follows the cell. The preview shows the mask the analysis will use: the median of the same 5 frames
+   (`membrane_temporal_window`). In a pulsed experiment the windows show the frames just before the
+   pulse, i.e. the cell that is analysed (an earlier, brighter cell would otherwise set the scale);
+   in an aspiration-only experiment, the frame at `selection_frame_fraction` of the recording.
 
 **Keys:**
 

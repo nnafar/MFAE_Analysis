@@ -1183,6 +1183,22 @@ class MFAAnalysis:
         self._save_session_cache(trap_configs)
         return True
 
+    def _threshold_frame_index(self, num_frames: int) -> int:
+        """
+        Frame the threshold windows show. Pulsed runs: just before the pulse,
+        the cell that is analysed (the one in the trap at the pulse; earlier
+        cells may be brighter and set a scale on which it is invisible).
+        Aspiration-only runs: workflow_settings.selection_frame_fraction.
+        """
+        dye = self.params.get('dye_uptake_parameters', {}) or {}
+        if dye.get('has_pulse') and dye.get('pulse_frame') is not None:
+            first = utils.get_first_frame_number(self.file_reader.tif_files)
+            p = utils.pulse_frame_to_index(dye.get('pulse_frame'), first)
+            if 0 <= p < num_frames:
+                return max(0, p - 3)          # before the pulse: no pulse artefacts in the median
+        frac = (self.params.get('workflow_settings', {}) or {}).get('selection_frame_fraction', 0.5)
+        return max(0, min(int(num_frames * frac), num_frames - 1))
+
     def _collect_interactive_parameters(self, indices: Optional[List[int]] = None,
                                         start_pip: Optional[Dict[int, int]] = None,
                                         thresholds_only: bool = False
@@ -1212,11 +1228,21 @@ class MFAAnalysis:
             # selection_frame_index defaults to 2 if not set in guv_settings.
             test_idx = max(0, min(int(guv.get('selection_frame_index', 2)), num_frames - 1))
         else:
-            # Cell mode: pick a frame proportionally through the video.
-            frame_frac = wf.get('selection_frame_fraction', 0.5)
-            test_idx = max(0, min(int(num_frames * frame_frac), num_frames - 1))
-        
-        img = self.loader.get_frame(test_idx)
+            test_idx = self._threshold_frame_index(num_frames)
+
+        # The analysis thresholds the median of membrane_temporal_window frames,
+        # so the threshold windows show the same: a faint cell that is lost in a
+        # single frame's noise stands out in the median (about sqrt(N) less
+        # noise), and the threshold chosen means what it will mean in the run.
+        ip = self.params.get('image_processing', {}) or {}
+        t_win = int(ip.get('membrane_temporal_window', 3)) if utils.membrane_enhancement_enabled(self.params) else 1
+        half = max(0, t_win // 2) if not guv.get('enable', False) else 0
+        frame_ids = list(range(max(0, test_idx - half), min(num_frames, test_idx + half + 1)))
+        frames = [self.loader.get_frame(j) for j in frame_ids]
+        img = frames[frame_ids.index(test_idx)]
+        logger.info(f"Threshold windows show frame {test_idx + 1}"
+                    + (f" (median of frames {frame_ids[0] + 1}-{frame_ids[-1] + 1}, as in the analysis)"
+                       if len(frames) > 1 else ""))
         
         setup_progress = utils.ProgressTracker(len(selected_indices))
 
@@ -1233,7 +1259,12 @@ class MFAAnalysis:
             trap_index = selected_indices[i]
             setup_progress.start_trap(i)
             try:
-                roi_img = self.cropper.process_frame(img, trap_index)
+                rois_k = [self.cropper.process_frame(f, trap_index) for f in frames]
+                rois_k = [r for r in rois_k if r is not None]
+                if len(rois_k) > 1 and all(isinstance(r, np.ndarray) for r in rois_k):
+                    roi_img = utils.temporal_median_frame(rois_k, len(rois_k) // 2, len(rois_k))
+                else:
+                    roi_img = self.cropper.process_frame(img, trap_index)
                 if roi_img is None:
                     skipped_here.add(trap_index)
                     setup_progress.finish_trap(i, True)

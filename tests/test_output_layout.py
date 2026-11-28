@@ -282,3 +282,41 @@ def test_setup_restart_goes_to_the_first_trap_and_keeps_the_boxes(monkeypatch):
     assert [c[0] for c in calls] == [0, 3, 5, 0, 3, 5]
     assert calls[3] == (0, (70, 80))               # earlier choices pre-filled
     assert [(c['trap_index'], c['thr_prot']) for c in configs] == [(0, 71), (3, 91), (5, 100)]
+
+
+def test_threshold_windows_show_the_cell_at_the_pulse_as_the_analysis_sees_it(monkeypatch):
+    """Exp 2 trap 11: the pulsed cell is faint and arrives after a bright one left. The
+    windows open just before the pulse (not at selection_frame_fraction) and show the
+    median of membrane_temporal_window frames, as the analysis thresholds it."""
+    import numpy as np
+    from mfae import pipeline
+    obj = pipeline.MFAAnalysis.__new__(pipeline.MFAAnalysis)
+    obj.params = {'workflow_settings': {'selection_frame_fraction': 0.4},
+                  'image_processing': {'membrane_enhancement': True, 'membrane_temporal_window': 5},
+                  'dye_uptake_parameters': {'has_pulse': True, 'pulse_frame': 304}}
+    obj.skipped = []
+    obj.file_reader = types.SimpleNamespace(tif_files=[f"x_t{i:04d}.tif" for i in range(1, 506)])
+    loaded = []
+
+    def get_frame(i):
+        loaded.append(i)
+        return np.full((4, 4), float(i))
+    obj.loader = types.SimpleNamespace(get_frame=get_frame, clear_cache=lambda: None)
+    obj.cropper = types.SimpleNamespace(selected_traps=[10], pipette_coords=[2, 0],
+                                        process_frame=lambda img, t: img)
+    seen = []
+
+    class FakeDet:
+        def __init__(self, rois, pip, params):
+            seen.append(rois[0])
+
+        def run_detection(self, skip_pipette=False, initial_thresholds=None):
+            return {'signal': 'confirm', 'pipette_start_x_used': 2, 'threshold_prot': 50, 'threshold_body': 40}
+
+    monkeypatch.setattr(pipeline, 'LineDetectionMFA', FakeDet)
+    assert obj._collect_interactive_parameters()[0] == 'confirm'
+    # pulse_frame 304 with files from t0001 -> index 303; 3 before -> 300; median of 298-302
+    assert sorted(loaded) == [298, 299, 300, 301, 302]
+    assert np.all(seen[0] == 300.0)
+    obj.params['dye_uptake_parameters'] = {'has_pulse': False}                # aspiration only
+    assert obj._threshold_frame_index(505) == int(505 * 0.4)
