@@ -97,6 +97,9 @@ def main(argv=None) -> int:
 
     config, _ = load_config(cfg_path, args.data_folder)
     if config is None:
+        if args.data_folder is None:
+            print("If the raw data (.czi file or .tif folder) is not where it was during the analysis "
+                  "(another drive, moved), add --data-folder \"<its current path>\".")
         return 1
     params = config.model_dump()
     data = Path(args.data_folder or config.paths.data_folder)
