@@ -127,6 +127,9 @@ def test_review_keys_tag_and_move(tmp_path):
     rv = review.Review(review.build_items([exp]))
     assert [it.trap for it in rv.items] == [1, 3, 6]
     assert rv.handle_key(ord('o')) == 'next' and rv.item.trap == 3   # tag saves and advances
+    assert rv.handle_key(ord('x')) == 'next' and rv.item.trap == 6
+    assert annotations.tags(exp)[3]['Tag'] == 'R_DOA'
+    assert rv.handle_key(ord('b')) == 'next' and rv.item.trap == 3
     assert rv.handle_key(ord('R')) == 'next' and rv.item.trap == 6
     assert rv.handle_key(ord('b')) == 'next' and rv.item.trap == 3   # back
     assert rv.handle_key(ord('c')) == '' and rv.item.trap == 3       # clear, stay

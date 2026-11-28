@@ -431,6 +431,7 @@ key press is saved immediately, so you can stop at any time and continue later.
 | `R` | R | Ruptured after the pulse | Analysed (as ruptured) |
 | `0` | R0 | Ruptured before the pulse | Excluded |
 | `D` | DOA | Not viable (dead on arrival) | Excluded |
+| `X` | R_DOA | Ruptured after the pulse and not viable | Excluded |
 | `P` | PI | Not viable (PI positive) | Excluded |
 | `A` | after | Arrived after the pulse | Excluded |
 | `M` / `S` / `I` | MASK / SHAPE / IRREGULAR | Detection failed | Excluded |
@@ -449,7 +450,7 @@ experiment in `Output/` is reviewed.
 | 3 | 2 | 265 | 314 | R | PI after pulse | rupture? frame 302 (Intensity Step); 3 cells in trap | |
 | 6 | 2 | 53 | 600 | MASK | wall lines | | |
 
-- **You fill in** `Tag` (the tags above, also `R_DOA` and `R0_DOA`; case doesn't matter) and
+- **You fill in** `Tag` (the tags above, also `R0_DOA`; case doesn't matter) and
   `Note`. An empty `Tag` means not reviewed, and counts as intact. You can add columns of your own;
   they are kept.
 - **The pipeline fills in** which cell was analysed, so you know which cell you are judging (the
