@@ -254,6 +254,7 @@ image_processing:
   tip_jump_cost: 3.0                 # kymograph: penalty per px of tip movement (up to 10 px), in noise units (higher = steadier)
   membrane_fill_holes: True          # Fill the interior of ring-shaped membrane stains
   membrane_max_hole_fraction: 0.25   # Do not fill holes larger than this fraction of the ROI
+  body_temporal_check: True          # Body mask much larger than in the frames around it (medium / passing cell joined): trim to that body
   membrane_relative_level: 0.3       # Mask pixels must also reach this fraction of the local cell signal; drops the halo around bright cells (0 = off)
 
 # ===================================================================

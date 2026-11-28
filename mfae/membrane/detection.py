@@ -1724,6 +1724,9 @@ class LineDetectionMFA:
             self.results['detection_confidence'].append(1.0 if protrusion_len_px > 0 else 0.0)
             self.results['frame_masks'].append((mask_prot, mask_body_standard))
 
+        if ip_cfg.get('body_temporal_check', True) and not self.params.get('guv_settings', {}).get('enable', False):
+            self._trim_merged_body_masks()
+
         # Mask-based lengths decide WHEN a cell is there (entry, exit, cell
         # changes, below). With tip_tracking: kymograph the tip position inside
         # the analysed cell is replaced afterwards, see the end of this method.
@@ -2035,6 +2038,74 @@ class LineDetectionMFA:
                                       pipette_start_x, scale_factor)
         
         self.results['downstream_intensities'] = downstream_int_list
+
+    def _trim_merged_body_masks(self, half_window: int = 7, grow_ratio: float = 1.3,
+                                margin_px: int = 3) -> List[int]:
+        """
+        Remove what a passing cell or near-threshold medium adds to the body mask.
+
+        With a faint cell the medium in the main channel next to the trap sits
+        near the body threshold; in single frames a stretch of it (or a cell
+        passing by) crosses it, touches the body, and the body mask balloons
+        to two or three times its size (Exp 2 trap 5: about a quarter of the
+        frames). The trapped body changes slowly, so each frame is compared
+        with the majority body mask of the frames around it (half_window on
+        either side, leaving out neighbours that are inflated themselves): if
+        it is more than grow_ratio times as large, only the
+        part within margin_px of that majority shape is kept. Frames that are
+        not clearly too large are left exactly as they are, and so is a frame
+        whose neighbours have no body yet (a new cell arriving). The body
+        measurements of changed frames are recomputed. Returns their indices.
+        """
+        fm = self.results.get('frame_masks', [])
+        n = len(fm)
+        bodies = [(m[1] > 0) if (m is not None and m[1] is not None) else None for m in fm]
+        areas = np.array([int(b.sum()) if b is not None else 0 for b in bodies])
+        min_area = int(self.min_area_threshold)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin_px + 1,) * 2)
+        changed = []
+        new_masks = {}
+        for i in range(n):
+            if areas[i] < min_area:
+                continue
+            js = [j for j in range(max(0, i - half_window), min(n, i + half_window + 1))
+                  if j != i and areas[j] >= min_area and bodies[j].shape == bodies[i].shape]
+            if len(js) < half_window:
+                continue
+            # neighbours that are not themselves inflated (in runs of merged
+            # frames those can be the majority): within grow_ratio of the
+            # lower quartile of the neighbours' areas
+            q = float(np.percentile(areas[js], 25))
+            nb = [bodies[j] for j in js if areas[j] <= grow_ratio * q]
+            if len(nb) < 3:
+                continue
+            ref = np.mean(nb, axis=0) >= 0.5
+            ref_area = int(ref.sum())
+            if ref_area < min_area or areas[i] <= grow_ratio * ref_area or areas[i] - ref_area < min_area:
+                continue
+            allowed = cv2.dilate(ref.astype(np.uint8), k) > 0
+            trimmed = (bodies[i] & allowed).astype(np.uint8)
+            num, lab, st, _ = cv2.connectedComponentsWithStats(trimmed)
+            if num <= 1:
+                continue
+            big = 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))
+            new_masks[i] = np.where(lab == big, 255, 0).astype(fm[i][1].dtype)
+        for i, mb in new_masks.items():
+            mp = fm[i][0]
+            fm[i] = (mp, mb)
+            mt = cv2.bitwise_or(mp, mb) if mp is not None else mb
+            vals = self._calculate_morphology(mp if mp is not None else np.zeros_like(mb), mb, mt)
+            for key, v in zip(('protrusion_area_um2', 'body_area_um2', 'total_area_um2',
+                               'linear_size_prot_um', 'linear_size_body_um', 'linear_size_total_um',
+                               'volume_prot_um3', 'volume_body_um3', 'volume_total_um3',
+                               'body_solidity'), vals):
+                if i < len(self.results.get(key, [])):
+                    self.results[key][i] = v
+            changed.append(i)
+        if changed:
+            logger.info(f"Body mask: trimmed medium/passing cell from {len(changed)} frame(s)")
+        self.results['body_trimmed_frames'] = changed
+        return changed
 
     def _apply_kymograph_tip(self, bands, rows, entry_idx: int, exit_idx: int,
                              pipette_x: int, scale_factor: float) -> None:

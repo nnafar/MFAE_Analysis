@@ -68,6 +68,7 @@
   "selection_frame_index": 1
  },
  "image_processing": {
+  "body_temporal_check": true,
   "clahe_clip_limit": 3.0,
   "clahe_tile_grid_size": [
    16,

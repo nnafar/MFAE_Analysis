@@ -484,6 +484,10 @@ clear and consistent from frame to frame:
    count, so the dim shaft next to a bright spot in the protrusion is kept.
 6. After thresholding, background enclosed by the cell is filled in (membrane stains are brightest
    at the rim, which would otherwise give ring-shaped masks), and small specks are removed.
+7. The body is the largest blob at the entrance (specks there are ignored). With a faint cell the
+   medium next to the trap, or a passing cell, can join the body in single frames; a body mask more
+   than 1.3x as large as the body in the frames around it keeps only the part within 3 px of that
+   body (`body_temporal_check`, `False` = off).
 
 **Dye and actin intensities are always measured on the raw pixels.** They only borrow the masks;
 this also holds when actin is imaged in the same channel as the membrane.

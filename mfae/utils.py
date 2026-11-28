@@ -902,7 +902,10 @@ def generate_dual_masks(image: np.ndarray, pipette_x: int, threshold_prot: int,
     bin_body = bin_prot if threshold_body == threshold_prot else threshold_membrane(image, threshold_body, params)
     mask_body = _clean_mask_internal(bin_body, fill_holes, pip_x)
     mask_body[:, :pip_x] = 0
-    mask_body = _keep_blob_nearest_to_x(mask_body, pip_x)
+    mask_body = _keep_blob_nearest_to_x(
+        mask_body, pip_x,
+        min_area=int(img_params.get('min_area_threshold', 100)),
+        max_gap=int(img_params.get('max_body_entrance_gap_px', 8)))
 
     return mask_prot, mask_body
 
@@ -935,9 +938,17 @@ def _clean_mask_internal(binary: np.ndarray, fill_holes: bool = False, pipette_x
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     return cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel_open)
 
-def _keep_blob_nearest_to_x(binary_mask: np.ndarray, reference_x: int) -> np.ndarray:
+def _keep_blob_nearest_to_x(binary_mask: np.ndarray, reference_x: int,
+                            min_area: int = 0, max_gap: Optional[int] = None) -> np.ndarray:
     """
     Keeps only the blob whose left edge is closest to reference_x.
+
+    With min_area / max_gap (as generate_dual_masks passes them): blobs
+    smaller than min_area are ignored, and of the blobs whose left edge is
+    within max_gap of reference_x the largest is kept. Without them a speck
+    of a few pixels at the entrance won over the cell body (equal distance:
+    the topmost blob won), was then dropped as too small, and the body mask
+    of that frame came out empty (Exp 2 trap 5: body missing in single frames).
     
     Why this works for our experiment:
         The main cell body always sits directly to the right of the pipette
@@ -961,10 +972,20 @@ def _keep_blob_nearest_to_x(binary_mask: np.ndarray, reference_x: int) -> np.nda
         # Only background label — nothing to keep.
         return np.zeros_like(binary_mask)
     
+    big = [i for i in range(1, num_labels) if stats[i, cv2.CC_STAT_AREA] >= min_area]
+    if max_gap is not None:
+        near = [i for i in big if abs(stats[i, cv2.CC_STAT_LEFT] - reference_x) <= max_gap]
+        if near:
+            best = max(near, key=lambda i: stats[i, cv2.CC_STAT_AREA])
+            output = np.zeros_like(binary_mask)
+            output[labels == best] = 255
+            return output
+    candidates = big if big else range(1, num_labels)
+
     best_label    = -1
     best_distance = float('inf')
     
-    for i in range(1, num_labels):   # skip label 0 = background
+    for i in candidates:   # label 0 = background is never a candidate
         # CC_STAT_LEFT is the x-coordinate of the blob's leftmost pixel.
         left_edge = stats[i, cv2.CC_STAT_LEFT]
         

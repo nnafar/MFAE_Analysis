@@ -521,6 +521,14 @@ class ImageProcessingConstants(_StrictModel):
         default=0.25, ge=0.0, le=1.0,
         description="Holes larger than this fraction of the ROI are not filled (0 = no limit)."
     )
+    body_temporal_check: bool = Field(
+        default=True,
+        description=(
+            "Compare each frame's body mask with the body in the frames around it; a frame "
+            "more than 1.3x as large (medium near the threshold or a passing cell joined to "
+            "the body) keeps only the part within 3 px of that body."
+        )
+    )
     membrane_relative_level: float = Field(
         default=0.3, ge=0.0, lt=1.0,
         description=(

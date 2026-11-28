@@ -955,3 +955,68 @@ def test_kymograph_tip_starts_at_the_cell_not_at_faint_haze_ahead():
     tips, _ = track_tip(K, Wd, np.ones(n, bool))
     level = tips_true + 0.25 * 8                              # where the ramp reaches 25 %
     assert np.all(np.abs(tips - level) <= 4), np.round(tips - level, 1)
+
+
+def test_speck_at_the_entrance_does_not_empty_the_body_mask():
+    """Exp 2 trap 5: a speck of a few px at the entrance, higher up than the body,
+    was kept as 'the body' (same left edge, found first), then dropped as too small:
+    the body mask of that frame was empty."""
+    m = np.zeros((H, W), np.uint8)
+    m[2:7, PIP:PIP + 5] = 255                                   # speck, top, at the entrance
+    yy, xx = np.mgrid[0:H, 0:W]
+    m[(np.hypot(xx - PIP - 24, yy - 36) <= 23) & (xx >= PIP)] = 255   # body
+    out = utils._keep_blob_nearest_to_x(m, PIP, min_area=100, max_gap=8)
+    assert out[36, PIP + 20] and not out[4, PIP + 2]
+    # the old call (no area limit) still picks by left edge only
+    assert utils._keep_blob_nearest_to_x(m, PIP)[4, PIP + 2]
+
+
+def test_medium_joined_to_a_faint_body_is_trimmed():
+    """Exp 2 trap 5: in single frames (and runs of frames) the medium next to the
+    trap crosses the body threshold, joins the body and the body mask balloons;
+    it is trimmed back to the body of the frames around it. Frames that are not
+    too large are left exactly as they are."""
+    from mfae.membrane.detection import LineDetectionMFA
+    yy, xx = np.mgrid[0:H, 0:W]
+    body = ((np.hypot(xx - PIP - 24, yy - 36) <= 20) & (xx >= PIP)).astype(np.uint8) * 255
+    medium = ((xx >= PIP + 40) & (yy < 50)).astype(np.uint8) * 255   # broad contact with the body
+    merged_frames = {5, 9, 10, 11, 12, 13, 14, 20}                     # singles and a run of 6
+    fm = [(np.zeros((H, W), np.uint8), cv2.bitwise_or(body, medium) if k in merged_frames else body.copy())
+          for k in range(30)]
+
+    class Det:
+        min_area_threshold = 100
+        results = {'frame_masks': fm, 'body_area_um2': [0.0] * 30}
+
+        def _calculate_morphology(self, mp, mb, mt):
+            return (0.0, float((mb > 0).sum()),) + (0.0,) * 8
+
+    d = Det()
+    changed = LineDetectionMFA._trim_merged_body_masks(d)
+    assert sorted(changed) == sorted(merged_frames)
+    for k in range(30):
+        mb = d.results['frame_masks'][k][1] > 0
+        assert not mb[10, PIP + 80]                                  # medium gone
+        assert (mb & (body > 0)).sum() == (body > 0).sum()           # body intact
+        assert mb.sum() <= (body > 0).sum() * 1.15
+    assert d.results['body_area_um2'][5] == float((d.results['frame_masks'][5][1] > 0).sum())
+
+
+def test_kymograph_tip_on_a_protrusion_filling_most_of_the_channel():
+    """Exp 2 trap 6: the protrusion fills ~90 % of the channel. The channel-end
+    line blanking wiped the empty channel where it ends (anything within 12 px a
+    little brighter than the protrusion counted as 'the line'), and the
+    background (20th percentile of the profile) sat inside the protrusion; the
+    tip landed on an internal step ~12-20 px inside the real end."""
+    from mfae.membrane.kymo_tip import track_tip
+    rng = np.random.default_rng(6)
+    n, Wd, tip = 60, 80, 9
+    x = np.arange(Wd)
+    prof = np.where(x >= tip, 18.0, 2.0)
+    prof[x >= 32] = 30.0                                  # internal step
+    prof[(x >= 54) & (x < 62)] = 19.0                     # dimmer stretch
+    prof[x >= 70] = 36.0                                  # base at the entrance
+    prof[1:4] += 3.0                                      # channel-end line
+    K = np.array([prof + rng.normal(0, 1.0, Wd) for _ in range(n)])
+    tips, _ = track_tip(K, Wd, np.ones(n, bool))
+    assert np.all(np.abs(tips - tip) <= 2), np.round(tips, 1)

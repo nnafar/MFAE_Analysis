@@ -83,11 +83,10 @@ def mask_channel_end(K: np.ndarray, max_cols: int = 12) -> np.ndarray:
     The channel end shows up as a narrow line a few pixels wide next to the
     box edge, steady over the whole recording (real data: about 2 um at
     -39..-40 um in every trap). It looks like a protrusion edge to the
-    tracker. Detected on the time-median profile: columns within max_cols of
-    the box edge that are clearly brighter than the channel just inside them
-    (3 noise units). Those columns get the value of the first column inside
-    them. A protrusion that really fills the channel up to the box edge is not
-    affected (the channel just inside it is as bright).
+    tracker. Detected on the time-median profile: a peak within the first 6
+    columns that is clearly brighter (3 noise units) than the dip just inside
+    it; the columns up to the dip get the dip's value. A protrusion that really
+    fills the channel up to the box edge has no such peak and is not affected.
     """
     K = np.array(K, dtype=np.float64, copy=True)
     if K.ndim != 2 or K.shape[1] < 3 * max_cols:
@@ -97,12 +96,21 @@ def mask_channel_end(K: np.ndarray, max_cols: int = 12) -> np.ndarray:
         return K
     noise = 1.4826 * np.median(np.abs(np.diff(K, axis=1)[:, max_cols:2 * max_cols]))
     noise = max(noise / np.sqrt(max(K.shape[0], 1)) * 4.0, 1e-6)   # median over frames: much less noisy
-    ref = float(np.median(M[max_cols:max_cols + 10]))
-    bright = M[:max_cols] > ref + 3.0 * noise
-    if not bright.any():
+    # The line is a narrow peak in the first few columns followed by a dip
+    # (the channel, or the far end of a protrusion, just inside it). Only the
+    # columns up to that dip are blanked. (Comparing with a reference 12-22 px
+    # in failed when a long protrusion reached that far: anything within 12 px
+    # that was a little brighter than the protrusion counted as the line, and
+    # the empty channel where the protrusion really ends was blanked with it;
+    # Exp 2 trap 6.)
+    pk = int(np.argmax(M[:6]))
+    hi = min(pk + 8, max_cols + 1)
+    if hi <= pk + 1:
         return K
-    e = int(np.max(np.where(bright)[0])) + 2       # one column of margin
-    e = min(e, max_cols)
+    d = pk + 1 + int(np.argmin(M[pk + 1:hi]))
+    if not M[pk] > M[d] + 3.0 * noise:
+        return K
+    e = d
     K[:, :e] = K[:, e:e + 1]
     return K
 
@@ -165,6 +173,12 @@ def track_tip(K: np.ndarray, pipette_x: int, active: np.ndarray,
     # tip), raised by the 0.84 noise units a 20th percentile of noise sits below
     # its mean.
     bg[finite] = np.percentile(Ks[finite], 20, axis=1) + 0.84 * noise[finite]
+    # A protrusion filling more than ~80 % of the channel puts that percentile
+    # inside the protrusion (Exp 2 trap 6: 17-28 instead of ~3), and the tip
+    # then lands on an internal step. The far end of the channel (next to the
+    # box edge, channel-end line already removed) is the channel unless the
+    # protrusion reaches the box edge; the lower of the two is used.
+    bg[finite] = np.minimum(bg[finite], np.median(Ks[finite, :4], axis=1))
     contrast = obj - bg
     usable = np.asarray(active, dtype=bool)[:n] & finite & (contrast >= min_contrast)
 
