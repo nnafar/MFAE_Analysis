@@ -231,7 +231,8 @@ def save_tracking_movie(rois: Sequence[Optional[np.ndarray]],
             reason = det_results.get('exit_reason')
             state = {"left ROI": "tip left the ROI - tracking stopped",
                      "slip": "cell exited - tracking stopped",
-                     "cell change": "cell left - tracking stopped"}.get(reason, "exited")
+                     "cell change": "new cell - tracking stopped",
+                     "cell left": "cell left the trap - tracking stopped"}.get(reason, "exited")
             s_col = (170, 170, 170)
         else:
             state = f"tracking cell {sel_cell}" if len(segs) > 1 else "tracking"

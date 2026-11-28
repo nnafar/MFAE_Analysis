@@ -129,6 +129,12 @@ def trap_summary_row(trap_index: int, det_res: Optional[Dict[str, Any]], time_da
         'Last_frame':           frame(x),
         'Last_time_s':          t(x),
         'Why_tracking_ended':   det_res.get('exit_reason') or 'end of recording',
+        'Left_trap_frame':      (frame(det_res.get('present_until_frame_index'))
+                                 if det_res.get('exit_reason') else None),
+        'Frames_after_pulse':   (int(det_res['present_until_frame_index']) - int(pulse_idx)
+                                 if pulse_idx is not None and det_res.get('cell_at_pulse')
+                                 and det_res.get('exit_reason')
+                                 and det_res.get('present_until_frame_index') is not None else None),
         'Pulse_frame':          frame(pulse_idx),
         'Protrusion_at_pulse_um': round(at_pulse, 3) if at_pulse is not None else None,
         'Max_protrusion_um':    round(float(finite.max()), 3) if finite.size else None,

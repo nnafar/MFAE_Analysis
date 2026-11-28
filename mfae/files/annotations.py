@@ -60,6 +60,8 @@ _CANON = {k.lower(): k for k in TAGS}
 
 # a new analysed cell counts as "different" when its first frame moved by more than this
 CELL_CHANGE_FRAMES = 10
+# a cell leaving within this many frames after the pulse is mentioned in the hint
+LEFT_SOON_FRAMES = 30
 
 
 def path_for(results_dir: Union[str, Path]) -> Path:
@@ -141,6 +143,12 @@ def hint(summary_row: Dict[str, Any]) -> str:
         h.append("rupture?" + (f" frame {rf}" if rf else "") + (f" ({why})" if why else ""))
     if summary_row.get("Cell_present_at_pulse") is False:
         h.append("no cell at the pulse (cell before it analysed)")
+    after = _int(summary_row.get("Frames_after_pulse"))
+    last, pulse = _int(summary_row.get("Last_frame")), _int(summary_row.get("Pulse_frame"))
+    if summary_row.get("Cell_present_at_pulse") is True and last and pulse and last < pulse:
+        h.append(f"tip beyond the box from frame {last}: pulsed while leaving")
+    if after is not None and 0 <= after <= LEFT_SOON_FRAMES:
+        h.append(f"left the trap {after} frame(s) after the pulse")
     n = _int(summary_row.get("Cells_seen_in_trap"))
     if n and n > 1:
         h.append(f"{n} cells in trap")

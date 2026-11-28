@@ -1814,6 +1814,7 @@ class LineDetectionMFA:
         exit_sustained_frames = int(r_cfg.get('exit_sustained_frames', 3))
         edge_frames = int(r_cfg.get('exit_at_roi_edge_frames', 3))
         change_ratio = float(r_cfg.get('cell_change_drop_ratio', 0.5))
+        body_gone_frames = int(r_cfg.get('exit_body_gone_frames', 5))
         n_frames = len(protrusions)
         label = getattr(self, 'trap_label', 'This trap')
         dimmed_logged: set = set()   # frames where a length drop was dimming, not a new cell
@@ -1846,7 +1847,27 @@ class LineDetectionMFA:
                     run, first = 0, None
             return None
 
-        def find_exit(entry: int) -> Tuple[int, Optional[str]]:
+        def body_present(i: int) -> bool:
+            a = body_areas[i] if i < len(body_areas) else 0.0
+            return isinstance(a, (int, float)) and np.isfinite(a) and a >= entry_body_noise_floor_um2
+
+        def body_gone_from(start: int, stop: int) -> Optional[int]:
+            """First frame of the first run of body_gone_frames frames without a body in [start, stop)."""
+            run, first = 0, None
+            for i in range(start, min(stop, n_frames)):
+                if i in blanked_frames:
+                    continue                   # the pulse can blank the masks for a frame or two
+                if not body_present(i):
+                    if run == 0:
+                        first = i
+                    run += 1
+                    if run >= body_gone_frames:
+                        return first
+                else:
+                    run, first = 0, None
+            return None
+
+        def find_exit(entry: int, body_rule: bool = True) -> Tuple[int, Optional[str]]:
             """Last frame of the cell that entered at `entry`, and why it ended."""
             candidates = []
             # a) Slip: protrusion collapses (below exit threshold or to a small
@@ -1922,10 +1943,17 @@ class LineDetectionMFA:
                             break
                     else:
                         run = 0
+            # d) The cell left the trap: no body for body_gone_frames frames
+            #    (whatever the channel still shows: a faint haze measured as a
+            #    'protrusion' of about half the length kept a cell alive; Exp 2 trap 11).
+            if body_rule and body_gone_frames > 0:
+                gone = body_gone_from(entry + 1, n_frames)
+                if gone is not None:
+                    candidates.append((max(entry, gone - 1), 'cell left'))
             if not candidates:
                 return n_frames - 1, None
             # earliest wins; on a tie the more specific reason is reported
-            priority = {'left ROI': 0, 'slip': 1, 'cell change': 2}
+            priority = {'left ROI': 0, 'slip': 1, 'cell change': 2, 'cell left': 3}
             return min(candidates, key=lambda c: (c[0], priority[c[1]]))
 
         segments: List[Tuple[int, int, Optional[str]]] = []
@@ -1949,13 +1977,32 @@ class LineDetectionMFA:
                 label, ", ".join(str(i + 1) for i in sorted(dimmed_logged)))
         self.results['dimmed_frames'] = sorted(dimmed_logged)
 
+        # Until when each cell was physically in the trap. Its tip leaving the
+        # box ('left ROI') ends the length measurement, not the cell: it is in
+        # the trap while its body is (Exp 2 trap 12 was pulsed while leaving).
+        present_until: List[int] = []
+        for k, (e, x, why) in enumerate(segments):
+            until = x
+            if why == 'left ROI':
+                stop = segments[k + 1][0] if k + 1 < len(segments) else n_frames
+                gone = body_gone_from(x + 1, stop)
+                until = (gone - 1) if gone is not None else stop - 1
+            present_until.append(until)
+
         cell_at_pulse: Optional[bool] = None
         if segments:
             entry_confirmed = True
             if p_idx is not None:
-                at_pulse = [k for k, (e, x, _) in enumerate(segments) if e <= p_idx <= x]
+                at_pulse = [k for k, (e, x, _) in enumerate(segments) if e <= p_idx <= present_until[k]]
                 if at_pulse:
                     sel, cell_at_pulse = at_pulse[0], True
+                    e_s, x_s, why_s = segments[sel]
+                    if p_idx > x_s:
+                        logger.info(
+                            "%s: the tip of cell %d left the box at frame %d, but the cell was still in "
+                            "the trap at the pulse (frame %d; gone after frame %d): it is the pulsed cell. "
+                            "Its length is unknown from frame %d.",
+                            label, sel + 1, x_s, p_idx, present_until[sel], x_s)
                 else:
                     before = [k for k, (e, _, _) in enumerate(segments) if e <= p_idx]
                     sel = before[-1] if before else 0
@@ -1986,7 +2033,7 @@ class LineDetectionMFA:
             entry_confirmed = False
             sel = None
             entry_idx = 0
-            exit_idx, exit_reason = find_exit(0)
+            exit_idx, exit_reason = find_exit(0, body_rule=False)   # no cell, so no body to lose
             # The interactive setup runs detection on a single frame, where a
             # sustained entry of N frames can never be confirmed; only warn
             # when there were enough frames for the check to mean something.
@@ -2007,6 +2054,8 @@ class LineDetectionMFA:
         self.results['cell_segments'] = segments
         self.results['selected_cell'] = (sel + 1) if sel is not None else None
         self.results['cell_at_pulse'] = cell_at_pulse
+        self.results['cell_present_until'] = present_until
+        self.results['present_until_frame_index'] = present_until[sel] if (segments and sel is not None) else None
 
         # Masks exist only for the tracked cell: frames of other cells in the
         # same trap (or an empty trap) get none, so dye, actin and the movies,

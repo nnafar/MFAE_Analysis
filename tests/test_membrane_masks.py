@@ -290,13 +290,15 @@ def test_protrusion_mask_does_not_leak_into_faint_glow_ahead():
     assert abs(det._measure_protrusion_from_mask(cut, PIP)[0] - L) <= 3
 
 
-def _cell_sequence(lengths):
-    """Frames with a cell body at the entrance and a protrusion of the given length [px]."""
+def _cell_sequence(lengths, body=None):
+    """Frames with a cell body at the entrance and a protrusion of the given length [px].
+    body: per frame, is the body there (default: always)."""
     yy, xx = np.mgrid[0:H, 0:W]
     rois = []
     for k, L in enumerate(lengths):
         rng = np.random.default_rng(200 + k)
-        sig = np.where(np.hypot(xx - PIP - 24, yy - 36) <= 23, 500.0, 0.0)
+        has_body = True if body is None else body[k]
+        sig = np.where(np.hypot(xx - PIP - 24, yy - 36) <= 23, 500.0 if has_body else 0.0, 0.0)
         if L:
             sig += np.where((xx >= PIP - L) & (xx < PIP) & (np.abs(yy - 36) <= 6), 500.0, 0.0)
         img = 400 + cv2.GaussianBlur(sig.astype(np.float32), (0, 0), 1.2) + rng.normal(0, 20, (H, W))
@@ -304,7 +306,7 @@ def _cell_sequence(lengths):
     return rois
 
 
-def _run_cells(lengths, pulse_idx=None, tip_tracking='mask'):
+def _run_cells(lengths, pulse_idx=None, tip_tracking='mask', body=None):
     from mfae.membrane.detection import LineDetectionMFA
     params = _params()
     params['image_processing']['membrane_temporal_window'] = 1
@@ -312,7 +314,7 @@ def _run_cells(lengths, pulse_idx=None, tip_tracking='mask'):
     params['rupture_detection'] = {'enable_smoothing': False, 'pulse_frame_idx': pulse_idx}
     params['dye_uptake_parameters'] = {'has_pulse': pulse_idx is not None}
     params['experiment_parameters'] = {'scale_factor': 0.1}
-    det = LineDetectionMFA(_cell_sequence(lengths), [PIP, 0], params)
+    det = LineDetectionMFA(_cell_sequence(lengths, body), [PIP, 0], params)
     return det.run_detection_with_parameters(PIP, 100, threshold_body=100)
 
 
@@ -343,10 +345,41 @@ def test_without_pulse_the_longest_cell_is_analysed():
 
 
 def test_no_cell_at_pulse_keeps_last_cell_before_and_flags_it():
-    # like Trap 12: cell leaves before the pulse, trap empty at the pulse
+    # the cell leaves (tip past the box, then the body goes) before the pulse; empty at the pulse
     lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] * 4 + [0] * 8
-    res = _run_cells(lengths, pulse_idx=len(lengths) - 3)
+    body = [True] * (len(lengths) - 8) + [False] * 8
+    res = _run_cells(lengths, pulse_idx=len(lengths) - 2, body=body)
     assert res['selected_cell'] == 1 and res['cell_at_pulse'] is False
+
+
+def test_cell_pulsed_while_leaving_is_the_pulsed_cell():
+    """Exp 2 trap 12: the tip reaches the box edge just before the pulse ('left ROI'), but
+    the body is still in the trap at the pulse and leaves after it: that cell got the pulse.
+    Its length stays unknown from the box edge on."""
+    lengths = [0] * 3 + list(range(30, 110, 10)) + [PIP] * 12 + [0] * 8
+    body = [True] * (len(lengths) - 8) + [False] * 8
+    pulse = 3 + 8 + 6                                     # 6 frames after the tip left the box
+    res = _run_cells(lengths, pulse_idx=pulse, body=body)
+    assert res['cell_at_pulse'] is True and res['selected_cell'] == 1
+    assert res['exit_reason'] == 'left ROI' and res['exit_frame_index'] < pulse
+    assert res['present_until_frame_index'] == len(lengths) - 9    # last frame with a body
+    L = np.asarray(res['protrusion_lengths_um'], float)
+    assert np.all(np.isnan(L[res['exit_frame_index'] + 1:]))          # no length past the box edge
+
+
+def test_cell_leaving_the_trap_ends_tracking_even_if_the_channel_still_shows_something():
+    """Exp 2 trap 11: the cell left (body gone); faint haze in the channel was measured as a
+    'protrusion' of about half the length, so 'cell change' never fired and the trace
+    continued over the empty trap. No body for 5 frames ends the cell."""
+    n_cell, n_after = 20, 15
+    lengths = [0] * 3 + [80] * n_cell + [42, 38, 44, 40, 41] * 3       # ~half: below/above 50 %
+    body = [True] * (3 + n_cell) + [False] * n_after
+    res = _run_cells(lengths, body=body)
+    assert res['exit_reason'] == 'cell left'
+    assert res['exit_frame_index'] == 3 + n_cell - 1                    # last frame with the body
+    assert len(res['cell_segments']) == 1                               # no body: no new cell either
+    L = np.asarray(res['protrusion_lengths_um'], float)
+    assert np.all(np.isnan(L[3 + n_cell:]))
 
 
 

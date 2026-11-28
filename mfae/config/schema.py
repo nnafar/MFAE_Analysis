@@ -255,6 +255,7 @@ class RuptureDetectionConfig(_StrictModel):
     exit_sustained_frames: int = Field(default=3, ge=1, description="Consecutive frames the length must remain dropped to trigger exit")
     cell_change_drop_ratio: float = Field(default=0.5, ge=0.0, lt=1.0, description="A new cell: length falls below this fraction of its recent level (median of the 5 frames before) for exit_sustained_frames frames (0 = off)")
     exit_at_roi_edge_frames: int = Field(default=3, ge=0, description="Stop tracking when the protrusion tip stays at the left ROI edge for this many consecutive frames (0 = off)")
+    exit_body_gone_frames: int = Field(default=5, ge=0, description="The cell left the trap: no body mask for this many consecutive frames (0 = off). Also decides whether a cell whose tip left the box was still in the trap at the pulse")
     spike_filter_window: int = Field(default=7, ge=0, le=31, description="Length spikes: each frame is compared with the median of this many frames centred on it (0 = off); runs of up to window//2 frames count as spikes, longer changes are kept")
     spike_filter_min_jump_um: float = Field(default=2.0, ge=0.0, description="A frame is a spike only if it is at least this far [um] from the local median (and spike_filter_n_mad x the local spread)")
     spike_filter_n_mad: float = Field(default=3.0, ge=0.0, description="Spike threshold in robust standard deviations (1.4826 x MAD) of the window")

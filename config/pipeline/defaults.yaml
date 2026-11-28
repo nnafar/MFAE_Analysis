@@ -98,6 +98,8 @@ rupture_detection:
   exit_sustained_frames: 3           # Consecutive frames the drop must last
   cell_change_drop_ratio: 0.5         # Length drops below half its recent level and stays = the cell left / a new one came (0 = off)
   exit_at_roi_edge_frames: 3         # Stop tracking once the tip stays at the left ROI edge this many frames (0 = off)
+  exit_body_gone_frames: 5           # The cell left the trap: no body for this many frames (0 = off); a cell whose tip
+                                     # left the box still counts as in the trap (e.g. at the pulse) while its body is there
 
   # --- Length spikes (faint cells) ---
   # A frame whose length is far from the median of the frames around it (the

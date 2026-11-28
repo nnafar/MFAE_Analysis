@@ -153,6 +153,7 @@
   "entry_protrusion_threshold_um": 5.0,
   "exclude_early_fraction": 0.03,
   "exit_at_roi_edge_frames": 3,
+  "exit_body_gone_frames": 5,
   "spike_filter_window": 7,
   "spike_filter_min_jump_um": 2.0,
   "spike_filter_n_mad": 3.0,

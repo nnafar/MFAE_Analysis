@@ -228,3 +228,13 @@ def test_review_navigation_works_with_every_opencv_window_backend(tmp_path):
     assert rv.handle_key(0x100000 | ord('d')) == '' and annotations.tags(exp)[1]['Tag'] == 'DOA'  # GTK letter
     assert rv.handle_key(1234567) == '' and 'Key code 1234567' in rv.message
     assert annotations.tags(exp)[1]['Tag'] == 'DOA'                    # nothing changed
+
+
+def test_hint_mentions_cells_that_leave_around_the_pulse():
+    left_soon = {'Trap': 2, 'Status': 'analysed', 'Cell_present_at_pulse': True, 'Pulse_frame': 304,
+                 'Last_frame': 316, 'Frames_after_pulse': 12, 'Why_tracking_ended': 'cell left'}
+    assert 'left the trap 12 frame(s) after the pulse' in annotations.hint(left_soon)
+    leaving = {'Trap': 12, 'Status': 'analysed', 'Cell_present_at_pulse': True, 'Pulse_frame': 304,
+               'Last_frame': 296, 'Frames_after_pulse': 40, 'Why_tracking_ended': 'left ROI'}
+    h = annotations.hint(leaving)
+    assert 'tip beyond the box from frame 296: pulsed while leaving' in h and 'after the pulse' not in h

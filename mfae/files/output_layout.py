@@ -336,7 +336,11 @@ COLUMN_NOTES = {
         ("Cells_seen_in_trap", "cells that entered this trap during the recording"),
         ("Analysed_cell", "which of them was analysed (the one present at the pulse)"),
         ("First_frame, Last_frame", "frames of the analysed cell, counted from 1 (as in Fiji and the movies)"),
-        ("Why_tracking_ended", "cell change / left ROI (tip reached the box edge) / end of recording"),
+        ("Why_tracking_ended", "cell change (a new, shorter protrusion) / cell left (body gone from the trap) / "
+                               "left ROI (tip reached the box edge) / slip / end of recording"),
+        ("Left_trap_frame", "last frame the analysed cell was in the trap (its body); after 'left ROI' "
+                            "it can be later than Last_frame"),
+        ("Frames_after_pulse", "frames the analysed cell was still in the trap after the pulse"),
         ("Protrusion_at_pulse_um", "protrusion length at the pulse frame"),
     ],
     'protrusion_trace.csv': [

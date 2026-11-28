@@ -382,13 +382,20 @@ cell ends when
 
 - its protrusion tip stays at the left edge of the trap box for 3 frames (`left ROI`; the true
   length is unknown from then on),
-- the protrusion collapses for 3 frames (`slip`), or
+- the protrusion collapses for 3 frames (`slip`),
 - the length falls below half its recent level and stays there, i.e. the cell passed through and
-  a new, shorter protrusion appears (`cell change`).
+  a new, shorter protrusion appears (`cell change`), or
+- the body is gone from the trap for 5 frames (`cell left`, `rupture_detection.exit_body_gone_frames`),
+  whatever the channel still shows: faint haze left behind is not a cell.
 
 **The analysed cell is the one in the trap at the pulse**, since that is the one that was
-electroporated; for aspiration-only runs it is the longest-tracked cell. If the trap is empty at
-the pulse, the last cell before it is kept and the log warns that it was not pulsed. All
+electroporated; for aspiration-only runs it is the longest-tracked cell. "In the trap" goes by the
+body: a cell whose tip has already left the box (`left ROI`) but whose body is still there at the
+pulse is the pulsed cell, pulsed while leaving; its length is unknown from the box edge on. If the
+trap is empty at the pulse, the last cell before it is kept and the log warns that it was not
+pulsed. `trap_summary.csv` gives `Left_trap_frame` (last frame the cell was in the trap) and
+`Frames_after_pulse`; a cell that leaves within 30 frames after the pulse, or was pulsed while
+leaving, is pointed out in the review hint, so you can decide with a tag whether to keep it. All
 measurements (length, areas, rupture, dye uptake, actin) cover only the analysed cell, from its own
 entry to its exit; other frames are empty (NaN). The log lists every cell found, e.g.
 `Trap 4 held 2 cells (cell 1: frames 2-150 (cell change); cell 2: frames 151-504). Analysing cell 2
