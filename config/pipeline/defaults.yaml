@@ -199,6 +199,13 @@ workflow_settings:
   save_tracking_movies: True
   tracking_movie_fps: 10
   tracking_movie_width_px: 900       # Approximate video width; the trap image is enlarged by a whole factor
+
+  # Developer export (off for normal use): each trap's frames, rotated and cropped
+  # as the analysis sees them, lossless, with the trap's setup, to
+  # Run_Info/Trap_images/Trap_XX_images.npz. For sharing a dataset whose raw file
+  # is too large. One run only: --export-traps 1,5,6 (or all).
+  export_trap_images: False
+  export_trap_images_traps: []       # trap numbers as in the movies, e.g. [1, 5, 6]; [] = every analysed trap
   # (Trap-box size and the setup frame are set per experiment.)
 
 # ===================================================================

@@ -57,7 +57,7 @@ from mfae.membrane.kymograph import create_kymograph_for_trap
 from mfae.quantification.dye_uptake import DyeUptakeAnalyzer
 from mfae.quantification.actin import ActinAnalyzer
 from mfae.membrane.tracking_movie import save_tracking_movie
-from mfae.files import output_layout
+from mfae.files import output_layout, trap_export
 from mfae.config.schema import MFAConfig
 from mfae.config import loader as config_loader
 from mfae.plotting import figures
@@ -149,6 +149,49 @@ def _init_worker_logging(log_queue) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+def _export_trap_images(config_dict: Dict[str, Any], params: Dict[str, Any], rois: List[np.ndarray],
+                        dirs: Dict[str, Path], worker_logger: logging.Logger) -> Optional[Path]:
+    """Write Run_Info/Trap_images/Trap_XX_images.npz (see mfae/files/trap_export.py)."""
+    trap_number = config_dict['trap_index'] + 1
+    try:
+        channels = {'membrane': rois}
+        roi = config_dict['roi_coords']
+        for name, key in (('dye', 'dye_mmap'), ('actin', 'actin_mmap')):
+            src = config_dict.get(key) or {}
+            if not src.get('path') or src['path'] == config_dict['mmap_path']:
+                continue                       # not loaded, or the membrane images themselves
+            stack = np.memmap(src['path'], dtype=src['dtype'], mode='r', shape=src['shape'])
+            channels[name] = [utils.crop_single_trap(f, roi, 0.0) for f in stack]
+            del stack
+        dye_p = params.get('dye_uptake_parameters', {}) or {}
+        meta = {
+            'experiment_id': Path(config_dict.get('results_dir', '')).name,
+            'trap_number': trap_number,
+            'roi_coords': [int(v) for v in roi],
+            'rotation_angle': float(config_dict.get('rotation_angle', 0.0)),
+            'pip': config_dict.get('tuned_pipette_x'),
+            'thr_prot': config_dict.get('tuned_threshold_prot'),
+            'thr_body': config_dict.get('tuned_threshold_body'),
+            'smooth': config_dict.get('tuned_denoise_sigma_along'),
+            'snr_scale': config_dict.get('tuned_snr_full_scale'),
+            'threshold_scale': threshold_scale(params),
+            'scale_factor_um_per_px': params.get('experiment_parameters', {}).get('scale_factor'),
+            'has_pulse': dye_p.get('has_pulse'),
+            'pulse_frame': dye_p.get('pulse_frame'),
+            'first_frame_number': config_dict.get('first_frame_number', 1),
+            'image_processing': params.get('image_processing', {}),
+        }
+        path = trap_export.write(
+            output_layout.ensure(dirs, 'trap_images') / output_layout.trap_file('trap_images', trap_number),
+            channels, config_dict.get('time_data'), meta)
+        worker_logger.info(f"Trap {trap_number}: images exported to {path.name} "
+                           f"({', '.join(channels)}; {path.stat().st_size / 1e6:.1f} MB)")
+        return path
+    except Exception:
+        worker_logger.warning(f"Trap {trap_number}: image export failed.", exc_info=True)
+        return None
+
+
 def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Processes a single trap in an independent process with guaranteed cleanup.
@@ -201,6 +244,11 @@ def static_parallel_worker(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         for j in range(num_frames):
             # Slicing from mmap; rotation is already handled in the shared memory stack
             rois.append(utils.crop_single_trap(all_frames[j], config_dict['roi_coords'], 0.0))
+
+        # Developer export of this trap's frames (off by default): written
+        # before the detection, so it exists even when the detection fails.
+        if trap_export.wanted(params, trap_index + 1):
+            _export_trap_images(config_dict, params, rois, dirs, worker_logger)
 
         # 4. Run Length Detection
         pip_x = config_dict['tuned_pipette_x']
@@ -929,6 +977,10 @@ class MFAAnalysis:
             logger.info("Protrusion tip: %s | masks from the median of %s frame(s) | spike filter window %s",
                         _ip.get('tip_tracking', 'mask'), _ip.get('membrane_temporal_window', 3),
                         self.params.get('rupture_detection', {}).get('spike_filter_window', 7))
+            _wf = self.params.get('workflow_settings', {}) or {}
+            if _wf.get('export_trap_images'):
+                _which = _wf.get('export_trap_images_traps') or 'every analysed trap'
+                logger.info(f"Developer export ON: trap images of {_which} -> Run_Info/Trap_images/")
             removed = output_layout.remove_flat_data_files(self.results_dir)
             if removed:
                 logger.info(f"Moved {removed} CSV file(s) of the earlier layout into Data/Traces and "

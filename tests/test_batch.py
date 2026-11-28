@@ -298,11 +298,13 @@ def test_thresholds_option_reopens_every_experiment(tmp_path, monkeypatch):
 def test_tip_tracking_option_reaches_the_analysis(tmp_path, monkeypatch):
     setup = _tree(tmp_path)
     out = tmp_path / "Output"
-    seen = []
+    seen, exports = [], []
 
     class FakeAnalysis:
         def __init__(self, path, name, config, output_root=None, use_session_cache=True, log_mode='w'):
             seen.append(config.image_processing.tip_tracking)
+            exports.append((config.workflow_settings.export_trap_images,
+                            tuple(config.workflow_settings.export_trap_images_traps)))
             self.name, self.results_dir, self.stopped_by_user = name, Path(output_root) / name, False
 
         def run_analysis(self, setup_only=False):
@@ -317,10 +319,15 @@ def test_tip_tracking_option_reaches_the_analysis(tmp_path, monkeypatch):
                                  batch=[str(setup)], setup=None, output_dir=out, redo=True,
                                  fresh=False, check=False, show_config=False, debug=False,
                                  experiment_id=None, traps=None, only=None, thresholds=False,
-                                 tip_tracking="kymograph")
+                                 tip_tracking="kymograph", export_traps=[1, 5])
     assert batch.run_batch(args) == 0
     assert seen and set(seen) == {"kymograph"}
-    assert cli.build_arg_parser().parse_args(["x.yaml", "--tip-tracking", "mask"]).tip_tracking == "mask"
+    assert exports and set(exports) == {(True, (1, 5))}
+    parse = cli.build_arg_parser().parse_args
+    assert parse(["x.yaml", "--tip-tracking", "mask"]).tip_tracking == "mask"
+    assert parse(["x.yaml", "--export-traps", "6,1,5"]).export_traps == [1, 5, 6]
+    assert parse(["x.yaml", "--export-traps", "all"]).export_traps == []
+    assert parse(["x.yaml"]).export_traps is None                      # off unless asked
 
 
 def test_condition_folders_in_either_order_and_a_warning_for_odd_names(caplog):

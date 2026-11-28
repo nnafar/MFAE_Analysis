@@ -207,6 +207,8 @@
   "debug_mode": true,
   "default_roi_height_um": 45.0,
   "default_roi_width_um": 115.0,
+  "export_trap_images": false,
+  "export_trap_images_traps": [],
   "interactive_window_height": 800,
   "interactive_window_width": 1000,
   "max_cache_size": 25,

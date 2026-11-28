@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Export the trap images of an analysed experiment, losslessly, to one small file.
+Export the trap images of an experiment that was ALREADY analysed (developer tool).
 
-TEMPORARY helper for developing the detection on a dataset whose raw file is
-too large to share. Delete this file when it is no longer needed; nothing in
-the pipeline uses it.
+Writes the same files as the pipeline's developer export
+(Run_Info/Trap_images/Trap_XX_images.npz, see mfae/files/trap_export.py), but
+afterwards, from the saved setup, without analysing again. For a new run,
+switch the export on instead: --export-traps 1,5,6 (or all), or
+workflow_settings.export_trap_images in config/pipeline/defaults.yaml.
 
-It writes exactly what the analysis works on: every frame rotated and cropped
-to each trap box as set up in the interactive setup, at the original bit
-depth (16-bit, no compression loss), plus the saved setup of each trap
+Each file holds the trap's frames exactly as the analysis works on them
+(rotated, cropped to the trap box, original bit depth, lossless), its setup
 (entrance, thresholds, smoothing), the frame times and the pixel size. One
 trap's membrane channel is about 4 MB.
 
-Usage (on the computer with the data, after the experiment has been analysed):
+Usage (on the computer with the data):
 
     python tools/export_trap_stacks.py Experiment5 --traps 1,5,6
 
@@ -21,11 +22,9 @@ Spyder:
     %runfile C:/GitHub/MFAE_Analysis/tools/export_trap_stacks.py --args "Experiment5 --traps 1,5,6" --wdir
 
 The first argument is the experiment's name, or a unique part of it (found in
-Output/), or the path of its results folder.
-
-Options: --channels membrane dye (default: membrane only), --data-folder PATH
-if the raw data has moved since the analysis, --out FILE (default:
-<experiment>_traps_<list>.npz in the results folder).
+Output/), or the path of its results folder. Options: --channels membrane dye
+(default: membrane only), --data-folder PATH if the raw data has moved since
+the analysis, --out FOLDER (default: Run_Info/Trap_images/ of the experiment).
 """
 
 import argparse
@@ -74,12 +73,14 @@ def main(argv=None) -> int:
     parser.add_argument("--channels", nargs="+", default=["membrane"], choices=["membrane", "dye"])
     parser.add_argument("--data-folder", type=Path, default=None,
                         help="The raw data (.czi file or .tif folder), if it moved since the analysis.")
-    parser.add_argument("--out", type=Path, default=None, help="Output file (.npz).")
+    parser.add_argument("--out", type=Path, default=None,
+                        help="Output folder (default: Run_Info/Trap_images/ of the experiment).")
     args = parser.parse_args(argv)
 
     from mfae import utils
     from mfae.cli import load_config
-    from mfae.files import output_layout
+    from mfae.files import output_layout, trap_export
+    from mfae.pipeline import threshold_scale
     from mfae.files.readers import make_file_reader
 
     results = _find_results(args.results)
@@ -115,13 +116,14 @@ def main(argv=None) -> int:
     reader = make_file_reader(data, params)
     reader.run()                               # finds the frames of each channel and their times
     lists = {"membrane": list(reader.tif_files), "dye": list(getattr(reader, "dye_files", []) or [])}
-    out = {}
+    stacks = {t: {} for t in traps}
     for ch in args.channels:
         frames = lists[ch]
         if not frames:
             print(f"No {ch} frames found in {data}; skipped.")
             continue
-        stacks = {t: [] for t in traps}
+        for t in traps:
+            stacks[t][ch] = []
         prev = None
         for k, f in enumerate(frames):
             img = reader.read_img(f)
@@ -136,34 +138,34 @@ def main(argv=None) -> int:
             rot = utils.rotate_image(img, angle) if angle else img
             for t in traps:
                 y0, y1, x0, x1 = by_trap[t]["roi_coords"]
-                stacks[t].append(np.array(rot[y0:y1, x0:x1]))
+                stacks[t][ch].append(np.array(rot[y0:y1, x0:x1]))
             if k % 50 == 0:
                 print(f"  {ch}: frame {k + 1}/{len(frames)}")
-        for t in traps:
-            out[f"trap{t:02d}_{ch}"] = np.stack(stacks[t])
-
-    if not any(k.startswith("trap") for k in out):
+    if not any(stacks[t] for t in traps):
         print("Nothing exported.")
         return 1
-    times = getattr(reader, "time_data", None)
-    meta = {
-        "experiment_id": str(config.paths.experiment_id),
-        "scale_factor_um_per_px": float(params.get("experiment_parameters", {}).get("scale_factor", 0.0)),
-        "rotation_angle": angle,
-        "threshold_scale": cache.get("threshold_scale"),
-        "traps": {str(t): by_trap[t] for t in traps},
-        "image_processing": params.get("image_processing", {}),
-    }
-    out["time_s"] = np.asarray(times if times is not None else [], dtype=float)
-    out["meta_json"] = np.array(json.dumps(meta, default=str))
 
-    name = f"{results.name}_traps_{'-'.join(str(t) for t in traps)}.npz"
-    dest = args.out or (results / name)
-    np.savez_compressed(dest, **out)
-    size = dest.stat().st_size / 1e6
-    print(f"Saved {dest} ({size:.1f} MB): " + ", ".join(f"{k} {v.shape}" for k, v in out.items()
-                                                         if k.startswith("trap")))
-    print("Share this file; it can be deleted afterwards.")
+    dye_p = params.get("dye_uptake_parameters", {}) or {}
+    out_dir = args.out or output_layout.complete(layout)['trap_images']
+    for t in traps:
+        c = by_trap[t]
+        meta = {
+            "experiment_id": str(config.paths.experiment_id),
+            "trap_number": t,
+            "roi_coords": [int(v) for v in c["roi_coords"]],
+            "rotation_angle": angle,
+            "pip": c.get("pip"), "thr_prot": c.get("thr_prot"), "thr_body": c.get("thr_body"),
+            "smooth": c.get("smooth"), "snr_scale": c.get("snr_scale"),
+            "threshold_scale": cache.get("threshold_scale") or threshold_scale(params),
+            "scale_factor_um_per_px": params.get("experiment_parameters", {}).get("scale_factor"),
+            "has_pulse": dye_p.get("has_pulse"), "pulse_frame": dye_p.get("pulse_frame"),
+            "image_processing": params.get("image_processing", {}),
+        }
+        dest = trap_export.write(Path(out_dir) / output_layout.trap_file('trap_images', t),
+                                 stacks[t], getattr(reader, "time_data", None), meta)
+        shapes = ", ".join(f"{ch} {np.shape(v)}" for ch, v in stacks[t].items())
+        print(f"Saved {dest} ({dest.stat().st_size / 1e6:.1f} MB): {shapes}")
+    print("Share these files; they can be deleted afterwards.")
     return 0
 
 

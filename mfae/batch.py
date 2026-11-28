@@ -156,7 +156,7 @@ def batch_folders_and_format(config_path: Path, folders: Optional[List[str]]) ->
 
 def run_batch(args) -> int:
     """Run a batch (see the module docstring). Returns a process exit code."""
-    from mfae.cli import check_setup, load_config, save_effective_config, show_config
+    from mfae.cli import apply_run_options, check_setup, load_config, save_effective_config, show_config
 
     try:
         roots, image_format = batch_folders_and_format(args.config_path, args.batch)
@@ -227,10 +227,7 @@ def run_batch(args) -> int:
         if config is None:
             status[name] = "skipped: config problem (see above)"
             continue
-        if args.debug:
-            config.workflow_settings.debug_mode = True
-        if getattr(args, 'tip_tracking', None):
-            config.image_processing.tip_tracking = args.tip_tracking
+        apply_run_options(config, args)
         configs[name] = (config, layered, exp_path, out_root)
 
     if args.show_config:

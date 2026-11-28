@@ -21,6 +21,7 @@ Folder layout and file names of one experiment's results (single source of truth
         Data/Kymographs/          Trap_XX_actin_kymograph.csv
     4_Mechanics/                  Flow_conditions.csv/.pdf, Viscoelastic_fits.csv, per-trap fit plots
     Run_Info/                     effective_config.yaml, session_cache.json, analysis.log
+        Trap_images/              Trap_XX_images.npz (developer export, only when switched on)
 
 Everything that writes a result takes its folder from build()/complete() and
 its file name from the helpers below, so the layout is defined only here.
@@ -71,6 +72,7 @@ _PATHS = {
     'actin_kymo':    (ACTIN_TOP, DATA, KYMOGRAPHS),
     'actin_movies':  (ACTIN_TOP, MOVIES),
     'fitting':       (MECHANICS,),
+    'trap_images':   (RUN_INFO, "Trap_images"),     # developer export (off by default)
 }
 # parent of each key when only some folders are given (older callers, tests)
 _PARENT = {
@@ -116,6 +118,10 @@ _TRAP_FILES = {
     'actin_kymo_fig':    ("Trap_{n:02d}_actin_kymograph.pdf", "single-trap figure"),
     'actin_zones_fig':   ("Trap_{n:02d}_actin_zones.pdf", "single-trap figure"),
     'fit_fig':           ("Trap_{n:02d}_viscoelastic_fit.pdf", "single-trap figure"),
+    # developer export (workflow_settings.export_trap_images / --export-traps)
+    'trap_images':       ("Trap_{n:02d}_images.npz",
+                          "developer export: the trap's frames (rotated, cropped, original bit depth) "
+                          "and its setup, for rerunning the detection elsewhere"),
 }
 
 # Experiment-level files: kind -> (layout key, file name, description)

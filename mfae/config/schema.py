@@ -402,6 +402,13 @@ class WorkflowConfig(_StrictModel):
     save_tracking_movies: bool = Field(default=True, description="Write Trap_XX_tracking.avi per trap (1_Protrusion_and_Shape/Movies)")
     tracking_movie_fps: int = Field(default=10, ge=1, le=60)
     tracking_movie_width_px: int = Field(default=900, ge=200, le=4000)
+    export_trap_images: bool = Field(
+        default=False,
+        description="Developer export: write each trap's frames (rotated, cropped, original bit depth) "
+                    "and its setup to Run_Info/Trap_images/Trap_XX_images.npz (see mfae/files/trap_export.py)")
+    export_trap_images_traps: List[int] = Field(
+        default_factory=list,
+        description="Traps to export (numbers as in the movies); empty = every analysed trap")
     window_scale_factor: float = Field(default=1.0, gt=0.0, le=5.0, description="Scaling factor for interactive window size on high-DPI screens")
     max_cache_size: int = Field(gt=10, lt=500)
     trap_spacing_factor: float = Field(gt=1.0, lt=3.0)

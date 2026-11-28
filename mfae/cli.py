@@ -92,6 +92,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "image_processing.tip_tracking in config/pipeline/defaults.yaml). "
                              "mask = each frame's own mask; kymograph = followed through time "
                              "on the centre-line profile.")
+    parser.add_argument("--export-traps", type=_export_traps, default=None, metavar="N[,N...]|all",
+                        help="Developer export, for this run only: write these traps' frames (rotated, "
+                             "cropped, lossless) and setup to Run_Info/Trap_images/Trap_XX_images.npz, "
+                             "e.g. 1,5,6 or all (default: workflow_settings.export_trap_images in "
+                             "config/pipeline/defaults.yaml, off).")
     parser.add_argument("--debug", action="store_true",
                         help="Show detailed (DEBUG) log messages on screen.")
     parser.add_argument("--show-config", action="store_true",
@@ -115,6 +120,22 @@ def _trap_list(text: str) -> List[int]:
     if not traps or min(traps) < 1:
         raise argparse.ArgumentTypeError(f"trap numbers start at 1, got '{text}'")
     return traps
+
+
+def _export_traps(text: str) -> List[int]:
+    """--export-traps: 'all' -> [] (every analysed trap), '1,5,6' -> [1, 5, 6]."""
+    return [] if str(text).strip().lower() == "all" else _trap_list(text)
+
+
+def apply_run_options(config: MFAConfig, args) -> None:
+    """Settings that command-line options change for one run (also used by --batch)."""
+    if getattr(args, 'debug', False):
+        config.workflow_settings.debug_mode = True
+    if getattr(args, 'tip_tracking', None):
+        config.image_processing.tip_tracking = args.tip_tracking
+    if getattr(args, 'export_traps', None) is not None:
+        config.workflow_settings.export_trap_images = True
+        config.workflow_settings.export_trap_images_traps = list(args.export_traps)
 
 
 def _set_yaml_value(text: str, key: str, value: str) -> str:
@@ -433,10 +454,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         logger.info(f"CZI file: {czi_file}")
 
-    if args.debug:
-        config.workflow_settings.debug_mode = True
-    if getattr(args, 'tip_tracking', None):
-        config.image_processing.tip_tracking = args.tip_tracking
+    apply_run_options(config, args)
 
     if (args.traps or args.thresholds) and args.fresh:
         logger.error("Use either --fresh (redo the whole setup) or --traps / --thresholds "

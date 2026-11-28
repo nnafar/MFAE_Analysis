@@ -266,3 +266,55 @@ def test_superplot_with_one_category_does_not_crash(tmp_path):
     common.render_visco_parameter_superplot(_superplot_df({'A': 1.0}), [('E', 'E', 'E')], tmp_path / 'one.pdf',
                                category_col='Cond', categories=['A'], grid_shape=(1, 2), figsize=(8, 4))
     assert (tmp_path / 'one.pdf').exists()
+
+
+def test_trap_image_export_is_off_by_default_and_follows_the_trap_list(tmp_path):
+    """Developer export: written only when switched on, only for the chosen traps,
+    with the cropped frames of every loaded channel (actin = membrane is not repeated)
+    and the trap's setup; independent of the detection result."""
+    import shutil
+    from synthetic_data_generators import create_synthetic_protrusion_image
+    from mfae import pipeline
+    from mfae.config import loader as config_loader
+    from mfae.files import output_layout as ol, trap_export
+
+    base = MFAConfig(**config_loader.load_layers(
+        ROOT / 'config' / 'pipeline/template_tiff.yaml', {'paths': {'data_folder': tempfile.gettempdir()}}).data).model_dump()
+    assert base['workflow_settings']['export_trap_images'] is False
+    frames = [create_synthetic_protrusion_image(protrusion_length_px=8 + i)[0].astype(np.uint16) for i in range(12)]
+    stack = np.stack(frames)
+    mem, dye = tmp_path / 'membrane.dat', tmp_path / 'dye.dat'
+    fp = np.memmap(mem, dtype=stack.dtype, mode='w+', shape=stack.shape)
+    fp[:] = stack
+    fp.flush()
+    del fp
+    shutil.copy(mem, dye)
+
+    def run(out, export, traps):
+        params = {**base, 'workflow_settings': {**base['workflow_settings'], 'export_trap_images': export,
+                                                'export_trap_images_traps': traps, 'save_tracking_movies': False}}
+        dirs = {'root': out}
+        out.mkdir()
+        chan = {'path': str(dye), 'shape': stack.shape, 'dtype': stack.dtype}
+        same = {'path': str(mem), 'shape': stack.shape, 'dtype': stack.dtype}
+        pipeline.static_parallel_worker({
+            'trap_index': 0, 'params': params, 'output_dirs': dirs, 'mmap_path': str(mem),
+            'dtype': stack.dtype, 'shape': stack.shape, 'rotation_angle': 0.0,
+            'roi_coords': (5, 45, 10, 190), 'tuned_pipette_x': 140, 'tuned_threshold_prot': 110,
+            'tuned_threshold_body': 120, 'tuned_denoise_sigma_along': 2.0,
+            'time_data': [i * DT for i in range(len(frames))], 'first_frame_number': 1,
+            'dye_mmap': chan, 'actin_mmap': same, 'results_dir': str(out),
+        })
+        return ol.complete(dirs)['trap_images'] / 'Trap_01_images.npz'
+
+    assert not run(tmp_path / 'off', False, []).exists()
+    assert not run(tmp_path / 'other', True, [2, 3]).exists()
+    f = run(tmp_path / 'on', True, [1])
+    arrays, meta = trap_export.read(f)
+    assert set(arrays) == {'membrane', 'dye', 'time_s'}                 # actin = membrane: not repeated
+    assert arrays['membrane'].shape == (12, 40, 180) and arrays['membrane'].dtype == np.uint16
+    assert np.array_equal(arrays['membrane'][3], stack[3, 5:45, 10:190])
+    assert np.allclose(arrays['time_s'], [i * DT for i in range(12)])
+    assert (meta['trap_number'], meta['pip'], meta['thr_prot'], meta['thr_body'], meta['smooth']) == (1, 140, 110, 120, 2.0)
+    assert meta['roi_coords'] == [5, 45, 10, 190] and 'image_processing' in meta
+    assert run(tmp_path / 'all', True, []).exists()                     # [] = every trap

@@ -646,6 +646,7 @@ symmetric microscope.
 | `--output-dir PATH` | Write results somewhere other than `Output/` |
 | `--show-config` | Print every setting the run would use, and which file set it |
 | `--init-config FILE` | Create a new config from a template in `config/pipeline/` (or `--from OTHER.yaml`) |
+| `--export-traps N[,N...]\|all` | Developer export for this run: these traps' images to `Run_Info/Trap_images/` (see [For developers](#10-for-developers)) |
 | `--debug` | Show detailed log messages |
 
 ### 9.3 Configs and settings
@@ -848,6 +849,7 @@ adds the same two commands, `mfae-experiment` and `mfae-bulk`, usable from any f
 | `mfae/config/naming.py` | The experiment-name rule (pulse settings, bulk condition groups) |
 | `mfae/files/readers.py` | Finding images (.tif / .czi), channel matching, timestamps |
 | `mfae/files/output_layout.py` | Folder layout and file names of the results (bulk readers use it too) |
+| `mfae/files/trap_export.py` | Developer export of trap images (`--export-traps`) |
 | `mfae/imaging/trap_rois.py` | Interactive rotation, ROI and trap selection, cropping |
 | `mfae/membrane/detection.py` | Masks, protrusion length, cells per trap, entry/exit and rupture detection, threshold windows |
 | `mfae/membrane/kymo_tip.py` | Tip tracking on the kymograph (`tip_tracking: kymograph`) |
@@ -862,6 +864,24 @@ Import modules by their package path (`from mfae.membrane import detection`); th
 tests put the project folder on the path. To change where results are written, edit
 `mfae/files/output_layout.py` only; the pipeline and the bulk analysis both read it. The bulk
 result layout is defined in `mfae/bulk/layout.py`.
+
+**Exporting trap images to work on a dataset elsewhere.** A raw `.czi` is often too large to
+share. The developer export writes each chosen trap's frames exactly as the analysis works on them
+(rotated, cropped to the trap box, original bit depth, lossless), together with the trap's setup
+(entrance, thresholds, smoothing), the frame times and the pixel size, to
+`Run_Info/Trap_images/Trap_XX_images.npz`: about 4 MB per trap for the membrane channel, plus the
+dye and actin channels when those analyses are on. It is off by default.
+
+| To | Do |
+|---|---|
+| Export for one run | Add `--export-traps 1,5,6` (or `--export-traps all`) to the command |
+| Export for every run | In `config/pipeline/defaults.yaml`, under `workflow_settings`: `export_trap_images: True`, and `export_trap_images_traps: [1, 5, 6]` (`[]` = every analysed trap) |
+| Export from an experiment that was already analysed, without analysing again | Terminal: `python tools/export_trap_stacks.py Experiment5 --traps 1,5,6`<br>Spyder: `%runfile C:/GitHub/MFAE_Analysis/tools/export_trap_stacks.py --args "Experiment5 --traps 1,5,6" --wdir` |
+
+The file is written before the detection runs, so it exists even when the detection fails for that
+trap. The log says when the export is on. Read a file back with
+`arrays, meta = mfae.files.trap_export.read(path)`: `arrays["membrane"]` is (frames, height, width),
+and `meta` holds the setup and settings needed to rerun the detection on it.
 
 When you add a config setting, define it in `mfae/config/schema.py` (unknown keys are rejected, so
 typos can't be silently ignored). Then decide who owns it: a pipeline setting goes, with its value
